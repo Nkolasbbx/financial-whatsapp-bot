@@ -1,11 +1,12 @@
 """
 FinancIAl - WhatsApp Bot MVP
-Backend FastAPI + Twilio + OpenAI
+Backend FastAPI + Twilio + Ollama (Llama 3.2)
 """
 
 import os
 import json
 import logging
+import httpx
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
@@ -13,8 +14,9 @@ from fastapi import FastAPI, Request, Response, BackgroundTasks
 from fastapi.responses import PlainTextResponse
 from twilio.rest import Client as TwilioClient
 from twilio.twiml.messaging_response import MessagingResponse
-from openai import OpenAI
 from supabase import create_client, Client as SupabaseClient
+from dotenv import load_dotenv
+load_dotenv()
 
 # ── Logging ──
 logging.basicConfig(level=logging.INFO)
@@ -24,20 +26,21 @@ logger = logging.getLogger("financial")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")  # Sandbox default
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")  # Ollama local
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # ── Clients ──
 twilio_client = None
-openai_client = None
+ollama_available = False
 supabase: SupabaseClient = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize clients on startup."""
-    global twilio_client, openai_client, supabase
+    global twilio_client, ollama_available, supabase
     
     if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
         twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -45,11 +48,19 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ Twilio credentials not set - running in test mode")
     
-    if OPENAI_API_KEY:
-        openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        logger.info("✅ OpenAI client initialized")
-    else:
-        logger.warning("⚠️ OpenAI API key not set")
+    # Check if Ollama is running
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+            if r.status_code == 200:
+                models = [m["name"] for m in r.json().get("models", [])]
+                if any(OLLAMA_MODEL in m for m in models):
+                    ollama_available = True
+                    logger.info(f"✅ Ollama connected - model: {OLLAMA_MODEL}")
+                else:
+                    logger.warning(f"⚠️ Ollama running but model {OLLAMA_MODEL} not found. Available: {models}")
+    except Exception:
+        logger.warning("⚠️ Ollama not running - AI chat disabled. Start Ollama and restart the server.")
 
     if SUPABASE_URL and SUPABASE_KEY:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -247,9 +258,9 @@ Responde considerando siempre este contexto sin que el usuario lo tenga que repe
 
 
 def get_ai_response(user: dict, message: str) -> str:
-    """Get AI response from OpenAI."""
-    if not openai_client:
-        return "⚠️ El asistente de IA no está disponible en este momento. Intenta más tarde."
+    """Get AI response from Ollama (Llama 3.2)."""
+    if not ollama_available:
+        return "⚠️ El asistente de IA no está disponible en este momento. Asegúrate de que Ollama esté corriendo."
     
     # Build context
     roadmap = user.get("roadmap", [])
@@ -268,29 +279,44 @@ def get_ai_response(user: dict, message: str) -> str:
         progreso=progreso,
     )
     
-    # Build conversation history (last 10 messages)
-    history = user.get("conversation_history", [])[-10:]
+    # Build conversation history (last 6 messages for smaller model)
+    history = user.get("conversation_history", [])[-6:]
     messages = [{"role": "system", "content": system}]
     messages.extend(history)
     messages.append({"role": "user", "content": message})
     
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",  # Económico y rápido para MVP
-            messages=messages,
-            max_tokens=500,
-            temperature=0.7,
+        response = httpx.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "temperature": 0.7,
+                    "num_predict": 400,  # Max tokens
+                }
+            },
+            timeout=60,  # Ollama can be slower than cloud APIs
         )
-        ai_text = response.choices[0].message.content
+        
+        data = response.json()
+        ai_text = data.get("message", {}).get("content", "")
+        
+        if not ai_text:
+            return "😅 No pude generar una respuesta. ¿Puedes intentar de nuevo?"
         
         # Save to history
         history.append({"role": "user", "content": message})
         history.append({"role": "assistant", "content": ai_text})
-        user["conversation_history"] = history[-20:]  # Keep last 20
+        user["conversation_history"] = history[-12:]  # Keep last 12
         
         return ai_text
+    except httpx.TimeoutException:
+        logger.error("Ollama timeout")
+        return "⏳ Me demoré mucho pensando. ¿Puedes intentar con una pregunta más corta?"
     except Exception as e:
-        logger.error(f"OpenAI error: {e}")
+        logger.error(f"Ollama error: {e}")
         return "😅 Tuve un problema al procesar tu consulta. ¿Puedes intentar de nuevo?"
 
 
@@ -565,9 +591,32 @@ def route_message(phone: str, message: str) -> str:
         )
     
     # ── AI Chat (default) ──
-    response = get_ai_response(user, message)
-    save_user(phone, user)
-    return response
+    # Return special flag - AI will be processed in background
+    return "__AI_QUERY__"
+
+
+def process_ai_and_send(phone_whatsapp: str, phone_clean: str, message: str):
+    """Process AI query and send response via Twilio (runs in background)."""
+    user = get_user(phone_clean)
+    if not user:
+        return
+    
+    ai_response = get_ai_response(user, message)
+    save_user(phone_clean, user)
+    
+    # Send via Twilio
+    if twilio_client:
+        try:
+            twilio_client.messages.create(
+                body=ai_response,
+                from_=TWILIO_WHATSAPP_NUMBER,
+                to=phone_whatsapp,
+            )
+            logger.info(f"📤 AI Response sent to {phone_whatsapp}: {ai_response[:100]}...")
+        except Exception as e:
+            logger.error(f"Twilio send error: {e}")
+    else:
+        logger.info(f"📤 AI Response (no Twilio): {ai_response[:100]}...")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -575,7 +624,7 @@ def route_message(phone: str, message: str) -> str:
 # ══════════════════════════════════════════════════════════════
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request):
+async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     """Handle incoming WhatsApp messages from Twilio."""
     form = await request.form()
     
@@ -590,18 +639,21 @@ async def whatsapp_webhook(request: Request):
     # Route and get response
     response_text = route_message(phone_clean, message)
     
-    logger.info(f"📤 Response to {phone}: {response_text[:100]}...")
-    
     # Build TwiML response
     twiml = MessagingResponse()
     
-    # Split long messages (WhatsApp limit ~4096 chars)
-    if len(response_text) > 4000:
-        parts = split_message(response_text, 4000)
-        for part in parts:
-            twiml.message(part)
+    if response_text == "__AI_QUERY__":
+        # AI queries: respond immediately with "thinking" message, process in background
+        twiml.message("🤔 Déjame pensar tu respuesta...")
+        background_tasks.add_task(process_ai_and_send, phone, phone_clean, message)
     else:
-        twiml.message(response_text)
+        logger.info(f"📤 Response to {phone}: {response_text[:100]}...")
+        if len(response_text) > 4000:
+            parts = split_message(response_text, 4000)
+            for part in parts:
+                twiml.message(part)
+        else:
+            twiml.message(response_text)
     
     return Response(content=str(twiml), media_type="application/xml")
 
@@ -733,6 +785,6 @@ async def health():
         "service": "FinancIAl WhatsApp Bot",
         "version": "1.0.0-mvp",
         "twilio": "connected" if twilio_client else "not configured",
-        "openai": "connected" if openai_client else "not configured",
+        "ollama": f"connected ({OLLAMA_MODEL})" if ollama_available else "not running",
         "supabase": "connected" if supabase else "in-memory mode",
     }
