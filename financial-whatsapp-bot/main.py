@@ -2,6 +2,7 @@ import logging
 from fastapi import FastAPI
 from dependencies import lifespan
 from routers import webhook, test
+from db.users import get_messages
 
 logging.basicConfig(level=logging.INFO)
 
@@ -21,4 +22,17 @@ async def health():
         "version": "1.0.0-mvp",
         "twilio": "connected" if twilio_client else "not configured",
         "ollama": f"connected ({OLLAMA_MODEL})" if ollama_available else "not running",
+    }
+
+
+@app.get('/test/resumen/{phone}')
+def test_rag(phone: str):
+    historial = get_messages(phone,limit=10)
+    if not historial:
+        return "No hay mensajes para este numero."
+    
+    return{
+        "phone": phone,
+        "mensajes usados": len(historial),
+        "mensajes": historial,
     }

@@ -12,3 +12,4 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 DB_DSN = os.getenv("DB_DSN")
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
+SUPABASE_DB_DSN = os.getenv("DB_DSN", "")

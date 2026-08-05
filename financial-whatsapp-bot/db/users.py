@@ -77,3 +77,21 @@ def get_messages(phone: str, limit: int = 12) -> list:
         except Exception as e:
             logger.error(f"Supabase get_messages error: {e}")
     return []
+
+
+def contar_mensajes(phone: str) -> int:
+    """Cuenta el total de mensajes de un usuario en la tabla messages."""
+    import dependencies
+    if dependencies.supabase:
+        try:
+            result = (
+                dependencies.supabase.table("messages")
+                .select("id", count="exact")
+                .eq("phone", phone)
+                .execute()
+            )
+            return result.count or 0
+        except Exception as e:
+            logger.error(f"Supabase contar_mensajes error: {e}")
+            return 0
+    return 0
