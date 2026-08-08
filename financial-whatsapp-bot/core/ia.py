@@ -5,7 +5,7 @@ import threading
 import httpx
 import psycopg2
 
-from config import OLLAMA_URL, OLLAMA_MODEL, TWILIO_WHATSAPP_NUMBER, DB_DSN, EMBEDDING_SERVICE_URL
+from config import OLLAMA_URL, OLLAMA_MODEL, TWILIO_WHATSAPP_NUMBER, DB_DSN, MODEL_NAME,HF_TOKEN
 from db.users import save_message, get_messages, contar_mensajes
 import dependencies
 
@@ -79,13 +79,42 @@ def llamar_llm(messages: list, max_tokens: int = 600, temperature: float = 0.2) 
 
 
 async def obtener_embedding_remoto(texto: str, prefix: str = "query") -> list[float]:
-    response = httpx.post(
-        f"{os.getenv('EMBEDDING_SERVICE_URL')}/embed",
-        json={"text": texto, "prefix": prefix},
-        timeout=15,
-    )
-    response.raise_for_status()
-    return response.json()["embedding"]
+    """
+    Genera el embedding usando la Inference API de Hugging Face de forma directa.
+    Aplica el prefijo 'query:' o 'passage:' necesario para la familia multilingual-e5.
+    """
+    hf_token = HF_TOKEN
+    model_name = MODEL_NAME 
+    
+    # URL del pipeline de extracción de características de Hugging Face
+    url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
+
+    # Formateo con el prefijo 'query:' / 'passage:' requerido por E5
+    texto_con_prefijo = f"{prefix}: {texto}"
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            url,
+            headers=headers,
+            json={"inputs": texto_con_prefijo, "options": {"wait_for_model": True}}
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        # Normalización de la respuesta de Hugging Face
+        if isinstance(data, list) and len(data) > 0:
+            # Si retorna una matriz 2D [[vector]], extraemos la primera fila
+            if isinstance(data[0], list):
+                return [float(x) for x in data[0]]
+            return [float(x) for x in data]
+        
+        raise ValueError("Formato de respuesta inesperado desde Hugging Face Inference API")
 
 
 def actualizar_resumen_conversacion(phone: str) -> str | None:
@@ -182,7 +211,7 @@ CONTEXTO ACTUAL DEL EMPRENDEDOR:
 
 Considera siempre este perfil para personalizar tu respuesta sin pedirle al usuario que se repita."""
 
-def obtener_contexto_rag(message: str, comuna_usuario: str) -> str:
+async def obtener_contexto_rag(message: str, comuna_usuario: str) -> str:
     """
     Devuelve el contexto RAG para la comuna correcta según el router de detección.
     Si la comuna detectada no está soportada, no consulta la BD (ahorra una query)
@@ -277,7 +306,7 @@ def detectar_comuna(message: str, comuna_perfil: str) -> dict:
     }
 
 
-def get_ai_response(user: dict, message: str, ollama_available: bool, background_tasks=None) -> str:
+async def get_ai_response(user: dict, message: str, ollama_available: bool, background_tasks=None) -> str:
     """
     RAG Avanzado compatible con Ollama y Groq Cloud.
     Consume el modelo de embeddings precargado en memoria global para evitar lags.
@@ -288,7 +317,7 @@ def get_ai_response(user: dict, message: str, ollama_available: bool, background
     comuna_usuario = (user.get("comuna") or "").lower().strip()
  
     # ── 1. RECUPERACIÓN RAG (con router de comuna integrado) ──
-    contexto_rag = obtener_contexto_rag(message, comuna_usuario)
+    contexto_rag = await obtener_contexto_rag(message, comuna_usuario)
  
     # ── 2. PROMPT AUMENTADO (perfil + progreso) ──
     roadmap = user.get("roadmap") or []
@@ -347,13 +376,13 @@ def get_ai_response(user: dict, message: str, ollama_available: bool, background
     return ai_text
 
 
-def process_ai_and_send(phone_whatsapp: str, phone_clean: str, message: str, get_user_fn, save_user_fn, twilio_client, ollama_available: bool):
+async def process_ai_and_send(phone_whatsapp: str, phone_clean: str, message: str, get_user_fn, save_user_fn, twilio_client, ollama_available: bool):
     """Process AI query and send response via Twilio (runs in background)."""
     user = get_user_fn(phone_clean)
     if not user:
         return
 
-    ai_response = get_ai_response(user, message, ollama_available)
+    ai_response = await get_ai_response(user, message, ollama_available)
     save_user_fn(phone_clean, user)
 
     if twilio_client:
