@@ -5,7 +5,7 @@ import threading
 import httpx
 import psycopg2
 
-from config import OLLAMA_URL, OLLAMA_MODEL, TWILIO_WHATSAPP_NUMBER, DB_DSN
+from config import OLLAMA_URL, OLLAMA_MODEL, TWILIO_WHATSAPP_NUMBER, DB_DSN, EMBEDDING_SERVICE_URL
 from db.users import save_message, get_messages, contar_mensajes
 import dependencies
 
@@ -73,6 +73,19 @@ def llamar_llm(messages: list, max_tokens: int = 600, temperature: float = 0.2) 
     except Exception as e:
         logger.error(f"💥 Error crítico en llamar_llm: {e}")
         return ""
+
+
+
+
+
+async def obtener_embedding_remoto(texto: str, prefix: str = "query") -> list[float]:
+    response = httpx.post(
+        f"{os.getenv('EMBEDDING_SERVICE_URL')}/embed",
+        json={"text": texto, "prefix": prefix},
+        timeout=15,
+    )
+    response.raise_for_status()
+    return response.json()["embedding"]
 
 
 def actualizar_resumen_conversacion(phone: str) -> str | None:
@@ -183,7 +196,7 @@ def obtener_contexto_rag(message: str, comuna_usuario: str) -> str:
  
     contexto = ""
     try:
-        query_vector = dependencies.embedding_model.encode(f"query: {message}").tolist()
+        query_vector = await obtener_embedding_remoto(message)
  
         conn = psycopg2.connect(DB_DSN)
         with conn.cursor() as cur:

@@ -64,22 +64,6 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("⚠️ Ollama not running - AI chat disabled.")
  
-    # 3. 📦 Eager Loading del Modelo de Embeddings (Evita el lag en consultas)
-    try:
-        logger.info("📦 Precargando Modelo de Embeddings en la RAM global...")
- 
-        # Oculta advertencias molestas de enlaces en Linux
-        os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
- 
-        # 💡 NOTA: Cambia local_files_only a True una vez que el modelo se haya bajado la primera vez
-        embedding_model = SentenceTransformer(
-            EMBEDDING_MODEL_NAME,
-            local_files_only=False
-        )
-        logger.info("✅ Modelo de Embeddings montado y listo en memoria RAM")
-    except Exception as e:
-        logger.error(f"❌ Error crítico al precargar SentenceTransformer: {e}")
-        embedding_model = None
  
     # 4. Inicialización de Supabase (cliente REST, para todo lo que no sea RAG)
     if SUPABASE_URL and SUPABASE_KEY:
