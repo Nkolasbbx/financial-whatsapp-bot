@@ -1,7 +1,6 @@
 import logging
 import httpx
 from contextlib import asynccontextmanager
-from sentence_transformers import SentenceTransformer
 from fastapi import FastAPI
 from twilio.rest import Client as TwilioClient
 from supabase import create_client, Client as SupabaseClient
@@ -26,7 +25,7 @@ logger = logging.getLogger("financial")
 twilio_client: TwilioClient | None = None
 ollama_available: bool = False
 supabase: SupabaseClient | None = None
-embedding_model: SentenceTransformer | None = None
+embedding_model = None
 db_pool: psycopg2.pool.SimpleConnectionPool | None = None  # NUEVO
  
  
