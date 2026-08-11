@@ -62,7 +62,7 @@ def test_rag_database(q: str):
 
 @router.post("/test/chat")
 async def test_chat(request: Request):
-    """Test endpoint - simulates WhatsApp without Twilio."""
+    """Test endpoint - simulates WhatsApp without calling Meta."""
     data = await request.json()
     phone = data.get("phone", "+56900000000")
     message = data.get("message", "")
@@ -105,7 +105,7 @@ async def test_chat_ui():
     <body>
         <div class="header">
             <h1>💰 FinancIAl - Test Mode</h1>
-            <p>Simula conversación WhatsApp sin Twilio</p>
+            <p>Simula una conversación de WhatsApp sin llamar a Meta</p>
         </div>
         <div class="chat" id="chat"></div>
         <div class="input-area">

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import threading
@@ -5,8 +6,15 @@ import threading
 import httpx
 import psycopg2
 
-from config import OLLAMA_URL, OLLAMA_MODEL, TWILIO_WHATSAPP_NUMBER, DB_DSN
-from db.users import save_message, get_messages, contar_mensajes
+from config import OLLAMA_URL, OLLAMA_MODEL, DB_DSN
+from db.users import (
+    contar_mensajes,
+    get_messages,
+    get_user,
+    save_message,
+    save_user,
+)
+from services.whatsapp import WhatsAppAPIError, send_text
 import dependencies
 
 logger = logging.getLogger("financial")
@@ -334,24 +342,27 @@ def get_ai_response(user: dict, message: str, ollama_available: bool, background
     return ai_text
 
 
-def process_ai_and_send(phone_whatsapp: str, phone_clean: str, message: str, get_user_fn, save_user_fn, twilio_client, ollama_available: bool):
-    """Process AI query and send response via Twilio (runs in background)."""
-    user = get_user_fn(phone_clean)
+async def process_ai_and_send(
+    phone: str,
+    message: str,
+    ollama_available: bool,
+):
+    """Genera la respuesta de IA en segundo plano y la envía mediante Meta."""
+    user = await asyncio.to_thread(get_user, phone)
     if not user:
+        logger.warning("No se encontró el usuario %s para responder con IA", phone)
         return
 
-    ai_response = get_ai_response(user, message, ollama_available)
-    save_user_fn(phone_clean, user)
+    ai_response = await asyncio.to_thread(
+        get_ai_response,
+        user,
+        message,
+        ollama_available,
+    )
+    await asyncio.to_thread(save_user, phone, user)
 
-    if twilio_client:
-        try:
-            twilio_client.messages.create(
-                body=ai_response,
-                from_=TWILIO_WHATSAPP_NUMBER,
-                to=phone_whatsapp,
-            )
-            logger.info(f"📤 AI Response sent to {phone_whatsapp}: {ai_response[:100]}...")
-        except Exception as e:
-            logger.error(f"Twilio send error: {e}")
-    else:
-        logger.info(f"📤 AI Response (no Twilio): {ai_response[:100]}...")
+    try:
+        await send_text(phone, ai_response)
+        logger.info("Respuesta de IA enviada a %s", phone)
+    except WhatsAppAPIError as error:
+        logger.error("No se pudo enviar la respuesta de IA a %s: %s", phone, error)

@@ -1,117 +1,129 @@
 import logging
-import httpx
-from contextlib import asynccontextmanager
-from sentence_transformers import SentenceTransformer
-from fastapi import FastAPI
-from twilio.rest import Client as TwilioClient
-from supabase import create_client, Client as SupabaseClient
-import psycopg2
-from psycopg2 import pool
 import os
+from contextlib import asynccontextmanager
 
+import httpx
+import psycopg2
+from fastapi import FastAPI
+from psycopg2 import pool
+from sentence_transformers import SentenceTransformer
+from supabase import Client as SupabaseClient
+from supabase import create_client
 
 from config import (
-    TWILIO_ACCOUNT_SID,
-    TWILIO_AUTH_TOKEN,
-    OLLAMA_URL,
-    OLLAMA_MODEL,     
-    SUPABASE_URL,     
-    SUPABASE_KEY,     
-    SUPABASE_DB_DSN,  # NUEVO: connection string directo a Postgres (para psycopg2 + pgvector)
     EMBEDDING_MODEL_NAME,
+    META_GRAPH_API_VERSION,
+    META_PHONE_NUMBER_ID,
+    META_WHATSAPP_TOKEN,
+    OLLAMA_MODEL,
+    OLLAMA_URL,
+    SUPABASE_DB_DSN,
+    SUPABASE_KEY,
+    SUPABASE_URL,
 )
- 
+
 logger = logging.getLogger("financial")
- 
-twilio_client: TwilioClient | None = None
+
 ollama_available: bool = False
 supabase: SupabaseClient | None = None
 embedding_model: SentenceTransformer | None = None
-db_pool: psycopg2.pool.SimpleConnectionPool | None = None  # NUEVO
- 
- 
+db_pool: pool.SimpleConnectionPool | None = None
+whatsapp_http_client: httpx.AsyncClient | None = None
+
+
+def meta_whatsapp_configured() -> bool:
+    """Indica si están presentes las credenciales mínimas para enviar mensajes."""
+    return all(
+        (
+            META_WHATSAPP_TOKEN,
+            META_PHONE_NUMBER_ID,
+            META_GRAPH_API_VERSION,
+        )
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize clients on startup."""
-    global twilio_client, ollama_available, supabase, embedding_model, db_pool
- 
-    # 1. Inicialización de Twilio
-    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-        twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        logger.info("✅ Twilio client initialized")
+    """Inicializa y cierra las dependencias compartidas de la aplicación."""
+    global ollama_available, supabase, embedding_model, db_pool
+    global whatsapp_http_client
+
+    if meta_whatsapp_configured():
+        whatsapp_http_client = httpx.AsyncClient(timeout=30)
+        logger.info("Meta WhatsApp Cloud API configurada")
     else:
-        logger.warning("⚠️ Twilio credentials not set - running in test mode")
- 
-    # 2. Inicialización de IA (Control Inteligente: Ollama vs Groq)
+        logger.warning(
+            "Faltan credenciales de Meta WhatsApp; el envío de mensajes está deshabilitado"
+        )
+
     if OLLAMA_URL and "groq.com" in OLLAMA_URL.lower():
-        # ☁️ MODO NUBE: Si la URL apunta a Groq, asumimos conexión exitosa sin buscar /api/tags
         ollama_available = True
-        logger.info(f"✅ Groq Cloud conectado exitosamente - model: {OLLAMA_MODEL}")
+        logger.info("Groq Cloud configurado - modelo: %s", OLLAMA_MODEL)
     else:
-        # 🚇 MODO LOCAL/NGROK: Flujo original para chequear el Ollama de tu compañero
         try:
             async with httpx.AsyncClient() as client:
-                r = await client.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-                if r.status_code == 200:
-                    models = [m["name"] for m in r.json().get("models", [])]
-                    if any(OLLAMA_MODEL in m for m in models):
+                response = await client.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+                if response.status_code == 200:
+                    models = [model["name"] for model in response.json().get("models", [])]
+                    if any(OLLAMA_MODEL in model for model in models):
                         ollama_available = True
-                        logger.info(f"✅ Ollama connected - model: {OLLAMA_MODEL}")
+                        logger.info("Ollama conectado - modelo: %s", OLLAMA_MODEL)
                     else:
-                        logger.warning(f"⚠️ Ollama running but model {OLLAMA_MODEL} not found. Available: {models}")
+                        logger.warning(
+                            "Ollama está activo, pero no contiene %s. Disponibles: %s",
+                            OLLAMA_MODEL,
+                            models,
+                        )
                 else:
-                    logger.warning(f"⚠️ Servidor de IA respondió con código {r.status_code}")
+                    logger.warning(
+                        "El servidor de IA respondió con código %s",
+                        response.status_code,
+                    )
         except Exception:
-            logger.warning("⚠️ Ollama not running - AI chat disabled.")
- 
-    # 3. 📦 Eager Loading del Modelo de Embeddings (Evita el lag en consultas)
+            logger.warning("Ollama no está disponible; el chat de IA queda deshabilitado")
+
     try:
-        logger.info("📦 Precargando Modelo de Embeddings en la RAM global...")
- 
-        # Oculta advertencias molestas de enlaces en Linux
+        logger.info("Precargando el modelo de embeddings")
         os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
- 
-        # 💡 NOTA: Cambia local_files_only a True una vez que el modelo se haya bajado la primera vez
         embedding_model = SentenceTransformer(
             EMBEDDING_MODEL_NAME,
-            local_files_only=False
+            local_files_only=False,
         )
-        logger.info("✅ Modelo de Embeddings montado y listo en memoria RAM")
-    except Exception as e:
-        logger.error(f"❌ Error crítico al precargar SentenceTransformer: {e}")
+        logger.info("Modelo de embeddings listo")
+    except Exception as error:
+        logger.error("No se pudo cargar el modelo de embeddings: %s", error)
         embedding_model = None
- 
-    # 4. Inicialización de Supabase (cliente REST, para todo lo que no sea RAG)
+
     if SUPABASE_URL and SUPABASE_KEY:
         try:
             supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-            logger.info("✅ Supabase client initialized")
-        except Exception as e:
-            logger.error(f"❌ Supabase error: {e}")
+            logger.info("Cliente de Supabase inicializado")
+        except Exception as error:
+            logger.error("No se pudo inicializar Supabase: %s", error)
     else:
-        logger.warning("⚠️ Supabase credentials not set - using in-memory storage")
- 
-    # 5. 🔌 Pool de conexiones directas a Postgres (para RAG con pgvector + full-text)
-    #    El cliente supabase-py (REST) no permite ejecutar SQL crudo con
-    #    operadores como <=> o ts_rank, por eso se necesita esta conexión aparte.
+        logger.warning("Supabase no está configurado; se usará almacenamiento en memoria")
+
     if SUPABASE_DB_DSN:
         try:
-            logger.info("🔌 Creando pool de conexiones Postgres para RAG...")
-            db_pool = psycopg2.pool.SimpleConnectionPool(
+            db_pool = pool.SimpleConnectionPool(
                 minconn=1,
                 maxconn=5,
                 dsn=SUPABASE_DB_DSN,
             )
-            logger.info("✅ Pool de conexiones Postgres listo.")
-        except Exception as e:
-            logger.error(f"❌ Error crítico al crear el pool de Postgres: {e}")
+            logger.info("Pool de conexiones Postgres listo")
+        except Exception as error:
+            logger.error("No se pudo crear el pool de Postgres: %s", error)
             db_pool = None
     else:
-        logger.warning("⚠️ SUPABASE_DB_DSN no configurado - búsqueda RAG (pgvector) deshabilitada")
- 
+        logger.warning("DB_DSN no configurado; la búsqueda RAG queda deshabilitada")
+
     yield
- 
-    # ── SHUTDOWN: se ejecuta al apagar la app ──
+
+    if whatsapp_http_client is not None:
+        await whatsapp_http_client.aclose()
+        whatsapp_http_client = None
+
     if db_pool is not None:
         db_pool.closeall()
-        logger.info("🔒 Pool de conexiones Postgres cerrado.")
+        db_pool = None
+        logger.info("Pool de conexiones Postgres cerrado")

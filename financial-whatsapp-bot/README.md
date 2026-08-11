@@ -1,205 +1,144 @@
-# 🚀 FinancIAl WhatsApp Bot - Guía de Setup
+# FinancIAl WhatsApp Bot
+
+Bot de WhatsApp para orientar a microemprendedores chilenos. Usa FastAPI, Meta WhatsApp Cloud API, Supabase y un modelo compatible con la API de OpenAI (Groq u Ollama).
 
 ## Arquitectura
 
-```
+```text
 Emprendedor (WhatsApp)
-        │
-        ▼
-   Twilio (webhook)
-        │
-        ▼
-   FastAPI Backend ─── OpenAI (GPT-4o-mini)
-        │
-        ▼
-   Supabase (perfiles + roadmaps)
+        |
+        v
+Meta WhatsApp Cloud API
+        |
+        v
+FastAPI ---- Groq/Ollama
+        |
+        v
+Supabase
 ```
 
-## Setup en 30 minutos
+## Preparación
 
-### Paso 1: Clonar y preparar el proyecto
+Desde esta carpeta:
 
-```bash
-# Clonar o copiar los archivos
-cd financial-whatsapp-bot
-
-# Crear entorno virtual
+```powershell
 python -m venv venv
-source venv/bin/activate        # Mac/Linux
-# venv\Scripts\activate         # Windows
-
-# Instalar dependencias
-pip install -r requirements.txt
-
-# Copiar variables de entorno
-cp .env.example .env
+.\venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-### Paso 2: Configurar OpenAI (5 min) o Modelo de nuestro compañero.
+Completa `.env` con tus credenciales reales. El archivo ya está ignorado por Git.
 
-#### En caso de utilizar el modelo de nuestro compañero; Solo modificar los siguientes valores en el .env
+## Variables de Meta
 
-1. OLLAMA_URL=urlllama -> Corresponde al endpoint de ngrok expuesto por nuestro compañero
-2. OLLAMA_MODEL=urlmodel -> Corresponde al modelo de llama que esta ejecutando nuestro compañero.
+```env
+WHATSAPP_PROVIDER=meta
+META_WHATSAPP_TOKEN=
+META_PHONE_NUMBER_ID=
+META_WABA_ID=
+META_WEBHOOK_VERIFY_TOKEN=
+META_APP_SECRET=
+META_GRAPH_API_VERSION=
+```
 
+- `META_WHATSAPP_TOKEN`: token temporal de pruebas o token permanente de un System User.
+- `META_PHONE_NUMBER_ID`: identificador del número, no el número visible.
+- `META_WABA_ID`: identificador de la cuenta de WhatsApp Business.
+- `META_WEBHOOK_VERIFY_TOKEN`: secreto definido por el equipo; debe coincidir con el ingresado al registrar el webhook.
+- `META_APP_SECRET`: clave secreta de la aplicación, usada para validar `X-Hub-Signature-256`.
+- `META_GRAPH_API_VERSION`: versión mostrada por Meta, incluyendo la `v` inicial.
 
-#### En caso de utilizar el Modelo de ngroq para testear seguir los siguientes pasos
-1. Ir a https://console.groq.com/
-2. Hacer click en "API Keys"
-3. Presionar "Create API Key"
-4. Darle un nombre
-6. Copiar la llave en el .env de tu proyecto -> IA_API_KEY=llave
-7. Dejar: OLLAMA_URL=https://api.groq.com/openai/v1 de esa forma.
-8. Dejar: OLLAMA_MODEL=llama-3.3-70b-versatile de esa forma.
+## Ejecutar localmente
 
+```powershell
+.\venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000
+```
 
+Verifica el estado en:
 
+```text
+http://127.0.0.1:8000/
+```
 
-> 💡 GPT-4o-mini cuesta ~$0.15 por 1M tokens. Para el MVP gastarán menos de $1.
+## Exponer el webhook
 
-### Paso 3: Configurar Twilio Sandbox (10 min)
+En otra terminal:
 
-1. Crear cuenta en https://www.twilio.com/ (gratis)
-2. Ir a **Console → Messaging → Try it out → Send a WhatsApp message**
-3. Seguir las instrucciones para activar el sandbox:
-   - Te darán un número (ej: +14155238886)
-   - Te darán un código (ej: "join bright-cloud")
-4. Copiar credenciales en `.env`:
-   - `TWILIO_ACCOUNT_SID` → está en el Dashboard principal
-   - `TWILIO_AUTH_TOKEN` → está en el Dashboard principal
-   - `TWILIO_WHATSAPP_NUMBER` → el número del sandbox
-
-### Paso 4: Exponer el servidor (ngrok)
-
-Twilio necesita una URL pública para enviar los webhooks.
-
-```bash
-# Instalar ngrok: https://ngrok.com/download
-# O con brew: brew install ngrok
-
-# En una terminal, levantar el servidor:
-uvicorn main:app --reload --port 8000
-
-# En OTRA terminal, exponer con ngrok:
+```powershell
 ngrok http 8000
 ```
 
-ngrok te dará una URL como `https://abc123.ngrok-free.app`
+Usa la URL HTTPS entregada por ngrok:
 
-### Paso 5: Conectar Twilio con tu servidor
-
-1. Ir a **Twilio Console → Messaging → Settings → WhatsApp Sandbox Settings**
-2. En "When a message comes in", poner:
-   ```
-   https://abc123.ngrok-free.app/webhook/whatsapp
-   ```
-   (usar TU url de ngrok)
-3. Método: **POST**
-4. Guardar
-
-### Paso 6: ¡Probar!
-
-1. Desde tu celular, envía el código de unión al sandbox
-   (ej: enviar "join bright-cloud" al +14155238886 por WhatsApp)
-2. Luego escribe "hola" y el bot debería responder
-
-Para que otros prueben (emprendedores, profesor), cada persona debe:
-1. Agregar el número del sandbox a sus contactos
-2. Enviar el código de unión
-3. ¡Listo! Ya pueden chatear con FinancIAl
-
----
-
-## Modo de prueba sin Twilio
-
-Si quieres probar la lógica sin WhatsApp:
-
-```bash
-# Solo necesitas OpenAI configurado (o ni eso para el flujo básico)
-   uvicorn main:app --reload --port 8000
+```text
+https://tu-subdominio.ngrok-free.app/webhook/whatsapp
 ```
 
-Abre http://localhost:8000/test/chat en el navegador.
-Ahí tienes un chat de prueba que simula la conversación.
+## Configurar el webhook en Meta
 
----
+En la aplicación de Meta, entra a **WhatsApp → Configuración → Webhook**.
 
-## Configurar Supabase (opcional)
+Configura:
 
-Sin Supabase, los datos se guardan en memoria (se pierden al reiniciar).
-Para persistencia:
+```text
+Callback URL: https://tu-subdominio.ngrok-free.app/webhook/whatsapp
+Verify token: el mismo valor de META_WEBHOOK_VERIFY_TOKEN
+```
 
-1. Crear proyecto en https://supabase.com/
-2. Ir a **SQL Editor** y ejecutar el contenido de `schema.sql`
-3. Ir a **Settings → API** y copiar:
-   - `SUPABASE_URL` → Project URL
-   - `SUPABASE_KEY` → anon/service_role key
-4. Pegar en `.env`
+Luego suscribe el campo `messages`.
 
----
+El backend expone:
 
-## Comandos disponibles en el bot
+- `GET /webhook/whatsapp`: responde al desafío de verificación de Meta.
+- `POST /webhook/whatsapp`: recibe mensajes y estados, y valida la firma de Meta.
 
-| Comando | Qué hace |
-|---------|----------|
+## Configuración de IA
+
+Para Groq:
+
+```env
+OLLAMA_URL=https://api.groq.com/openai/v1
+OLLAMA_MODEL=llama-3.3-70b-versatile
+IA_API_KEY=
+```
+
+Para Ollama o un túnel compatible, cambia URL y modelo y deja `IA_API_KEY` vacía.
+
+## Supabase
+
+```env
+SUPABASE_URL=
+SUPABASE_KEY=
+DB_DSN=
+```
+
+`SUPABASE_URL` y `SUPABASE_KEY` almacenan perfiles y mensajes. `DB_DSN` permite la búsqueda RAG directa en Postgres.
+
+## Comandos del bot
+
+| Comando | Acción |
+|---|---|
 | `hola` | Inicia el onboarding |
-| `mi roadmap` | Muestra el progreso de formalización |
-| `listo` | Marca el hito actual como completado |
-| `postular a fondo` | Simula postulación a fondos |
+| `mi roadmap` | Muestra el progreso |
+| `listo` | Completa el hito actual |
+| `postular a fondo` | Simula una postulación |
 | `ayuda` | Muestra el menú |
-| `reiniciar` | Borra el perfil y empieza de nuevo |
-| _(cualquier otra cosa)_ | Responde con IA contextualizada |
+| `reiniciar` | Reinicia el perfil |
+| Cualquier pregunta | Respuesta contextual con IA |
 
----
+## Producción
 
-## Deploy en producción (Vercel / Railway)
+Antes de producción:
 
-### Railway (recomendado para FastAPI)
+1. Sustituye el token temporal por un token permanente de Meta.
+2. Usa una URL HTTPS estable en lugar de ngrok.
+3. Registra el número definitivo de WhatsApp Business.
+4. Crea plantillas aprobadas para mensajes iniciados fuera de la ventana de atención.
+5. Configura los secretos únicamente como variables del entorno del hosting.
 
-1. Ir a https://railway.app/
-2. New Project → Deploy from GitHub
-3. Agregar variables de entorno
-4. Railway da una URL pública automáticamente
-5. Configurar esa URL en Twilio
+El `Procfile` permite iniciar la aplicación en plataformas compatibles:
 
-### Procfile para Railway:
-```
+```text
 web: uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
-
----
-
-## Estructura del proyecto
-
-```
-financial-whatsapp-bot/
-├── main.py              # Toda la lógica del bot
-├── requirements.txt     # Dependencias Python
-├── schema.sql           # Schema de Supabase
-├── .env.example         # Template de variables
-├── .env                 # Variables reales (NO subir a Git)
-├── Procfile             # Para deploy en Railway
-└── README.md            # Esta guía
-```
-
----
-
-## FAQ
-
-**¿Cuánto cuesta?**
-- Twilio sandbox: gratis
-- OpenAI GPT-4o-mini: ~$0.15/1M tokens (menos de $1 para el MVP)
-- Supabase: gratis (tier free hasta 500MB)
-- ngrok: gratis (tier free)
-- Total MVP: ~$0-1 USD
-
-**¿Cuántos usuarios soporta el sandbox?**
-- Sin límite de usuarios, pero cada uno debe enviar el código de unión
-- Para producción real, necesitan verificar su número de WhatsApp Business ($)
-
-**¿Los datos se pierden?**
-- Sin Supabase: sí, al reiniciar el servidor
-- Con Supabase: no, todo persiste
-
-**¿Puedo probar sin WhatsApp?**
-- Sí, abre http://localhost:8000/test/chat en el navegador
