@@ -1,4 +1,11 @@
 import logging
+import httpx
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from twilio.rest import Client as TwilioClient
+from supabase import create_client, Client as SupabaseClient
+import psycopg2
+from psycopg2 import pool
 import os
 from contextlib import asynccontextmanager
 
@@ -6,7 +13,6 @@ import httpx
 import psycopg2
 from fastapi import FastAPI
 from psycopg2 import pool
-from sentence_transformers import SentenceTransformer
 from supabase import Client as SupabaseClient
 from supabase import create_client
 
@@ -26,8 +32,9 @@ logger = logging.getLogger("financial")
 
 ollama_available: bool = False
 supabase: SupabaseClient | None = None
-embedding_model: SentenceTransformer | None = None
-db_pool: pool.SimpleConnectionPool | None = None
+embedding_model=None
+
+db_pool: psycopg2.pool.SimpleConnectionPool | None = None  # NUEVO
 whatsapp_http_client: httpx.AsyncClient | None = None
 
 
@@ -41,7 +48,8 @@ def meta_whatsapp_configured() -> bool:
         )
     )
 
-
+ 
+ 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Inicializa y cierra las dependencias compartidas de la aplicación."""
@@ -80,20 +88,8 @@ async def lifespan(app: FastAPI):
                         response.status_code,
                     )
         except Exception:
-            logger.warning("Ollama no está disponible; el chat de IA queda deshabilitado")
-
-    try:
-        logger.info("Precargando el modelo de embeddings")
-        os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-        embedding_model = SentenceTransformer(
-            EMBEDDING_MODEL_NAME,
-            local_files_only=False,
-        )
-        logger.info("Modelo de embeddings listo")
-    except Exception as error:
-        logger.error("No se pudo cargar el modelo de embeddings: %s", error)
-        embedding_model = None
-
+            logger.warning("⚠️ Ollama not running - AI chat disabled.")
+ 
     if SUPABASE_URL and SUPABASE_KEY:
         try:
             supabase = create_client(SUPABASE_URL, SUPABASE_KEY)

@@ -7,58 +7,6 @@ from db.users import get_user, save_user
 
 router = APIRouter()
 
-@router.get("/test/rag-database")
-def test_rag_database(q: str):
-    """
-    Endpoint rápido y autónomo para verificar la similitud de coseno en Supabase.
-    Invócalo desde el navegador: http://127.0.0.1:8000/test/rag-database?q=extintor
-    """
-    import psycopg2
-    import os
-    from sentence_transformers import SentenceTransformer
-    
-    try:
-        # Inicializamos el modelo de forma local y segura para el test
-        print("📦 Cargando modelo de embeddings para la prueba...")
-        model = SentenceTransformer("intfloat/multilingual-e5-base")
-            
-        # Generar el vector con la regla estricta del modelo
-        # (Asegúrate de incluir el prefijo 'query: ')
-        query_vector = model.encode(f"query: {q}").tolist()
-        
-        # Conectar a la DB usando tu .env con el proxy IPv4
-        db_url = os.getenv("DB_DSN")
-        print(f"🔌 Conectando a Supabase usando: {db_url[:35]}...")
-        
-        conn = psycopg2.connect(db_url)
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT content, metadata 
-                FROM documents 
-                ORDER BY embedding <=> %s::vector 
-                LIMIT 3;
-            """, (query_vector,))
-            rows = cur.fetchall()
-        conn.close()
-        
-        # Estructurar la respuesta para el navegador
-        resultados_limpios = []
-        for r in rows:
-            resultados_limpios.append({
-                "texto": r[0],
-                "metadata": r[1]
-            })
-            
-        return {
-            "status": "success",
-            "query_recibida": q,
-            "total_encontrado": len(rows),
-            "resultados": resultados_limpios
-        }
-    except Exception as e:
-        import logging
-        logging.error(f"❌ Error en el endpoint de prueba: {e}")
-        return {"status": "error", "detalle": str(e)}
 
 @router.post("/test/chat")
 async def test_chat(request: Request):

@@ -18,3 +18,8 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 DB_DSN = os.getenv("DB_DSN")
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 SUPABASE_DB_DSN = os.getenv("DB_DSN", "")
+
+
+HF_TOKEN= os.getenv("HF_TOKEN")
+MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
+
