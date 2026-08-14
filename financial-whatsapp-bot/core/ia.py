@@ -6,7 +6,7 @@ import threading
 import httpx
 import psycopg2
 
-from config import OLLAMA_URL, OLLAMA_MODEL, DB_DSN, MODEL_NAME,HF_TOKEN
+from config import OLLAMA_URL, OLLAMA_MODEL, DB_DSN, MODEL_NAME,HF_TOKEN,DEBUG,TWILIO_WHATSAPP_NUMBER
 from db.users import (
     contar_mensajes,
     get_messages,
@@ -89,15 +89,14 @@ def llamar_llm(messages: list, max_tokens: int = 600, temperature: float = 0.2) 
 
 async def obtener_embedding_remoto(texto: str, prefix: str = "query") -> list[float]:
     """
-    Genera el embedding usando la Inference API de Hugging Face de forma directa.
-    Aplica el prefijo 'query:' o 'passage:' necesario para la familia multilingual-e5.
+    Genera el embedding usando la nueva API de Inference Providers de Hugging Face
+    (feature-extraction, proveedor hf-inference), a través del router unificado.
     """
     hf_token = HF_TOKEN
-    model_name = MODEL_NAME 
-    
-    # URL del pipeline de extracción de características de Hugging Face
-    url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
-    
+    model_name = MODEL_NAME
+
+    # Nueva URL del router (api-inference.huggingface.co está deprecado)
+    url = f"https://router.huggingface.co/hf-inference/models/{model_name}/pipeline/feature-extraction"
     headers = {
         "Content-Type": "application/json"
     }
@@ -122,9 +121,8 @@ async def obtener_embedding_remoto(texto: str, prefix: str = "query") -> list[fl
             if isinstance(data[0], list):
                 return [float(x) for x in data[0]]
             return [float(x) for x in data]
-        
-        raise ValueError("Formato de respuesta inesperado desde Hugging Face Inference API")
 
+        raise ValueError("Formato de respuesta inesperado desde Hugging Face Inference API")
 
 def actualizar_resumen_conversacion(phone: str) -> str | None:
     """
@@ -385,6 +383,8 @@ async def get_ai_response(user: dict, message: str, ollama_available: bool, back
     return ai_text
 
 
+
+
 async def process_ai_and_send(
     phone: str,
     message: str,
@@ -397,17 +397,34 @@ async def process_ai_and_send(
         logger.warning("No se encontró el usuario %s para responder con IA", phone)
         return
 
-    ai_response = await asyncio.to_thread(
-        get_ai_response,
-        user,
-        message,
-        ollama_available,
-    )
+    ai_response = await get_ai_response(user, message, ollama_available)
     await asyncio.to_thread(save_user, phone, user)
-
 
     try:
         await send_text(phone, ai_response)
         logger.info("Respuesta de IA enviada a %s", phone)
     except WhatsAppAPIError as error:
         logger.error("No se pudo enviar la respuesta de IA a %s: %s", phone, error)
+
+
+async def process_ai_and_send_Twillio(phone_whatsapp: str, phone_clean: str, message: str, get_user_fn, save_user_fn, twilio_client, ollama_available: bool):
+    """Process AI query and send response via Twilio (runs in background)."""
+    user = get_user_fn(phone_clean)
+    if not user:
+        return
+
+    ai_response = await get_ai_response(user, message, ollama_available)
+    save_user_fn(phone_clean, user)
+
+    if twilio_client:
+        try:
+            twilio_client.messages.create(
+                body=ai_response,
+                from_=TWILIO_WHATSAPP_NUMBER,
+                to=phone_whatsapp,
+            )
+            logger.info(f"📤 AI Response sent to {phone_whatsapp}: {ai_response[:100]}...")
+        except Exception as e:
+            logger.error(f"Twilio send error: {e}")
+    else:
+        logger.info(f"📤 AI Response (no Twilio): {ai_response[:100]}...")

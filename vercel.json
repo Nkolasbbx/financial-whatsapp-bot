@@ -1,0 +1,17 @@
+{
+  "builds": [
+    {
+      "src": "financial-whatsapp-bot/main.py",
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": "financial-whatsapp-bot/**"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "financial-whatsapp-bot/main.py"
+    }
+  ]
+}

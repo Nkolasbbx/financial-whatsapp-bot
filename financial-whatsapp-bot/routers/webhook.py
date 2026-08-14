@@ -6,8 +6,8 @@ from collections import deque
 import dependencies
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 
-from config import META_WEBHOOK_VERIFY_TOKEN
-from core.ia import process_ai_and_send
+from config import META_WEBHOOK_VERIFY_TOKEN, DEBUG
+from core.ia import process_ai_and_send,process_ai_and_send_Twillio
 from services.message_router import route_message, split_message
 from services.whatsapp import (
     WhatsAppAPIError,
@@ -54,6 +54,9 @@ def _extract_message_text(incoming: dict) -> str | None:
         reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
         return (reply.get("title") or reply.get("id") or "").strip() or None
     return None
+
+
+
 
 
 @router.get("/webhook/whatsapp")

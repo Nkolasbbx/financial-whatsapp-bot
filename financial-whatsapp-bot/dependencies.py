@@ -26,6 +26,8 @@ from config import (
     SUPABASE_DB_DSN,
     SUPABASE_KEY,
     SUPABASE_URL,
+    TWILIO_ACCOUNT_SID,
+    TWILIO_AUTH_TOKEN,
 )
 
 logger = logging.getLogger("financial")
@@ -33,10 +35,15 @@ logger = logging.getLogger("financial")
 ollama_available: bool = False
 supabase: SupabaseClient | None = None
 embedding_model=None
+twilio_client: TwilioClient | None = None
 
 db_pool: psycopg2.pool.SimpleConnectionPool | None = None  # NUEVO
 whatsapp_http_client: httpx.AsyncClient | None = None
 
+
+def twilio_configured() -> bool:
+    """Indica si están presentes las credenciales mínimas de Twilio."""
+    return all((TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
 
 def meta_whatsapp_configured() -> bool:
     """Indica si están presentes las credenciales mínimas para enviar mensajes."""
@@ -54,7 +61,7 @@ def meta_whatsapp_configured() -> bool:
 async def lifespan(app: FastAPI):
     """Inicializa y cierra las dependencias compartidas de la aplicación."""
     global ollama_available, supabase, embedding_model, db_pool
-    global whatsapp_http_client
+    global whatsapp_http_client, twilio_client
 
     if meta_whatsapp_configured():
         whatsapp_http_client = httpx.AsyncClient(timeout=30)
@@ -63,6 +70,16 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "Faltan credenciales de Meta WhatsApp; el envío de mensajes está deshabilitado"
         )
+
+    if twilio_configured():
+        try:
+            twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            logger.info("Cliente de Twilio inicializado")
+        except Exception as error:
+            logger.error("No se pudo inicializar Twilio: %s", error)
+            twilio_client = None
+    else:
+        logger.warning("Twilio no está configurado; el modo DEBUG con Twilio no funcionará")
 
     if OLLAMA_URL and "groq.com" in OLLAMA_URL.lower():
         ollama_available = True
