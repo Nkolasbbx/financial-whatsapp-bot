@@ -4,7 +4,6 @@ import logging
 
 import httpx
 
-import dependencies
 from config import (
     META_APP_SECRET,
     META_GRAPH_API_VERSION,
@@ -40,6 +39,8 @@ def verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
 
 
 def _messages_url() -> str:
+    import dependencies
+
     if not dependencies.meta_whatsapp_configured():
         raise WhatsAppAPIError("Meta WhatsApp Cloud API no está configurada")
 
@@ -50,6 +51,8 @@ def _messages_url() -> str:
 
 
 async def _post_message(payload: dict) -> dict:
+    import dependencies
+
     headers = {
         "Authorization": f"Bearer {META_WHATSAPP_TOKEN}",
         "Content-Type": "application/json",
@@ -70,7 +73,16 @@ async def _post_message(payload: dict) -> dict:
             error.response.status_code,
             error.response.text,
         )
-        raise WhatsAppAPIError("Meta rechazó el envío del mensaje") from error
+        try:
+            meta_error = error.response.json().get("error", {})
+            detail = meta_error.get("message", "Error sin detalle")
+            code = meta_error.get("code", error.response.status_code)
+        except (ValueError, AttributeError):
+            detail = "Error sin detalle"
+            code = error.response.status_code
+        raise WhatsAppAPIError(
+            f"Meta rechazó el envío ({code}): {detail}"
+        ) from error
     except httpx.HTTPError as error:
         logger.error("Error de conexión con Meta WhatsApp: %s", error)
         raise WhatsAppAPIError("No fue posible conectar con Meta WhatsApp") from error
@@ -109,6 +121,8 @@ async def send_template(
     recipient = normalize_phone(phone).removeprefix("+")
     if not recipient:
         raise WhatsAppAPIError("El teléfono destinatario no es válido")
+    if not template_name.strip() or not language_code.strip():
+        raise WhatsAppAPIError("La plantilla o su idioma no son válidos")
 
     template: dict = {
         "name": template_name,
@@ -119,7 +133,7 @@ async def send_template(
             {
                 "type": "body",
                 "parameters": [
-                    {"type": "text", "text": value}
+                    {"type": "text", "text": str(value)}
                     for value in parameters
                 ],
             }
@@ -133,3 +147,11 @@ async def send_template(
             "template": template,
         }
     )
+
+
+def extract_provider_message_id(response: dict) -> str | None:
+    """Extrae el wamid que Meta devuelve cuando acepta el envío."""
+    messages = response.get("messages") or []
+    if not messages:
+        return None
+    return messages[0].get("id")

@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, R
 
 from config import META_WEBHOOK_VERIFY_TOKEN, DEBUG
 from core.ia import process_ai_and_send,process_ai_and_send_Twillio
+from db.reminders import update_reminder_delivery_status
 from services.message_router import route_message, split_message
 from services.whatsapp import (
     WhatsAppAPIError,
@@ -108,6 +109,22 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                     status.get("status", "unknown"),
                     status.get("id", "unknown"),
                 )
+                errors = status.get("errors") or []
+                failure_reason = json.dumps(errors, ensure_ascii=False) if errors else None
+                try:
+                    await asyncio.to_thread(
+                        update_reminder_delivery_status,
+                        status.get("id", ""),
+                        status.get("status", ""),
+                        status.get("timestamp"),
+                        failure_reason,
+                    )
+                except Exception as error:
+                    logger.error(
+                        "No se pudo actualizar el estado del recordatorio %s: %s",
+                        status.get("id", "unknown"),
+                        error,
+                    )
 
             for incoming in value.get("messages", []):
                 message_id = incoming.get("id", "")
@@ -134,7 +151,13 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                     continue
 
                 logger.info("Mensaje de WhatsApp recibido desde %s", phone)
-                response_text = await asyncio.to_thread(route_message, phone, message)
+                reply_to_message_id = incoming.get("context", {}).get("id")
+                response_text = await asyncio.to_thread(
+                    route_message,
+                    phone,
+                    message,
+                    reply_to_message_id,
+                )
 
                 try:
                     if response_text == "__AI_QUERY__":

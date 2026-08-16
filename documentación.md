@@ -613,6 +613,8 @@ Si Supabase no está configurado, los perfiles se almacenan temporalmente en mem
 | `POST` | `/test/chat` | Simulación de una conversación sin llamar a Meta. |
 | `GET` | `/test/rag-database?q=...` | Prueba directa de recuperación vectorial. |
 | `GET` | `/test/resumen/{phone}` | Consulta los últimos mensajes del usuario. |
+| `GET` | `/internal/reminders/run` | Ejecución de Vercel Cron con `Authorization: Bearer CRON_SECRET`. |
+| `POST` | `/internal/reminders/run` | Ejecución manual con la misma autorización. |
 
 Los endpoints de prueba no deberían exponerse públicamente sin protección en producción.
 
@@ -636,27 +638,22 @@ Los mensajes proactivos fuera de la ventana de atención deben utilizar una plan
 
 ## 17. Recordatorios proactivos
 
-La historia de recordatorios después de tres días todavía no está implementada. La función de envío de plantillas ya existe, pero faltan:
+La funcionalidad está implementada con consentimiento explícito, cálculo de
+inactividad, tres intentos, pausa automática y persistencia en
+`reminder_deliveries`. Los recordatorios 1 y 2 usan
+`recordatorio_roadmap`; el tercero usa `last_reminder_roadmap`.
 
-- Campos de última actividad del roadmap.
-- Contador de recordatorios.
-- Pausa después del tercer envío.
-- Servicio programado o cron.
-- Plantillas aprobadas.
-- Consentimiento explícito del usuario.
-- Persistencia idempotente para evitar duplicados.
-
-Diseño sugerido:
+La rutina se ejecuta mediante:
 
 ```text
-roadmap_last_activity_at
-roadmap_last_reminder_at
-roadmap_reminder_count
-roadmap_reminders_paused
-roadmap_reminder_pending
-reminder_opt_in
-reminder_opt_in_at
+GET /internal/reminders/run
+Authorization: Bearer CRON_SECRET
 ```
+
+El mismo endpoint acepta `POST` para pruebas manuales. `vercel.json` programa
+la llamada diaria a las 13:00 UTC. En producción deben configurarse
+`REMINDERS_ENABLED=true`, `SUPABASE_SERVICE_ROLE_KEY`, las plantillas y un
+`CRON_SECRET` largo en las variables de entorno de Vercel.
 
 ## 18. Despliegue
 
@@ -675,6 +672,8 @@ Para producción se requiere:
 - Método de pago.
 - Endpoints de prueba restringidos o eliminados.
 - Logs y monitoreo.
+- `CRON_SECRET` configurado en Vercel.
+- Cron diario visible en **Settings → Cron Jobs**.
 
 Al desplegar más de un proceso, la deduplicación en memoria del webhook deja de ser suficiente.
 
@@ -760,10 +759,12 @@ Revisar:
 
 - La deduplicación de webhooks es solo en memoria y conserva hasta 10.000 IDs recientes.
 - Con varios workers o reinicios puede procesarse nuevamente un webhook repetido.
-- Los estados de entrega solo se registran en logs, no en base de datos.
-- No existe persistencia del `wamid` de Meta.
+- Los estados de los recordatorios y su `wamid` se guardan en
+  `reminder_deliveries`; otros mensajes todavía no tienen esta trazabilidad.
 - Los mensajes multimedia no se procesan.
-- Los recordatorios aún no están implementados.
+- Vercel no reintenta automáticamente una ejecución fallida del cron.
+- Una entrega interrumpida justo después del envío puede quedar en estado
+  `pending` y requiere una estrategia de recuperación para mayor robustez.
 - El token temporal debe sustituirse por uno permanente.
 - Los endpoints de prueba están públicos si no se protegen en despliegue.
 - Algunas operaciones de Supabase usan un cliente síncrono y se ejecutan en threads desde el webhook.
@@ -782,6 +783,9 @@ Revisar:
 - [ ] Confirmar suscripción al campo `messages`.
 - [ ] Usar URL HTTPS estable.
 - [ ] Configurar secretos en el hosting.
+- [ ] Configurar `CRON_SECRET` en Vercel.
+- [ ] Confirmar `/internal/reminders/run` en **Settings → Cron Jobs**.
+- [ ] Revisar logs y una ejecución controlada del cron.
 - [ ] Crear plantillas de recordatorio.
 - [ ] Registrar consentimiento del usuario.
 - [ ] Proteger endpoints de prueba.

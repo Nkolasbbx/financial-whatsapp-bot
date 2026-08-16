@@ -25,6 +25,7 @@ from config import (
     OLLAMA_URL,
     SUPABASE_DB_DSN,
     SUPABASE_KEY,
+    SUPABASE_SERVICE_ROLE_KEY,
     SUPABASE_URL,
     TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN,
@@ -34,6 +35,7 @@ logger = logging.getLogger("financial")
 
 ollama_available: bool = False
 supabase: SupabaseClient | None = None
+supabase_admin: SupabaseClient | None = None
 embedding_model=None
 twilio_client: TwilioClient | None = None
 
@@ -60,7 +62,7 @@ def meta_whatsapp_configured() -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Inicializa y cierra las dependencias compartidas de la aplicación."""
-    global ollama_available, supabase, embedding_model, db_pool
+    global ollama_available, supabase, supabase_admin, embedding_model, db_pool
     global whatsapp_http_client, twilio_client
 
     if meta_whatsapp_configured():
@@ -116,6 +118,24 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Supabase no está configurado; se usará almacenamiento en memoria")
 
+    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+        try:
+            supabase_admin = create_client(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+            )
+            logger.info("Cliente administrativo de Supabase inicializado")
+        except Exception as error:
+            logger.error(
+                "No se pudo inicializar Supabase administrativo: %s",
+                error,
+            )
+    else:
+        logger.warning(
+            "SUPABASE_SERVICE_ROLE_KEY no configurada; "
+            "los recordatorios automáticos quedan deshabilitados"
+        )
+
     if SUPABASE_DB_DSN:
         try:
             db_pool = pool.SimpleConnectionPool(
@@ -140,3 +160,5 @@ async def lifespan(app: FastAPI):
         db_pool.closeall()
         db_pool = None
         logger.info("Pool de conexiones Postgres cerrado")
+
+    supabase_admin = None

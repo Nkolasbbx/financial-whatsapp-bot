@@ -123,7 +123,9 @@ def process_onboarding(user: dict, message: str, save_user_fn) -> str:
             "¿Qué quieres hacer ahora? Escribe:\n\n"
             "📋 *\"mi roadmap\"* → ver tus pasos\n"
             "🎯 *\"postular a fondo\"* → simular postulación\n"
-            "💬 O simplemente *hazme cualquier pregunta* sobre tu negocio"
+            "💬 O simplemente *hazme cualquier pregunta* sobre tu negocio\n\n"
+            "🔔 Si quieres que te recuerde tu siguiente hito cuando lleves "
+            "3 días sin avanzar, escribe *\"activar recordatorios\"*."
         )
 
     return None

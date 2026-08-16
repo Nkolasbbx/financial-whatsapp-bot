@@ -22,6 +22,7 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 DB_DSN = os.getenv("DB_DSN")
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 SUPABASE_DB_DSN = os.getenv("DB_DSN")
@@ -29,4 +30,42 @@ DB_DSN = SUPABASE_DB_DSN
 
 HF_TOKEN= os.getenv("HF_TOKEN")
 MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
+
+REMINDERS_ENABLED = (
+    os.getenv("REMINDERS_ENABLED", "false").strip().lower() == "true"
+)
+REMINDER_TEMPLATE_NAME = os.getenv(
+    "REMINDER_TEMPLATE_NAME",
+    "recordatorio_roadmap",
+).strip()
+REMINDER_FINAL_TEMPLATE_NAME = os.getenv(
+    "REMINDER_FINAL_TEMPLATE_NAME",
+    REMINDER_TEMPLATE_NAME,
+).strip()
+REMINDER_TEMPLATE_LANGUAGE = os.getenv(
+    "REMINDER_TEMPLATE_LANGUAGE",
+    "es_CL",
+).strip()
+REMINDER_RECIPIENT_LABEL = os.getenv(
+    "REMINDER_RECIPIENT_LABEL",
+    "emprendedor/a",
+).strip()
+REMINDER_DAYS = int(os.getenv("REMINDER_DAYS", "3"))
+REMINDER_TIMEZONE = os.getenv(
+    "REMINDER_TIMEZONE",
+    "America/Santiago",
+).strip()
+REMINDER_BATCH_SIZE = int(os.getenv("REMINDER_BATCH_SIZE", "100"))
+# Vercel envía CRON_SECRET como `Authorization: Bearer ...` al ejecutar el cron.
+# El nombre anterior se mantiene solo como respaldo para entornos locales ya creados.
+CRON_SECRET = (
+    os.getenv("CRON_SECRET")
+    or os.getenv("REMINDER_CRON_SECRET", "")
+).strip()
+
+if REMINDER_DAYS < 1:
+    raise ValueError("REMINDER_DAYS debe ser mayor que cero")
+
+if REMINDER_BATCH_SIZE < 1:
+    raise ValueError("REMINDER_BATCH_SIZE debe ser mayor que cero")
 

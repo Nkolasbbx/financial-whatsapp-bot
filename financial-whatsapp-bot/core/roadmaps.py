@@ -40,6 +40,14 @@ ROADMAPS = {
 }
 
 
+def get_pending_milestone(user: dict) -> dict | None:
+    """Devuelve el primer hito pendiente del roadmap."""
+    return next(
+        (hito for hito in user.get("roadmap", []) if not hito.get("done")),
+        None,
+    )
+
+
 def get_roadmap_text(user: dict) -> str:
     """Generate roadmap status message."""
     roadmap = user.get("roadmap", [])
@@ -66,7 +74,7 @@ def get_roadmap_text(user: dict) -> str:
         if not h["done"]:
             lines.append(f"   ↳ _{h['desc']}_\n")
 
-    next_hito = next((h for h in roadmap if not h.get("done")), None)
+    next_hito = get_pending_milestone(user)
     if next_hito:
         lines.append(f"\n👉 *Tu siguiente paso:* {next_hito['title']}")
         lines.append(f"\nEscribe *\"listo\"* cuando completes este hito, o *\"ayuda\"* si necesitas orientación.")
@@ -80,7 +88,7 @@ def get_roadmap_text(user: dict) -> str:
 def mark_hito_done(user: dict, save_user_fn) -> str:
     """Mark current hito as done and show next."""
     roadmap = user.get("roadmap", [])
-    current = next((h for h in roadmap if not h.get("done")), None)
+    current = get_pending_milestone(user)
 
     if not current:
         return "🎉 ¡Ya completaste todos los hitos! No hay más pendientes."
@@ -92,7 +100,7 @@ def mark_hito_done(user: dict, save_user_fn) -> str:
     total = len(roadmap)
     pct = round((completed / total) * 100)
 
-    next_hito = next((h for h in roadmap if not h.get("done")), None)
+    next_hito = get_pending_milestone(user)
 
     if next_hito:
         return (
