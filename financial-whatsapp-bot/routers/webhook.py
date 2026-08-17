@@ -7,12 +7,14 @@ import dependencies
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 
 from config import META_WEBHOOK_VERIFY_TOKEN, DEBUG
-from core.ia import process_ai_and_send,process_ai_and_send_Twillio
+from core.ia import process_ai_and_send, process_ai_and_send_Twillio
 from db.reminders import update_reminder_delivery_status
 from services.message_router import route_message, split_message
 from services.whatsapp import (
     WhatsAppAPIError,
     normalize_phone,
+    send_interactive_buttons,
+    send_interactive_list,
     send_text,
     verify_webhook_signature,
 )
@@ -43,7 +45,12 @@ def _remember_message(message_id: str) -> bool:
 
 
 def _extract_message_text(incoming: dict) -> str | None:
-    """Extrae texto normal o la etiqueta de una respuesta interactiva."""
+    """Extrae texto normal o el id/etiqueta de una respuesta interactiva.
+
+    Para botones y listas se prioriza el `id` (p. ej. "rubro_textil",
+    "sii_si") sobre el título visible, porque la lógica de onboarding
+    matchea por id cuando la respuesta vino de un botón/lista.
+    """
     message_type = incoming.get("type")
     if message_type == "text":
         return incoming.get("text", {}).get("body", "").strip() or None
@@ -53,11 +60,43 @@ def _extract_message_text(incoming: dict) -> str | None:
     if message_type == "interactive":
         interactive = incoming.get("interactive", {})
         reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
-        return (reply.get("title") or reply.get("id") or "").strip() or None
+        return (reply.get("id") or reply.get("title") or "").strip() or None
     return None
 
 
+async def _send_response(phone: str, result) -> None:
+    """Despacha la respuesta de route_message según su tipo.
 
+    `result` puede ser:
+      - str: texto plano (compatibilidad con flujos existentes)
+      - dict {"type": "text", "body": ...}
+      - dict {"type": "buttons", "body": ..., "options": [(id, titulo), ...]}
+      - dict {"type": "list", "body": ..., "button_text": ..., "options": [(id, titulo), ...]}
+    """
+    if isinstance(result, dict):
+        result_type = result.get("type", "text")
+        body = result.get("body", "")
+
+        if result_type == "buttons":
+            await send_interactive_buttons(phone, body, result["options"])
+            return
+        if result_type == "list":
+            await send_interactive_list(
+                phone,
+                body,
+                result.get("button_text", "Elegir"),
+                result["options"],
+            )
+            return
+
+        # type == "text" u otro no reconocido: cae a texto plano
+        for part in split_message(body, 4000):
+            await send_text(phone, part)
+        return
+
+    # compatibilidad: result sigue siendo un string plano
+    for part in split_message(result, 4000):
+        await send_text(phone, part)
 
 
 @router.get("/webhook/whatsapp")
@@ -152,7 +191,7 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
 
                 logger.info("Mensaje de WhatsApp recibido desde %s", phone)
                 reply_to_message_id = incoming.get("context", {}).get("id")
-                response_text = await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     route_message,
                     phone,
                     message,
@@ -160,7 +199,7 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                 )
 
                 try:
-                    if response_text == "__AI_QUERY__":
+                    if result == "__AI_QUERY__":
                         await send_text(phone, "🤔 Déjame pensar tu respuesta...")
                         background_tasks.add_task(
                             process_ai_and_send,
@@ -169,8 +208,7 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                             dependencies.ollama_available,
                         )
                     else:
-                        for part in split_message(response_text, 4000):
-                            await send_text(phone, part)
+                        await _send_response(phone, result)
                         logger.info("Respuesta enviada a %s", phone)
                 except WhatsAppAPIError as error:
                     logger.error("No se pudo enviar la respuesta a %s: %s", phone, error)

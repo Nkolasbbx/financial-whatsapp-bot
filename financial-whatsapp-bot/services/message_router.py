@@ -1,7 +1,14 @@
 import logging
 
 from db.users import get_user, save_user
-from core.roadmaps import get_roadmap_text, mark_hito_done
+from core.roadmaps import (
+    get_roadmap_text,
+    mark_hito_done,
+    revert_last_hito,
+    HITO_LISTO_ID,
+    HITO_AYUDA_ID,
+    HITO_VOLVER_ID,
+)
 from core.fondos import simulate_funds
 from core.onboarding import process_onboarding
 from db.reminders import (
@@ -12,6 +19,34 @@ from db.reminders import (
 )
 
 logger = logging.getLogger("financial")
+
+# ids usados por el menú interactivo (lista de Meta). Cada id se trata
+# como equivalente a su comando de texto correspondiente.
+MENU_OPTIONS = [
+    ("menu_roadmap", "📋 Mi roadmap"),
+    ("menu_listo", "✅ Marcar hito listo"),
+    ("menu_fondo", "🎯 Postular a fondo"),
+    ("menu_recordatorios_on", "🔔 Activar recordatorios"),
+    ("menu_recordatorios_off", "🔕 Pausar recordatorios"),
+    ("menu_reiniciar", "🔄 Reiniciar"),
+]
+
+
+def _menu_widget() -> dict:
+    opciones_texto = "\n".join(f"• {label}" for _, label in MENU_OPTIONS)
+    body = (
+        "📱 *Menú de FinancIAl*\n\n"
+        "Estas son tus opciones:\n\n"
+        f"{opciones_texto}\n\n"
+        "Tócalas en la lista de abajo, o simplemente *escribe tu pregunta* "
+        "y te respondo con IA 🤖"
+    )
+    return {
+        "type": "list",
+        "body": body,
+        "button_text": "Ver opciones",
+        "options": MENU_OPTIONS,
+    }
 
 
 def _record_reply_safely(phone: str, reply_to_message_id: str | None) -> bool:
@@ -33,8 +68,18 @@ def route_message(
     phone: str,
     message: str,
     reply_to_message_id: str | None = None,
-) -> str:
-    """Main router: determines what to do with each incoming message."""
+):
+    """Main router: determines what to do with each incoming message.
+
+    Devuelve un str (texto plano), el string "__AI_QUERY__", o un dict
+    {"type": "text"|"buttons"|"list", "body": ..., ...} cuando la respuesta
+    viene del flujo de onboarding, del menú, o de los botones del roadmap
+    (listo, ayuda, deshacer paso).
+
+    Los ids de botones (menu_roadmap, hito_listo, hito_ayuda, hito_volver,
+    etc.) se tratan como equivalentes a sus comandos de texto para que
+    funcione igual toque el usuario un botón o escriba el comando.
+    """
     message = message.strip()
     msg_lower = message.lower()
 
@@ -52,7 +97,7 @@ def route_message(
             return response
 
     # ── Reset command ──
-    if msg_lower in ["reiniciar", "reset", "empezar de nuevo"]:
+    if msg_lower in ["reiniciar", "reset", "empezar de nuevo", "menu_reiniciar"]:
         from db.users import users_db
         users_db.pop(phone, None)
         new_user = {"phone": phone, "onboarding_step": 0}
@@ -63,6 +108,7 @@ def route_message(
         "activar recordatorios",
         "acepto recordatorios",
         "reanudar recordatorios",
+        "menu_recordatorios_on",
     }
     if msg_lower in activation_commands:
         try:
@@ -79,13 +125,14 @@ def route_message(
             "🔔 *Recordatorios activados.*\n\n"
             "Si pasan 3 días sin que avances en tu roadmap, te enviaré un "
             "recordatorio por WhatsApp. Puedes pausarlos cuando quieras "
-            "escribiendo *\"pausar recordatorios\"*."
+            "escribiendo *\"pausar recordatorios\"* o desde el menú."
         )
 
     pause_commands = {
         "pausar recordatorios",
         "desactivar recordatorios",
         "no quiero recordatorios",
+        "menu_recordatorios_off",
     }
     if msg_lower.rstrip(".") in pause_commands:
         _record_reply_safely(phone, reply_to_message_id)
@@ -102,7 +149,7 @@ def route_message(
         return (
             "🔕 *Recordatorios pausados.*\n\n"
             "Puedes volver a activarlos cuando quieras escribiendo "
-            "*\"activar recordatorios\"*."
+            "*\"activar recordatorios\"* o desde el menú."
         )
 
     replied_to_reminder = False
@@ -113,41 +160,40 @@ def route_message(
         )
 
     # ── Roadmap commands ──
-    roadmap_triggers = ["roadmap", "mi roadmap", "hitos", "qué me falta", "que me falta", "formalizar", "mis pasos", "mi ruta"]
+    roadmap_triggers = ["roadmap", "mi roadmap", "hitos", "qué me falta", "que me falta", "formalizar", "mis pasos", "mi ruta", "menu_roadmap"]
     if any(trigger in msg_lower for trigger in roadmap_triggers):
         _record_activity_safely(phone)
         return get_roadmap_text(user)
 
     # ── Mark hito done ──
-    done_triggers = ["listo", "hecho", "completado", "ya lo hice", "ya está", "ya esta", "siguiente"]
+    done_triggers = ["listo", "hecho", "completado", "ya lo hice", "ya está", "ya esta", "siguiente", "menu_listo", HITO_LISTO_ID]
     if any(trigger in msg_lower for trigger in done_triggers):
         response = mark_hito_done(user, save_user)
         _record_activity_safely(phone)
         return response
+
+    # ── Revert last hito (deshacer paso) ──
+    if msg_lower == HITO_VOLVER_ID:
+        response = revert_last_hito(user, save_user)
+        _record_activity_safely(phone)
+        return response
+
+    # ── Ayuda contextual del hito → por ahora abre el menú general ──
+    if msg_lower == HITO_AYUDA_ID:
+        return _menu_widget()
 
     if replied_to_reminder:
         _record_activity_safely(phone)
         return get_roadmap_text(user)
 
     # ── Fund simulation ──
-    fund_triggers = ["fondo", "postular", "capital semilla", "capital abeja", "sercotec", "corfo", "financiamiento"]
+    fund_triggers = ["fondo", "postular", "capital semilla", "capital abeja", "sercotec", "corfo", "financiamiento", "menu_fondo"]
     if any(trigger in msg_lower for trigger in fund_triggers):
         return simulate_funds(user)
 
-    # ── Help ──
+    # ── Help / menu ──
     if msg_lower in ["ayuda", "help", "menu", "menú", "opciones"]:
-        return (
-            "📱 *Menú de FinancIAl*\n\n"
-            "Escribe cualquiera de estas opciones:\n\n"
-            "📋 *\"mi roadmap\"* → ver tu progreso de formalización\n"
-            "✅ *\"listo\"* → marcar el hito actual como completado\n"
-            "🎯 *\"postular a fondo\"* → simular postulación a fondos\n"
-            "❓ *\"ayuda\"* → ver este menú\n"
-            "🔄 *\"reiniciar\"* → empezar de nuevo\n\n"
-            "🔔 *\"activar recordatorios\"* → recibir avisos de inactividad\n"
-            "🔕 *\"pausar recordatorios\"* → detener los avisos\n\n"
-            "💬 O simplemente *escribe tu pregunta* y te respondo con IA 🤖"
-        )
+        return _menu_widget()
 
     # ── AI Chat (default) ──
     return "__AI_QUERY__"

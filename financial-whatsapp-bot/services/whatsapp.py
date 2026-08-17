@@ -155,3 +155,88 @@ def extract_provider_message_id(response: dict) -> str | None:
     if not messages:
         return None
     return messages[0].get("id")
+
+
+
+
+async def send_interactive_buttons(
+    phone: str,
+    body_text: str,
+    buttons: list[tuple[str, str]],
+) -> dict:
+    """Envía hasta 3 botones de respuesta rápida (reply buttons).
+
+    `buttons` es una lista de tuplas (id, titulo). El titulo tiene
+    un límite de 20 caracteres impuesto por WhatsApp Cloud API.
+    """
+    recipient = normalize_phone(phone).removeprefix("+")
+    if not recipient:
+        raise WhatsAppAPIError("El teléfono destinatario no es válido")
+    if not buttons or len(buttons) > 3:
+        raise WhatsAppAPIError("Los botones deben ser entre 1 y 3")
+
+    return await _post_message(
+        {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {"text": body_text},
+                "action": {
+                    "buttons": [
+                        {
+                            "type": "reply",
+                            "reply": {"id": button_id, "title": title[:20]},
+                        }
+                        for button_id, title in buttons
+                    ]
+                },
+            },
+        }
+    )
+
+
+async def send_interactive_list(
+    phone: str,
+    body_text: str,
+    button_text: str,
+    rows: list[tuple[str, str]],
+    section_title: str = "Opciones",
+) -> dict:
+    """Envía una lista interactiva (hasta 10 filas).
+
+    `rows` es una lista de tuplas (id, titulo). El titulo tiene
+    un límite de 24 caracteres impuesto por WhatsApp Cloud API.
+    """
+    recipient = normalize_phone(phone).removeprefix("+")
+    if not recipient:
+        raise WhatsAppAPIError("El teléfono destinatario no es válido")
+    if not rows or len(rows) > 10:
+        raise WhatsAppAPIError("Las filas de la lista deben ser entre 1 y 10")
+
+    return await _post_message(
+        {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": body_text},
+                "action": {
+                    "button": button_text[:20],
+                    "sections": [
+                        {
+                            "title": section_title[:24],
+                            "rows": [
+                                {"id": row_id, "title": title[:24]}
+                                for row_id, title in rows
+                            ],
+                        }
+                    ],
+                },
+            },
+        }
+    )

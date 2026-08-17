@@ -39,6 +39,18 @@ ROADMAPS = {
     ],
 }
 
+# ids usados en los botones interactivos de Meta relacionados al roadmap.
+# Se exportan para que message_router.py los reconozca como equivalentes
+# a sus comandos de texto (listo, ayuda, deshacer).
+HITO_LISTO_ID = "hito_listo"
+HITO_AYUDA_ID = "hito_ayuda"
+HITO_VOLVER_ID = "hito_volver"
+FONDO_ID = "menu_fondo"
+
+
+def _buttons(body: str, options: list[tuple[str, str]]) -> dict:
+    return {"type": "buttons", "body": body, "options": options}
+
 
 def get_pending_milestone(user: dict) -> dict | None:
     """Devuelve el primer hito pendiente del roadmap."""
@@ -48,19 +60,34 @@ def get_pending_milestone(user: dict) -> dict | None:
     )
 
 
-def get_roadmap_text(user: dict) -> str:
-    """Generate roadmap status message."""
+def get_last_completed_milestone(user: dict) -> dict | None:
+    """Devuelve el último hito marcado como completado (el más reciente
+    en orden), o None si no hay ninguno completado."""
     roadmap = user.get("roadmap", [])
-    if not roadmap:
-        return "⚠️ No tienes un roadmap generado. Escribe *hola* para empezar."
+    completed = [h for h in roadmap if h.get("done")]
+    return completed[-1] if completed else None
 
+
+def _progress_bar(user: dict) -> tuple[str, int, int, int]:
+    roadmap = user.get("roadmap", [])
     completed = sum(1 for h in roadmap if h.get("done"))
     total = len(roadmap)
-    pct = round((completed / total) * 100)
-
-    # Progress bar
+    pct = round((completed / total) * 100) if total else 0
     filled = round(pct / 10)
     bar = "🟩" * filled + "⬜" * (10 - filled)
+    return bar, pct, completed, total
+
+
+def get_roadmap_text(user: dict) -> dict:
+    """Genera el mensaje de estado del roadmap, con botones de acción."""
+    roadmap = user.get("roadmap", [])
+    if not roadmap:
+        return {
+            "type": "text",
+            "body": "⚠️ No tienes un roadmap generado. Escribe *hola* para empezar.",
+        }
+
+    bar, pct, completed, total = _progress_bar(user)
 
     lines = [
         f"📋 *Tu Roadmap de Formalización*\n",
@@ -75,48 +102,97 @@ def get_roadmap_text(user: dict) -> str:
             lines.append(f"   ↳ _{h['desc']}_\n")
 
     next_hito = get_pending_milestone(user)
+    has_completed = get_last_completed_milestone(user) is not None
+
     if next_hito:
         lines.append(f"\n👉 *Tu siguiente paso:* {next_hito['title']}")
-        lines.append(f"\nEscribe *\"listo\"* cuando completes este hito, o *\"ayuda\"* si necesitas orientación.")
-    else:
-        lines.append("\n🎉 *¡Completaste todos los hitos!* Tu negocio está formalizado.")
-        lines.append("\nEscribe *\"postular a fondo\"* para explorar financiamiento.")
+        body = "\n".join(lines)
 
-    return "\n".join(lines)
+        options = [(HITO_LISTO_ID, "✅ Listo"), (HITO_AYUDA_ID, "❓ Ayuda")]
+        if has_completed:
+            options.append((HITO_VOLVER_ID, "↩️ Deshacer paso"))
+        return _buttons(body, options)
+
+    lines.append("\n🎉 *¡Completaste todos los hitos!* Tu negocio está formalizado.")
+    body = "\n".join(lines)
+
+    options = [(FONDO_ID, "🎯 Postular a fondo")]
+    if has_completed:
+        options.append((HITO_VOLVER_ID, "↩️ Deshacer paso"))
+    return _buttons(body, options)
 
 
-def mark_hito_done(user: dict, save_user_fn) -> str:
-    """Mark current hito as done and show next."""
+def mark_hito_done(user: dict, save_user_fn) -> dict:
+    """Marca el hito pendiente como completado y muestra el siguiente."""
     roadmap = user.get("roadmap", [])
     current = get_pending_milestone(user)
 
     if not current:
-        return "🎉 ¡Ya completaste todos los hitos! No hay más pendientes."
+        return {
+            "type": "text",
+            "body": "🎉 ¡Ya completaste todos los hitos! No hay más pendientes.",
+        }
 
     current["done"] = True
     save_user_fn(user["phone"], user)
 
-    completed = sum(1 for h in roadmap if h["done"])
-    total = len(roadmap)
-    pct = round((completed / total) * 100)
-
+    _, pct, completed, total = _progress_bar(user)
     next_hito = get_pending_milestone(user)
 
     if next_hito:
-        return (
+        body = (
             f"✅ ¡Bien! Completaste: *{current['title']}*\n\n"
             f"📊 Progreso: {pct}% ({completed}/{total})\n\n"
             f"👉 *Tu siguiente paso:*\n"
             f"*{next_hito['title']}*\n"
-            f"_{next_hito['desc']}_\n\n"
-            f"Escribe *\"listo\"* al completarlo, o *\"ayuda\"* si necesitas orientación."
+            f"_{next_hito['desc']}_"
         )
-    else:
-        return (
-            f"✅ ¡Completaste: *{current['title']}*\n\n"
-            f"🎉🎉🎉 *¡FELICITACIONES!* 🎉🎉🎉\n\n"
-            f"Completaste el 100% de tu roadmap. ¡Tu negocio está formalizado!\n\n"
-            f"¿Qué sigue?\n"
-            f"🎯 Escribe *\"postular a fondo\"* para buscar financiamiento\n"
-            f"💬 O hazme cualquier pregunta sobre cómo hacer crecer tu negocio"
+        return _buttons(
+            body,
+            [
+                (HITO_LISTO_ID, "✅ Listo"),
+                (HITO_AYUDA_ID, "❓ Ayuda"),
+                (HITO_VOLVER_ID, "↩️ Deshacer paso"),
+            ],
         )
+
+    body = (
+        f"✅ ¡Completaste: *{current['title']}*\n\n"
+        f"🎉🎉🎉 *¡FELICITACIONES!* 🎉🎉🎉\n\n"
+        f"Completaste el 100% de tu roadmap. ¡Tu negocio está formalizado!\n\n"
+        f"¿Qué sigue?"
+    )
+    return _buttons(
+        body,
+        [
+            (FONDO_ID, "🎯 Postular a fondo"),
+            (HITO_VOLVER_ID, "↩️ Deshacer paso"),
+        ],
+    )
+
+
+def revert_last_hito(user: dict, save_user_fn) -> dict:
+    """Deshace el último hito marcado como completado, volviendo a
+    dejarlo pendiente. Permite corregir un "listo" enviado por error."""
+    last_completed = get_last_completed_milestone(user)
+
+    if not last_completed:
+        return {
+            "type": "text",
+            "body": "No hay ningún hito completado que deshacer todavía.",
+        }
+
+    last_completed["done"] = False
+    save_user_fn(user["phone"], user)
+
+    _, pct, completed, total = _progress_bar(user)
+
+    body = (
+        f"↩️ Volviste a dejar pendiente: *{last_completed['title']}*\n\n"
+        f"📊 Progreso: {pct}% ({completed}/{total})\n\n"
+        f"_{last_completed['desc']}_"
+    )
+    return _buttons(
+        body,
+        [(HITO_LISTO_ID, "✅ Listo"), (HITO_AYUDA_ID, "❓ Ayuda")],
+    )
