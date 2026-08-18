@@ -5,6 +5,7 @@ from core.roadmaps import (
     get_roadmap_text,
     mark_hito_done,
     revert_last_hito,
+    get_pending_milestone,
     HITO_LISTO_ID,
     HITO_AYUDA_ID,
     HITO_VOLVER_ID,
@@ -178,9 +179,14 @@ def route_message(
         _record_activity_safely(phone)
         return response
 
-    # ── Ayuda contextual del hito → por ahora abre el menú general ──
+    # ── Ayuda contextual del hito → NUEVO: inyecta contexto en IA ──
     if msg_lower == HITO_AYUDA_ID:
-        return _menu_widget()
+        pending_hito = get_pending_milestone(user)
+        if pending_hito:
+            # Retorna patrón especial para que webhook despache a IA con contexto
+            return "__AI_QUERY_WITH_CONTEXT__"
+        else:
+            return _menu_widget()  # Fallback si no hay hito pendiente
 
     if replied_to_reminder:
         _record_activity_safely(phone)
@@ -194,7 +200,30 @@ def route_message(
     # ── Help / menu ──
     if msg_lower in ["ayuda", "help", "menu", "menú", "opciones"]:
         return _menu_widget()
+    
+    # ── Manejo de insatisfacción ──
+    if detect_unsatisfaction(message):
+        response = handle_unsatisfaction_response(user)
+        _record_reply_safely(phone, reply_to_message_id)
+        return response
+     
+    # ── Manejo de opciones de insatisfacción ──
+    unsatisfied_choices = {
+        "unsatisfied_reformulate": "unsatisfied_reformulate",
+        "unsatisfied_support": "unsatisfied_support",
+        "unsatisfied_continue_roadmap": "unsatisfied_continue_roadmap",
+    }
 
+    for choice_id in unsatisfied_choices:
+        if msg_lower == choice_id:
+            response = handle_unsatisfaction_choice(
+                phone, choice_id, message, user, save_user
+            )
+            if response == "__AI_QUERY_WITH_REFORMULATE__":
+                return response  # Especial: reformulación con contexto
+            else:
+                return response
+            
     # ── AI Chat (default) ──
     return "__AI_QUERY__"
 
@@ -219,3 +248,137 @@ def split_message(text: str, max_len: int) -> list[str]:
         text = text[split_at:].lstrip("\n")
 
     return parts
+
+UNSATISFIED_PATTERNS = {
+    # Respuesta no sirvió
+    "no me sirvió", "no sirvio", "eso no me sirvió", "eso no sirvio",
+    "no me funcionó", "no funciono",
+    
+    # No entendió
+    "sigo sin entender", "no entiendo", "aún tengo dudas", "todavia tengo dudas",
+    "me sigue confundiendo", "confundido", "confundida",
+    
+    # Respuesta incompleta/insatisfactoria
+    "eso no fue lo que", "no es lo que", "no era lo que",
+    "me sirve", "me ayuda",  # contexto negativo: "no me sirve", "no me ayuda"
+    
+    # Petición de aclaración
+    "puedes explicar mejor", "explica mejor", "más detalles", "mas detalles",
+}
+
+def detect_unsatisfaction(message: str) -> bool:
+    """
+    Detecta si el usuario está insatisfecho con la respuesta del asesor virtual.
+    
+    Se activa cuando el usuario escribe cosas como:
+    - "eso no me sirvió"
+    - "sigo sin entender"
+    - "no entiendo"
+    - "aún tengo dudas"
+    - "no me funcionó"
+    
+    Args:
+        message: str con el mensaje del usuario
+        
+    Returns:
+        bool: True si detecta patrón de insatisfacción
+    """
+    if not message:
+        return False
+    
+    msg_lower = message.lower().strip()
+    
+    # Búsqueda de patrones (substring match)
+    for pattern in UNSATISFIED_PATTERNS:
+        if pattern in msg_lower:
+            return True
+    
+    return False
+
+def handle_unsatisfaction_response(user: dict) -> dict:
+    """
+    Ofrece opciones interactivas cuando el usuario no quedó satisfecho
+    con la respuesta del asesor virtual.
+    
+    Presenta 3 opciones:
+    1. 🔄 Reformular: Intenta otra forma de explicar
+    2. 👨‍💼 Soporte humano: Ofrece contacto directo
+    3. 📋 Continuar roadmap: Vuelve al flujo principal
+    
+    Args:
+        user: dict con datos del usuario (para personalización opcional)
+        
+    Returns:
+        dict {"type": "buttons", "body": ..., "options": [...]}
+    """
+    rubro_display = user.get("rubro", "tu emprendimiento").capitalize()
+    
+    body = (
+        "Entiendo que no quedó claro. 😊 *¿Qué prefieres hacer?*\n\n"
+        "Puedo intentar explicarlo de otra forma, "
+        "conectarte con un asesor real, o continuamos con tu roadmap."
+    )
+    
+    return {
+        "type": "buttons",
+        "body": body,
+        "options": [
+            ("unsatisfied_reformulate", "🔄 Reformular respuesta"),
+            ("unsatisfied_support", "👨‍💼 Hablar con asesor"),
+            ("unsatisfied_continue_roadmap", "📋 Continuar roadmap"),
+        ],
+    }
+
+
+def handle_unsatisfaction_choice(
+    phone: str,
+    choice_id: str,
+    message: str,
+    user: dict,
+    save_user_fn,
+) -> dict | str:
+    """
+    Maneja la opción que eligió el usuario cuando estaba insatisfecho.
+    
+    Args:
+        phone: teléfono del usuario
+        choice_id: ID de la opción elegida (unsatisfied_*)
+        message: mensaje original del usuario (para "reformular")
+        user: dict con datos del usuario
+        save_user_fn: función para guardar usuario
+        
+    Returns:
+        dict (para botones/listas) o str "__AI_QUERY_WITH_REFORMULATE__" (para IA)
+    """
+    
+    if choice_id == "unsatisfied_reformulate":
+        # Marca que debe reformularse en la IA
+        user["last_unsatisfied_message"] = message
+        user["reformulate_attempt"] = (user.get("reformulate_attempt", 0) or 0) + 1
+        save_user_fn(phone, user)
+        
+        # Retorna patrón especial para que webhook despache a IA con instrucción especial
+        return "__AI_QUERY_WITH_REFORMULATE__"
+    
+    elif choice_id == "unsatisfied_support":
+        # Ofrece contacto de soporte humano
+        return {
+            "type": "text",
+            "body": (
+                "👨‍💼 *Contacta a nuestro equipo:*\n\n"
+                "📧 Email: contacto@financial.cl\n"
+                "📱 WhatsApp: +56 9 XXXX-XXXX\n"
+                "⏰ Horario: Lunes a Viernes, 9:00-18:00\n\n"
+                "_Te responderemos en menos de 24 horas._"
+            ),
+        }
+    
+    elif choice_id == "unsatisfied_continue_roadmap":
+        # Vuelve al roadmap
+        _record_activity_safely(phone)
+        from core.roadmaps import get_roadmap_text
+        return get_roadmap_text(user)
+    
+    else:
+        # Fallback (no debería ocurrir)
+        return "No entendí tu elección. Escribe *'roadmap'* para ver tu progreso."

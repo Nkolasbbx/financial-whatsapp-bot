@@ -1,4 +1,5 @@
 # routers/webhook_twilio.py
+import asyncio
 import logging
 import dependencies
 from fastapi import APIRouter, Request, Response, BackgroundTasks
@@ -11,35 +12,91 @@ logger = logging.getLogger("financial")
 router = APIRouter()
 
 @router.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
+async def whatsapp_webhook_twilio(request: Request, background_tasks: BackgroundTasks):
     """Handle incoming WhatsApp messages from Twilio."""
     form = await request.form()
     phone = form.get("From", "")
     message = form.get("Body", "").strip()
-    logger.info(f"📩 Message from {phone}: {message}")
-
+    
     phone_clean = phone.replace("whatsapp:", "").strip()
-    response_text = route_message(phone_clean, message)
+    response_text = await asyncio.to_thread(
+        route_message,
+        phone_clean,
+        message,
+    )
 
     twiml = MessagingResponse()
-    if response_text == "__AI_QUERY__":
-        twiml.message("🤔 Déjame pensar tu respuesta...")
-        background_tasks.add_task(
-            process_ai_and_send_Twillio,
-            phone,
-            phone_clean,
-            message,
-            lambda p: get_user(p),
-            lambda p, d: save_user(p, d),
-            dependencies.twilio_client,
-            dependencies.ollama_available,
-        )
-    else:
-        logger.info(f"📤 Response to {phone}: {response_text[:100]}...")
-        if len(response_text) > 4000:
-            for part in split_message(response_text, 4000):
-                twiml.message(part)
+    
+    try:
+        # ── CASO 1: Consulta normal ──
+        if response_text == "__AI_QUERY__":
+            twiml.message("🤔 Déjame pensar tu respuesta...")
+            background_tasks.add_task(
+                process_ai_and_send_Twillio,
+                phone,
+                phone_clean,
+                message,
+                lambda p: get_user(p),
+                lambda p, d: save_user(p, d),
+                dependencies.twilio_client,
+                dependencies.ollama_available,
+            )
+        
+        # ── CASO 2: NUEVO - Con contexto del hito ──
+        elif response_text == "__AI_QUERY_WITH_CONTEXT__":
+            twiml.message("🤔 Te ayudo con este hito...")
+            
+            user = get_user(phone_clean)
+            hito_context = None
+            if user:
+                from core.roadmaps import extract_hito_context
+                hito_context = extract_hito_context(user)
+            
+            background_tasks.add_task(
+                process_ai_and_send_Twillio,
+                phone,
+                phone_clean,
+                message,
+                lambda p: get_user(p),
+                lambda p, d: save_user(p, d),
+                dependencies.twilio_client,
+                dependencies.ollama_available,
+                hito_context=hito_context,  # ← NUEVO
+                reformulate_mode=False,
+            )
+        
+        # ── CASO 3: NUEVO - Con reformulación ──
+        elif response_text == "__AI_QUERY_WITH_REFORMULATE__":
+            twiml.message("Tienes razón, déjame explicarlo de otra forma...")
+            
+            user = get_user(phone_clean)
+            last_message = user.get("last_unsatisfied_message", message) if user else message
+            
+            background_tasks.add_task(
+                process_ai_and_send_Twillio,
+                phone,
+                phone_clean,
+                last_message,
+                lambda p: get_user(p),
+                lambda p, d: save_user(p, d),
+                dependencies.twilio_client,
+                dependencies.ollama_available,
+                hito_context=None,
+                reformulate_mode=True,  # ← NUEVO
+            )
+        
+        # ── CASO 4: Respuesta interactiva ──
         else:
-            twiml.message(response_text)
+            if isinstance(response_text, dict):
+                # Manejo de botones/listas en Twilio (simplificado)
+                body = response_text.get("body", "")
+                twiml.message(body)
+            else:
+                for part in split_message(response_text, 4000):
+                    twiml.message(part)
+
+    except Exception as e:
+        logger.error(f"Error en webhook_twilio: {e}")
+        twiml.message("Tuve un problema. ¿Puedes intentar de nuevo?")
 
     return Response(content=str(twiml), media_type="application/xml")

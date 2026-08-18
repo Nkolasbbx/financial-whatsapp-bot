@@ -121,56 +121,6 @@ def get_roadmap_text(user: dict) -> dict:
         options.append((HITO_VOLVER_ID, "↩️ Deshacer paso"))
     return _buttons(body, options)
 
-
-def mark_hito_done(user: dict, save_user_fn) -> dict:
-    """Marca el hito pendiente como completado y muestra el siguiente."""
-    roadmap = user.get("roadmap", [])
-    current = get_pending_milestone(user)
-
-    if not current:
-        return {
-            "type": "text",
-            "body": "🎉 ¡Ya completaste todos los hitos! No hay más pendientes.",
-        }
-
-    current["done"] = True
-    save_user_fn(user["phone"], user)
-
-    _, pct, completed, total = _progress_bar(user)
-    next_hito = get_pending_milestone(user)
-
-    if next_hito:
-        body = (
-            f"✅ ¡Bien! Completaste: *{current['title']}*\n\n"
-            f"📊 Progreso: {pct}% ({completed}/{total})\n\n"
-            f"👉 *Tu siguiente paso:*\n"
-            f"*{next_hito['title']}*\n"
-            f"_{next_hito['desc']}_"
-        )
-        return _buttons(
-            body,
-            [
-                (HITO_LISTO_ID, "✅ Listo"),
-                (HITO_AYUDA_ID, "❓ Ayuda"),
-                (HITO_VOLVER_ID, "↩️ Deshacer paso"),
-            ],
-        )
-
-    body = (
-        f"✅ ¡Completaste: *{current['title']}*\n\n"
-        f"🎉🎉🎉 *¡FELICITACIONES!* 🎉🎉🎉\n\n"
-        f"Completaste el 100% de tu roadmap. ¡Tu negocio está formalizado!\n\n"
-        f"¿Qué sigue?"
-    )
-    return _buttons(
-        body,
-        [
-            (FONDO_ID, "🎯 Postular a fondo"),
-            (HITO_VOLVER_ID, "↩️ Deshacer paso"),
-        ],
-    )
-
-
 def revert_last_hito(user: dict, save_user_fn) -> dict:
     """Deshace el último hito marcado como completado, volviendo a
     dejarlo pendiente. Permite corregir un "listo" enviado por error."""
@@ -195,4 +145,117 @@ def revert_last_hito(user: dict, save_user_fn) -> dict:
     return _buttons(
         body,
         [(HITO_LISTO_ID, "✅ Listo"), (HITO_AYUDA_ID, "❓ Ayuda")],
+    )
+
+def extract_hito_context(user: dict) -> dict | None:
+    """
+    Extrae el contexto del hito pendiente para inyectar en la IA.
+    
+    Se usa cuando el usuario solicita "Ayuda" sobre un hito específico.
+    La IA recibirá este contexto en su system prompt para dar respuestas
+    muy específicas y contextualizadas.
+    
+    Args:
+        user: dict con datos del usuario
+        
+    Returns:
+        dict con keys {title, description, rubro, comuna} o None si no hay hito pendiente
+    """
+    hito = get_pending_milestone(user)
+    if not hito:
+        return None
+    
+    return {
+        "title": hito.get("title", ""),
+        "description": hito.get("desc", ""),
+        "rubro": user.get("rubro", "No definido"),
+        "comuna": user.get("comuna", "No definida"),
+    }
+
+
+def mark_hito_done(user: dict, save_user_fn) -> dict:
+    """
+    Versión mejorada de mark_hito_done() que genera mensajes épicos
+    cuando se completa el último hito (roadmap 100%).
+    
+    CAMBIOS RESPECTO A LA VERSION ORIGINAL:
+    - Cuando completa el ÚLTIMO hito: mensaje celebratorio épico
+    - Incluye resumen: cantidad de hitos, rubro, comuna
+    - Destaca "Postular a fondo" como siguiente acción principal
+    - Guarda un evento de "roadmap_completed" en el usuario (opcional, para analytics)
+    
+    Args:
+        user: dict con datos del usuario
+        save_user_fn: función para guardar usuario
+        
+    Returns:
+        dict {"type": "buttons" | "text", "body": ..., "options": ...}
+    """
+    roadmap = user.get("roadmap", [])
+    current = get_pending_milestone(user)
+
+    if not current:
+        return {
+            "type": "text",
+            "body": "🎉 ¡Ya completaste todos los hitos! No hay más pendientes.",
+        }
+
+    current["done"] = True
+    save_user_fn(user["phone"], user)
+
+    _, pct, completed, total = _progress_bar(user)
+    next_hito = get_pending_milestone(user)
+
+    # ── CASO: Aún hay más hitos por completar ──
+    if next_hito:
+        body = (
+            f"✅ ¡Bien! Completaste: *{current['title']}*\n\n"
+            f"📊 Progreso: {pct}% ({completed}/{total})\n\n"
+            f"👉 *Tu siguiente paso:*\n"
+            f"*{next_hito['title']}*\n"
+            f"_{next_hito['desc']}_"
+        )
+        return _buttons(
+            body,
+            [
+                (HITO_LISTO_ID, "✅ Listo"),
+                (HITO_AYUDA_ID, "❓ Ayuda"),
+                (HITO_VOLVER_ID, "↩️ Deshacer paso"),
+            ],
+        )
+
+    # ── CASO: ES EL ÚLTIMO HITO - MENSAJE CELEBRATORIO ÉPICO ──
+    
+    # Registro del evento (opcional, para analytics)
+    user["roadmap_completed_at"] = __import__("datetime").datetime.utcnow().isoformat()
+    user["roadmap_completion_stats"] = {
+        "total_hitos": total,
+        "rubro": user.get("rubro", "No definido"),
+        "comuna": user.get("comuna", "No definida"),
+    }
+    save_user_fn(user["phone"], user)
+    
+    # Mensaje celebratorio épico
+    rubro_display = user.get("rubro", "tu emprendimiento").capitalize()
+    comuna_display = user.get("comuna", "tu zona")
+    
+    body = (
+        f"✅ *¡Completaste: {current['title']}!*\n\n"
+        f"🎉 🎉 🎉 *¡¡FELICITACIONES!!* 🎉 🎉 🎉\n\n"
+        f"Acabas de completar el *100%* de tu roadmap de formalización.\n\n"
+        f"📈 *Tu logro:*\n"
+        f"• _{total} trámites completados_\n"
+        f"• _Rubro: {rubro_display}_\n"
+        f"• _Comuna: {comuna_display}_\n\n"
+        f"¡Tu negocio está *oficialmente formalizado*! 🏢\n\n"
+        f"💪 Ahora es momento de hacerlo crecer. "
+        f"Tenemos *fondos concursables* que podrían ayudarte."
+    )
+    
+    return _buttons(
+        body,
+        [
+            (FONDO_ID, "🎯 Ver fondos disponibles"),
+            (HITO_VOLVER_ID, "↩️ Deshacer paso"),
+        ],
     )
