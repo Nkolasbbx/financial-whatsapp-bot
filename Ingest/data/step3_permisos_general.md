@@ -1,3 +1,8 @@
+---
+source: Legislación chilena y base de conocimiento del proyecto
+source_url: https://www.bcn.cl/portal/leyfacil/recurso/patentes-municipales
+source_date: 2018-04-10
+---
 # Ruta de Formalización: Patentes Municipales y Permisos Locales (General)
 
 ## ¿Qué es la Patente Municipal?

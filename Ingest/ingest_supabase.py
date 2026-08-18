@@ -20,6 +20,36 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 150
 MIN_CHUNK_SIZE = 100
 
+# Catalogo versionado de fuentes. `source_date` es la fecha de revision del
+# contenido cargado; debe actualizarse cuando se confirme una nueva version.
+DOCUMENT_METADATA = {
+    "step1_constitution_general.md": {
+        "source": "Ministerio de Economia, Fomento y Turismo; base de conocimiento del proyecto",
+        "source_url": "https://www.economia.gob.cl/",
+        "source_date": "2026-08-18",
+    },
+    "step2_sii_actividades_general.md": {
+        "source": "Servicio de Impuestos Internos; base de conocimiento del proyecto",
+        "source_url": "https://www.sii.cl/",
+        "source_date": "2026-08-18",
+    },
+    "step3_permisos_el_bosque.md": {
+        "source": "Municipalidad de El Bosque; base de conocimiento del proyecto",
+        "source_url": "https://www.municipalidadelbosque.cl/",
+        "source_date": "2026-08-18",
+    },
+    "step3_permisos_general.md": {
+        "source": "Legislacion chilena y base de conocimiento del proyecto",
+        "source_url": "https://www.bcn.cl/leychile/",
+        "source_date": "2026-08-18",
+    },
+    "step3_permisos_recoleta.md": {
+        "source": "Municipalidad de Recoleta; base de conocimiento del proyecto",
+        "source_url": "https://www.recoleta.cl/",
+        "source_date": "2026-08-18",
+    },
+}
+
 
 # =====================================================================
 # CHUNKING SEMÁNTICO PARA MARKDOWN
@@ -211,6 +241,50 @@ def limpiar_metadata(file_name):
     return meta
 
 
+def leer_metadata_documento(file_name: str, text: str) -> dict:
+    """Combina metadata derivada del nombre con frontmatter del documento.
+
+    Cada documento RAG debe declarar `source_url` y `source_date` para que las
+    respuestas puedan informar de dónde proviene la información y cuándo fue
+    revisada. El bloque esperado al inicio del Markdown es:
+
+    ---
+    source: Municipalidad de Ejemplo
+    source_url: https://ejemplo.cl/tramites
+    source_date: 2026-08-18
+    ---
+    """
+    meta = {**limpiar_metadata(file_name), **DOCUMENT_METADATA.get(file_name, {})}
+    lines = text.splitlines()
+
+    if lines and lines[0].strip() == "---":
+        try:
+            end = next(i for i, line in enumerate(lines[1:], start=1) if line.strip() == "---")
+        except StopIteration as error:
+            raise ValueError(f"{file_name}: frontmatter sin cierre") from error
+
+        for line in lines[1:end]:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            key, separator, value = line.partition(":")
+            if separator:
+                meta[key.strip()] = value.strip().strip('"\'')
+
+    required = ("source", "source_url", "source_date")
+    missing = [key for key in required if not meta.get(key)]
+    if missing:
+        raise ValueError(
+            f"{file_name}: falta metadata obligatoria: {', '.join(missing)}"
+        )
+
+    if not re.fullmatch(r"\d{4}(?:-\d{2}(?:-\d{2})?)?", meta["source_date"]):
+        raise ValueError(
+            f"{file_name}: source_date debe tener formato YYYY, YYYY-MM o YYYY-MM-DD"
+        )
+
+    return meta
+
+
 # =====================================================================
 # SETUP BD
 # =====================================================================
@@ -276,7 +350,7 @@ def main():
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
 
-        meta = limpiar_metadata(file_name)
+        meta = leer_metadata_documento(file_name, text)
         chunks = chunk_text(text)
         print(f"   📎 {file_name} → {len(chunks)} chunks")
 

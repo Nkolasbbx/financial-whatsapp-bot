@@ -26,7 +26,7 @@ twilio_client: TwilioClient | None = None
 ollama_available: bool = False
 supabase: SupabaseClient | None = None
 embedding_model = None
-db_pool: psycopg2.pool.SimpleConnectionPool | None = None  # NUEVO
+db_pool: psycopg2.pool.ThreadedConnectionPool | None = None
  
  
 @asynccontextmanager
@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
     if SUPABASE_DB_DSN:
         try:
             logger.info("🔌 Creando pool de conexiones Postgres para RAG...")
-            db_pool = psycopg2.pool.SimpleConnectionPool(
+            db_pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=1,
                 maxconn=5,
                 dsn=SUPABASE_DB_DSN,

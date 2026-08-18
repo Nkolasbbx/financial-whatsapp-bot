@@ -1,3 +1,8 @@
+---
+source: Ministerio de Economía, Fomento y Turismo; Tu empresa en un Día
+source_url: https://www.registrodeempresasysociedades.cl/
+source_date: 2026-08-18
+---
 # Ruta de Formalización: Constitución de la Empresa (General)
 
 ## ¿Qué es la Formalización?

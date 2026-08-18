@@ -1,3 +1,8 @@
+---
+source: Municipalidad de Recoleta; base de conocimiento del proyecto
+source_url: https://www.recoleta.cl/
+source_date: 2026-08-18
+---
 # Ruta de Formalización: Patentes Municipales - RECOLETA
 
 ## Dónde Tramitar
