@@ -10,7 +10,7 @@ from config import META_WEBHOOK_VERIFY_TOKEN, DEBUG
 from core.ia import process_ai_and_send, process_ai_and_send_Twillio
 from core.roadmaps import extract_hito_context
 from db.reminders import update_reminder_delivery_status
-from db.users import get_user
+from db.users import get_last_user_message, get_user
 from services.message_router import route_message, split_message
 from services.whatsapp import (
     WhatsAppAPIError,
@@ -229,19 +229,30 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                         )
                     
                     elif result == "__AI_QUERY_WITH_REFORMULATE__":
-                        await send_text(phone, "Tienes razón, déjame explicarlo de otra forma...")
-                        
-                        user = await asyncio.to_thread(get_user, phone)
-                        last_message = user.get("last_unsatisfied_message", message) if user else message
-                        
-                        background_tasks.add_task(
-                            process_ai_and_send,
+                        last_message = await asyncio.to_thread(
+                            get_last_user_message,
                             phone,
-                            last_message,
-                            dependencies.ollama_available,
-                            hito_context=None,
-                            reformulate_mode=True,
                         )
+
+                        if not last_message:
+                            await send_text(
+                                phone,
+                                "No pude encontrar tu pregunta anterior. "
+                                "¿Puedes escribirla nuevamente?",
+                            )
+                        else:
+                            await send_text(
+                                phone,
+                                "Tienes razón, déjame explicarlo de otra forma...",
+                            )
+                            background_tasks.add_task(
+                                process_ai_and_send,
+                                phone,
+                                last_message,
+                                dependencies.ollama_available,
+                                hito_context=None,
+                                reformulate_mode=True,
+                            )
                     
                     else:
                         await _send_response(phone, result)

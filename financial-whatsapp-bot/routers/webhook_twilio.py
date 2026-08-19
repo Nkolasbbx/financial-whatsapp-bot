@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request, Response, BackgroundTasks
 from twilio.twiml.messaging_response import MessagingResponse
 from services.message_router import route_message, split_message
 from core.ia import process_ai_and_send_Twillio
-from db.users import get_user, save_user
+from db.users import get_last_user_message, get_user, save_user
 
 logger = logging.getLogger("financial")
 router = APIRouter()
@@ -67,23 +67,30 @@ async def whatsapp_webhook_twilio(request: Request, background_tasks: Background
         
         # ── CASO 3: NUEVO - Con reformulación ──
         elif response_text == "__AI_QUERY_WITH_REFORMULATE__":
-            twiml.message("Tienes razón, déjame explicarlo de otra forma...")
-            
-            user = get_user(phone_clean)
-            last_message = user.get("last_unsatisfied_message", message) if user else message
-            
-            background_tasks.add_task(
-                process_ai_and_send_Twillio,
-                phone,
+            last_message = await asyncio.to_thread(
+                get_last_user_message,
                 phone_clean,
-                last_message,
-                lambda p: get_user(p),
-                lambda p, d: save_user(p, d),
-                dependencies.twilio_client,
-                dependencies.ollama_available,
-                hito_context=None,
-                reformulate_mode=True,  # ← NUEVO
             )
+
+            if not last_message:
+                twiml.message(
+                    "No pude encontrar tu pregunta anterior. "
+                    "¿Puedes escribirla nuevamente?"
+                )
+            else:
+                twiml.message("Tienes razón, déjame explicarlo de otra forma...")
+                background_tasks.add_task(
+                    process_ai_and_send_Twillio,
+                    phone,
+                    phone_clean,
+                    last_message,
+                    lambda p: get_user(p),
+                    lambda p, d: save_user(p, d),
+                    dependencies.twilio_client,
+                    dependencies.ollama_available,
+                    hito_context=None,
+                    reformulate_mode=True,  # ← NUEVO
+                )
         
         # ── CASO 4: Respuesta interactiva ──
         else:

@@ -13,6 +13,7 @@ from core.roadmaps import (
 from core.fondos import simulate_funds
 from core.onboarding import process_onboarding
 from db.reminders import (
+    clear_completed_roadmap_schedule_by_phone,
     disable_reminders,
     enable_reminders,
     record_incoming_reminder_reply,
@@ -63,6 +64,16 @@ def _record_activity_safely(phone: str) -> None:
         record_roadmap_activity(phone)
     except Exception as error:
         logger.error("No se pudo registrar la actividad del roadmap: %s", error)
+
+
+def _clear_completed_roadmap_safely(phone: str) -> None:
+    try:
+        clear_completed_roadmap_schedule_by_phone(phone)
+    except Exception as error:
+        logger.error(
+            "No se pudieron limpiar los recordatorios del roadmap completo: %s",
+            error,
+        )
 
 
 def route_message(
@@ -170,7 +181,10 @@ def route_message(
     done_triggers = ["listo", "hecho", "completado", "ya lo hice", "ya está", "ya esta", "siguiente", "menu_listo", HITO_LISTO_ID]
     if any(trigger in msg_lower for trigger in done_triggers):
         response = mark_hito_done(user, save_user)
-        _record_activity_safely(phone)
+        if get_pending_milestone(user) is None:
+            _clear_completed_roadmap_safely(phone)
+        else:
+            _record_activity_safely(phone)
         return response
 
     # ── Revert last hito (deshacer paso) ──
@@ -260,7 +274,7 @@ UNSATISFIED_PATTERNS = {
     
     # Respuesta incompleta/insatisfactoria
     "eso no fue lo que", "no es lo que", "no era lo que",
-    "me sirve", "me ayuda",  # contexto negativo: "no me sirve", "no me ayuda"
+    "no me sirve", "no me ayuda",
     
     # Petición de aclaración
     "puedes explicar mejor", "explica mejor", "más detalles", "mas detalles",
@@ -343,7 +357,7 @@ def handle_unsatisfaction_choice(
     Args:
         phone: teléfono del usuario
         choice_id: ID de la opción elegida (unsatisfied_*)
-        message: mensaje original del usuario (para "reformular")
+        message: contenido recibido desde WhatsApp
         user: dict con datos del usuario
         save_user_fn: función para guardar usuario
         
@@ -352,12 +366,9 @@ def handle_unsatisfaction_choice(
     """
     
     if choice_id == "unsatisfied_reformulate":
-        # Marca que debe reformularse en la IA
-        user["last_unsatisfied_message"] = message
-        user["reformulate_attempt"] = (user.get("reformulate_attempt", 0) or 0) + 1
-        save_user_fn(phone, user)
-        
-        # Retorna patrón especial para que webhook despache a IA con instrucción especial
+        # El webhook recupera directamente desde messages la última pregunta
+        # real del usuario. El contenido recibido aquí es solamente el id del
+        # botón y no se debe persistir como si fuera la pregunta original.
         return "__AI_QUERY_WITH_REFORMULATE__"
     
     elif choice_id == "unsatisfied_support":

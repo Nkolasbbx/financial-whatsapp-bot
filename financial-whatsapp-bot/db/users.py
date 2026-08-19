@@ -212,6 +212,44 @@ def get_messages(phone: str, limit: int = 12) -> list[dict]:
         return []
 
 
+def get_last_user_message(phone: str) -> str | None:
+    """Obtiene solamente el mensaje de usuario más reciente."""
+    import dependencies
+
+    if not dependencies.supabase:
+        return None
+
+    try:
+        user_id = get_user_id(phone)
+
+        if not user_id:
+            logger.warning(
+                "No se encontró el último mensaje porque no existe el usuario %s",
+                phone,
+            )
+            return None
+
+        result = (
+            dependencies.supabase
+            .table("messages")
+            .select("content")
+            .eq("user_id", user_id)
+            .eq("role", "user")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+        if not result.data:
+            return None
+
+        return result.data[0].get("content")
+
+    except Exception as error:
+        logger.error("Supabase get_last_user_message error: %s", error)
+        return None
+
+
 def contar_mensajes(phone: str) -> int:
     """Cuenta el total de mensajes asociados a un usuario."""
     import dependencies

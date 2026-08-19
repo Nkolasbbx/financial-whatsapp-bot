@@ -97,7 +97,7 @@ def record_roadmap_activity(phone: str) -> None:
 
     result = (
         client.table("users")
-        .select("reminders_enabled")
+        .select("reminders_enabled,roadmap")
         .eq("phone", phone)
         .limit(1)
         .execute()
@@ -106,7 +106,24 @@ def record_roadmap_activity(phone: str) -> None:
         return
 
     now = _utc_now()
-    enabled = bool(result.data[0].get("reminders_enabled"))
+    user = result.data[0]
+    enabled = bool(user.get("reminders_enabled"))
+    roadmap = user.get("roadmap") or []
+    roadmap_completed = bool(roadmap) and all(
+        milestone.get("done") for milestone in roadmap
+    )
+
+    if roadmap_completed:
+        client.table("users").update({
+            "last_roadmap_activity_at": _iso_utc(now),
+            "reminders_paused": True,
+            "reminders_pause_reason": "manual",
+            "reminder_count": 0,
+            "next_reminder_at": None,
+            "updated_at": _iso_utc(now),
+        }).eq("phone", phone).execute()
+        return
+
     changes = {
         "last_roadmap_activity_at": _iso_utc(now),
         "reminder_count": 0,
@@ -347,7 +364,7 @@ def record_incoming_reminder_reply(
     return True
 
 
-def clear_completed_roadmap_schedule(user_id: str) -> None:
+def _clear_completed_roadmap_schedule(column: str, value: str) -> None:
     now = _iso_utc(_utc_now())
     _admin_client().table("users").update({
         "reminders_paused": True,
@@ -355,4 +372,14 @@ def clear_completed_roadmap_schedule(user_id: str) -> None:
         "reminder_count": 0,
         "next_reminder_at": None,
         "updated_at": now,
-    }).eq("id", user_id).execute()
+    }).eq(column, value).execute()
+
+
+def clear_completed_roadmap_schedule(user_id: str) -> None:
+    """Limpia recordatorios de un roadmap completo usando el UUID interno."""
+    _clear_completed_roadmap_schedule("id", user_id)
+
+
+def clear_completed_roadmap_schedule_by_phone(phone: str) -> None:
+    """Limpia inmediatamente los recordatorios al completar el roadmap."""
+    _clear_completed_roadmap_schedule("phone", phone)
