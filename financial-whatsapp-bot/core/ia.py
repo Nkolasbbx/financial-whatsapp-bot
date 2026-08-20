@@ -4,7 +4,7 @@ import os
 import threading
 
 import httpx
-import psycopg2
+
 
 from config import OLLAMA_URL, OLLAMA_MODEL, DB_DSN, MODEL_NAME,HF_TOKEN,DEBUG,TWILIO_WHATSAPP_NUMBER
 from db.users import (
@@ -16,6 +16,7 @@ from db.users import (
 )
 from services.whatsapp import WhatsAppAPIError, send_interactive_buttons, send_text
 from services.message_router import split_message
+
 
 import dependencies
 
@@ -130,10 +131,12 @@ async def obtener_embedding_remoto(texto: str, prefix: str = "query") -> list[fl
     (feature-extraction, proveedor hf-inference), a través del router unificado.
     """
     hf_token = HF_TOKEN
+
     model_name = MODEL_NAME
 
     # Nueva URL del router (api-inference.huggingface.co está deprecado)
     url = f"https://router.huggingface.co/hf-inference/models/{model_name}/pipeline/feature-extraction"
+
     headers = {
         "Content-Type": "application/json"
     }
@@ -266,7 +269,7 @@ Usa prioritariamente este contexto para responder.
 {contexto_rag}
 """
 
-async def obtener_contexto_rag(message: str, comuna_usuario: str) -> str:
+async def obtener_contexto_rag(message: str, comuna_usuario: str) -> dict:
     """
     Devuelve el contexto RAG para la comuna correcta según el router de detección.
     Si la comuna detectada no está soportada, no consulta la BD (ahorra una query)
@@ -276,24 +279,33 @@ async def obtener_contexto_rag(message: str, comuna_usuario: str) -> str:
     comuna_busqueda = deteccion["comuna"]
  
     if not deteccion["soportada"]:
-        return f"SIN COBERTURA: no manejamos información de la comuna '{comuna_busqueda}'. Solo Recoleta y El Bosque están disponibles."
+        return {
+            "contexto": f"SIN COBERTURA: no manejamos información de la comuna '{comuna_busqueda}'. Solo Recoleta y El Bosque están disponibles.",
+            "fuentes": [],
+        }
  
     contexto = ""
+    fuentes = []
     try:
+        if dependencies.db_pool is None:
+            raise RuntimeError("El pool PostgreSQL para RAG no está disponible")
+
         query_vector = await obtener_embedding_remoto(message)
  
-        conn = psycopg2.connect(DB_DSN)
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT content, metadata
-                FROM documents
-                WHERE metadata->>'comuna' ILIKE %s OR metadata->>'comuna' ILIKE '%%general%%'
-                ORDER BY embedding <=> %s::vector
-                LIMIT 4;
-            """, (f"%{comuna_busqueda}%", query_vector))
+        conn = dependencies.db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT content, metadata
+                    FROM documents
+                    WHERE metadata->>'comuna' ILIKE %s OR metadata->>'comuna' ILIKE '%%general%%'
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT 4;
+                """, (f"%{comuna_busqueda}%", query_vector))
  
-            resultados = cur.fetchall()
-        conn.close()
+                resultados = cur.fetchall()
+        finally:
+            dependencies.db_pool.putconn(conn)
  
         if resultados:
             for res in resultados:
@@ -302,7 +314,19 @@ async def obtener_contexto_rag(message: str, comuna_usuario: str) -> str:
                 comuna_doc = meta.get("comuna", "general")
                 if comuna_doc.lower() == "general":
                     comuna_doc = "General (Aplica a todas las comunas del país)"
-                contexto += f"\n[Documento Oficial: {file_name}] | [Ámbito: {comuna_doc}]\n{res[0]}\n"
+                source = meta.get("source", file_name)
+                source_url = meta.get("source_url", "")
+                source_date = meta.get("source_date", "")
+                fuentes.append({
+                    "source": source,
+                    "source_url": source_url,
+                    "source_date": source_date,
+                })
+                contexto += (
+                    f"\n[Documento Oficial: {file_name}] | [Ámbito: {comuna_doc}]\n"
+                    f"[Fuente: {source}] | [URL: {source_url}] | [Fecha de revisión: {source_date}]\n"
+                    f"{res[0]}\n"
+                )
         else:
             contexto = f"SIN INFORMACIÓN disponible para la comuna '{comuna_busqueda}' en la base de datos."
  
@@ -310,7 +334,7 @@ async def obtener_contexto_rag(message: str, comuna_usuario: str) -> str:
         logger.error(f"❌ Error RAG Supabase: {e}")
         contexto = "Error temporal al acceder a las normativas municipales."
  
-    return contexto
+    return {"contexto": contexto, "fuentes": fuentes}
 
 
 COMUNAS_SOPORTADAS = ["recoleta", "el bosque"]
@@ -391,7 +415,10 @@ async def get_ai_response(
     # ── 1. RECUPERACIÓN RAG ──
     contexto_rag = await obtener_contexto_rag(message, comuna_usuario)
 
-    # ── 2. PROMPT AUMENTADO CON CONTEXTO DE HITO ──
+    contexto_texto = contexto_rag["contexto"]
+    fuentes_rag = contexto_rag["fuentes"]
+ 
+    # ── 2. PROMPT AUMENTADO (perfil + progreso) ──
     roadmap = user.get("roadmap") or []
     completed = sum(1 for h in roadmap if h.get("done"))
     total = len(roadmap)
@@ -414,8 +441,21 @@ async def get_ai_response(
         resumen_conversacion=user.get("resumen_conversacion", "Sin historial previo relevante."),
         contexto_rag=contexto_rag,
     )
+ 
+    # ── 3. MEMORIA DE LARGO PLAZO (resumen conversacional) ──
+    resumen_previo = user.get("resumen_conversacion") or "Sin historial previo relevante."
+ 
+    system_con_rag = (
+        f"{system}\n\n"
+        f"[RESUMEN DE INTERACCIONES PREVIAS]:\n"
+        f"{resumen_previo}\n\n"
+        f"[INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE]:\n"
+        f"Usa prioritariamente este contexto para responder. Si el ámbito dice 'General', considera que aplica perfectamente para el usuario.\n"
+        f"{contexto_texto}"
+    )
+ 
+    # ── 4. HISTORIAL RECIENTE DE CONVERSACIÓN ──
 
-    # ── 3. HISTORIAL RECIENTE ──
     history = get_messages(phone, limit=6) if phone else user.get("conversation_history", [])[-6:]
     messages = [{"role": "system", "content": system}]
     messages.extend(history)
@@ -425,9 +465,27 @@ async def get_ai_response(
     ai_text = llamar_llm(messages, max_tokens=600, temperature=0.2)
 
     if not ai_text:
-        return "😅 Tuve un problema al procesar tu consulta. ¿Puedes intentar de nuevo?"
+        return "😅 Tuve un problema al procesar tu consulta con el modelo. ¿Puedes intentar de nuevo?"
 
-    # ── 5. PERSISTENCIA ──
+    fuentes_unicas = []
+    for fuente in fuentes_rag:
+        clave = (
+            fuente["source"],
+            fuente["source_url"],
+            fuente["source_date"],
+        )
+        if clave not in fuentes_unicas:
+            fuentes_unicas.append(clave)
+
+    if fuentes_unicas:
+        citas = "\n".join(
+            f"- {source} | {source_url} | fecha de revisión: {source_date}"
+            for source, source_url, source_date in fuentes_unicas
+        )
+        ai_text = f"{ai_text.rstrip()}\n\n*Fuentes y fecha de la información:*\n{citas}"
+ 
+    # ── 6. PERSISTENCIA EN BASE DE DATOS ──
+
     if phone:
         save_message(phone, "user", message)
         save_message(phone, "assistant", ai_text)

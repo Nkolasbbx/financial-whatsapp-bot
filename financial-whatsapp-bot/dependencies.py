@@ -39,7 +39,7 @@ supabase_admin: SupabaseClient | None = None
 embedding_model=None
 twilio_client: TwilioClient | None = None
 
-db_pool: psycopg2.pool.SimpleConnectionPool | None = None  # NUEVO
+db_pool: psycopg2.pool.ThreadedConnectionPool | None = None
 whatsapp_http_client: httpx.AsyncClient | None = None
 
 
@@ -56,6 +56,7 @@ def meta_whatsapp_configured() -> bool:
             META_GRAPH_API_VERSION,
         )
     )
+
 
  
  
@@ -138,7 +139,9 @@ async def lifespan(app: FastAPI):
 
     if SUPABASE_DB_DSN:
         try:
-            db_pool = pool.SimpleConnectionPool(
+
+            logger.info("🔌 Creando pool de conexiones Postgres para RAG...")
+            db_pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=1,
                 maxconn=5,
                 dsn=SUPABASE_DB_DSN,

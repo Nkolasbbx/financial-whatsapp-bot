@@ -1,3 +1,8 @@
+---
+source: Municipalidad de El Bosque; base de conocimiento del proyecto
+source_url: https://www.municipalidadelbosque.cl/direcciones/direccion-de-desarrollo-innovacion-y-emprendimiento-territorial/
+source_date: 2026-08-18
+---
 # Ruta de Formalización: Patentes Municipales - EL BOSQUE
 
 ## Dónde Tramitar

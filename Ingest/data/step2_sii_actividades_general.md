@@ -1,3 +1,8 @@
+---
+source: Servicio de Impuestos Internos; base de conocimiento del proyecto
+source_url: https://www.sii.cl/portales/emprendedor/#formalizate
+source_date: 2026-08-18
+---
 # Ruta de Formalización: Trámites ante el SII (General)
 
 ## Declaración de Inicio de Actividades
