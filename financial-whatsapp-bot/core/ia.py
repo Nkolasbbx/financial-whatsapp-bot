@@ -6,7 +6,9 @@ import threading
 import httpx
 
 
-from config import OLLAMA_URL, OLLAMA_MODEL, DB_DSN, MODEL_NAME,HF_TOKEN,DEBUG,TWILIO_WHATSAPP_NUMBER
+
+
+from config import OLLAMA_URL, OLLAMA_MODEL,IA_API_KEY, DB_DSN, MODEL_NAME,HF_TOKEN,DEBUG,TWILIO_WHATSAPP_NUMBER,RES_URL,RES_KEY,RES_MODEL
 from db.users import (
     contar_mensajes,
     get_messages,
@@ -84,15 +86,14 @@ def configure_ollama_endpoint(ollama_url: str, ollama_model: str, ia_api_key: st
     return endpoint_url, headers
 
 
-def llamar_llm(messages: list, max_tokens: int = 600, temperature: float = 0.2) -> str:
+def llamar_llm(messages: list, max_tokens: int = 600, temperature: float = 0.2,ollama_url:str=None ,ollama_model:str=None , ia_api_key:str=None) -> str:
     """
     Llama al LLM (Groq Cloud u Ollama/Ngrok según configuración en .env).
     Recibe una lista de mensajes en formato OpenAI:
         [{"role": "system"/"user"/"assistant", "content": "..."}]
     """
-    ollama_url = os.getenv("OLLAMA_URL", OLLAMA_URL)
-    ollama_model = os.getenv("OLLAMA_MODEL", OLLAMA_MODEL)
-    ia_api_key = os.getenv("IA_API_KEY", "")
+
+
 
     endpoint_url, headers = configure_ollama_endpoint(ollama_url, ollama_model, ia_api_key)
 
@@ -185,15 +186,21 @@ def actualizar_resumen_conversacion(phone: str) -> str | None:
 conversación sobre el proceso de formalización del usuario: qué dudas ha tenido,
 qué trámites ha consultado, en qué comuna está, qué información NO se le pudo
 entregar (para evitar repetir la misma búsqueda fallida). No repitas saludos
-ni relleno conversacional.
+ni relleno conversacional. Cierra siempre con una oración corta y completa;
+nunca termines a mitad de una frase.
 
 Conversación:
 {conversacion_texto}"""
 
+
     resumen = llamar_llm(
-        [{"role": "user", "content": prompt_resumen}],
-        max_tokens=200,
-        temperature=0.2,
+        messages=[{"role": "user", "content": prompt_resumen}],
+        # FIX: 150 palabras en español suele superar los 200 tokens (el
+        # español gasta más tokens por palabra que el inglés). Con
+        # max_tokens=200 el resumen quedaba cortado a mitad de oración.
+        # Se sube el margen a 320 para dar espacio de sobra.
+        max_tokens=320,
+        temperature=0.2, ollama_url=RES_URL,ollama_model=RES_MODEL,ia_api_key= RES_KEY
     )
 
     if not resumen:
@@ -431,6 +438,12 @@ async def get_ai_response(
     hito_context_section = _format_hito_context(hito_context)
     reformulate_section = _format_reformulate_section(reformulate_mode)
 
+    resumen_previo = user.get("resumen_conversacion") or "Sin historial previo relevante."
+
+    # FIX: antes se pasaba el dict `contexto_rag` completo (su repr()
+    # terminaba metido en el system prompt como texto plano con llaves,
+    # comillas y claves de Python). Ahora se pasa `contexto_texto`, que es
+    # el string ya formateado para el modelo.
     system = SYSTEM_PROMPT_EXTENDED.format(
         rubro=user.get("rubro", "No definido"),
         comuna=user.get("comuna", "No definida"),
@@ -438,23 +451,16 @@ async def get_ai_response(
         progreso=progreso,
         hito_context_section=hito_context_section,
         reformulate_section=reformulate_section,
-        resumen_conversacion=user.get("resumen_conversacion", "Sin historial previo relevante."),
-        contexto_rag=contexto_rag,
+        resumen_conversacion=resumen_previo,
+        contexto_rag=contexto_texto,
     )
- 
-    # ── 3. MEMORIA DE LARGO PLAZO (resumen conversacional) ──
-    resumen_previo = user.get("resumen_conversacion") or "Sin historial previo relevante."
- 
-    system_con_rag = (
-        f"{system}\n\n"
-        f"[RESUMEN DE INTERACCIONES PREVIAS]:\n"
-        f"{resumen_previo}\n\n"
-        f"[INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE]:\n"
-        f"Usa prioritariamente este contexto para responder. Si el ámbito dice 'General', considera que aplica perfectamente para el usuario.\n"
-        f"{contexto_texto}"
-    )
- 
-    # ── 4. HISTORIAL RECIENTE DE CONVERSACIÓN ──
+
+    # NOTA: se eliminó el bloque `system_con_rag` que se construía aparte
+    # (duplicando resumen_conversacion y contexto_rag) y que nunca se
+    # usaba realmente en `messages` — código muerto. `system` ya incluye
+    # ambos bloques a través del propio SYSTEM_PROMPT_EXTENDED.
+
+    # ── 3. HISTORIAL RECIENTE DE CONVERSACIÓN ──
 
     history = get_messages(phone, limit=6) if phone else user.get("conversation_history", [])[-6:]
     messages = [{"role": "system", "content": system}]
@@ -462,7 +468,11 @@ async def get_ai_response(
     messages.append({"role": "user", "content": message})
 
     # ── 4. GENERACIÓN DE RESPUESTA ──
-    ai_text = llamar_llm(messages, max_tokens=600, temperature=0.2)
+
+
+
+
+    ai_text = llamar_llm(messages=messages, max_tokens=600, temperature=0.2,ollama_url=OLLAMA_URL,ollama_model=OLLAMA_MODEL,ia_api_key=IA_API_KEY)  
 
     if not ai_text:
         return "😅 Tuve un problema al procesar tu consulta con el modelo. ¿Puedes intentar de nuevo?"

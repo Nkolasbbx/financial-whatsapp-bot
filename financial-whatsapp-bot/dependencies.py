@@ -23,6 +23,9 @@ from config import (
     META_WHATSAPP_TOKEN,
     OLLAMA_MODEL,
     OLLAMA_URL,
+    RES_KEY,
+    RES_MODEL,
+    RES_URL,
     SUPABASE_DB_DSN,
     SUPABASE_KEY,
     SUPABASE_SERVICE_ROLE_KEY,
@@ -34,6 +37,7 @@ from config import (
 logger = logging.getLogger("financial")
 
 ollama_available: bool = False
+resumen_available: bool = False
 supabase: SupabaseClient | None = None
 supabase_admin: SupabaseClient | None = None
 embedding_model=None
@@ -41,6 +45,7 @@ twilio_client: TwilioClient | None = None
 
 db_pool: psycopg2.pool.ThreadedConnectionPool | None = None
 whatsapp_http_client: httpx.AsyncClient | None = None
+resumen_client: httpx.AsyncClient | None = None
 
 
 def twilio_configured() -> bool:
@@ -57,13 +62,18 @@ def meta_whatsapp_configured() -> bool:
         )
     )
 
+def resumen_configured() -> bool:
+    """Indica si están presentes las credenciales del modelo Groq de resúmenes."""
+    return all((RES_URL, RES_MODEL, RES_KEY))
+
 
  
  
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Inicializa y cierra las dependencias compartidas de la aplicación."""
-    global ollama_available, supabase, supabase_admin, embedding_model, db_pool
+    global ollama_available, resumen_available, resumen_client
+    global supabase, supabase_admin, embedding_model, db_pool
     global whatsapp_http_client, twilio_client
 
     if meta_whatsapp_configured():
@@ -109,6 +119,35 @@ async def lifespan(app: FastAPI):
                     )
         except Exception:
             logger.warning("⚠️ Ollama not running - AI chat disabled.")
+
+    if resumen_configured():
+        try:
+            resumen_client = httpx.AsyncClient(
+                base_url=RES_URL,
+                headers={"Authorization": f"Bearer {RES_KEY}"},
+                timeout=30,
+            )
+            response = await resumen_client.get("/models")
+            if response.status_code == 200:
+                resumen_available = True
+                logger.info(
+                    "Modelo de resúmenes Groq conectado - modelo: %s", RES_MODEL
+                )
+            else:
+                logger.warning(
+                    "Groq respondió con código %s al verificar el modelo de resúmenes",
+                    response.status_code,
+                )
+        except Exception as error:
+            logger.error(
+                "No se pudo conectar al modelo de resúmenes Groq: %s", error
+            )
+            resumen_available = False
+    else:
+        logger.warning(
+            "RES_URL/RES_MODEL/RES_KEY no configurados; "
+            "los resúmenes con Groq quedan deshabilitados"
+        )
  
     if SUPABASE_URL and SUPABASE_KEY:
         try:
@@ -158,6 +197,10 @@ async def lifespan(app: FastAPI):
     if whatsapp_http_client is not None:
         await whatsapp_http_client.aclose()
         whatsapp_http_client = None
+
+    if resumen_client is not None:
+        await resumen_client.aclose()
+        resumen_client = None
 
     if db_pool is not None:
         db_pool.closeall()

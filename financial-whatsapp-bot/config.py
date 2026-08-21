@@ -20,6 +20,8 @@ META_GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "").strip().strip("
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+IA_API_KEY = os.getenv("IA_API_KEY", "")
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -28,8 +30,14 @@ EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 SUPABASE_DB_DSN = os.getenv("DB_DSN")
 DB_DSN = SUPABASE_DB_DSN
 
+RES_URL=os.getenv("RES_URL")
+RES_MODEL=os.getenv("RES_MODEL")
+RES_KEY=os.getenv("RES_KEY")
+
+
 HF_TOKEN= os.getenv("HF_TOKEN")
 MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
+
 
 REMINDERS_ENABLED = (
     os.getenv("REMINDERS_ENABLED", "false").strip().lower() == "true"
