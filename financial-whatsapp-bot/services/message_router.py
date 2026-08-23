@@ -33,6 +33,21 @@ MENU_OPTIONS = [
     ("menu_reiniciar", "🔄 Reiniciar"),
 ]
 
+# Textos exactos que envía Meta cuando el usuario presiona
+# los botones de la plantilla tributaria (HdU07).
+VER_MAS_INFO_TRIGGERS = [
+    "ver más información.",
+    "ver mas informacion.",
+    "ver más información",
+    "ver mas informacion",
+]
+ 
+YA_LO_REALICE_TRIGGERS = [
+    "ya lo realicé.",
+    "ya lo realice.",
+    "ya lo realicé",
+    "ya lo realice",
+]
 
 def _menu_widget() -> dict:
     opciones_texto = "\n".join(f"• {label}" for _, label in MENU_OPTIONS)
@@ -237,6 +252,28 @@ def route_message(
                 return response  # Especial: reformulación con contexto
             else:
                 return response
+
+
+     # ── Botón "Ver más información" de alerta tributaria (HdU07) ─────────────
+    if msg_lower in VER_MAS_INFO_TRIGGERS:
+        return (
+            "📋 *Cómo declarar el F29 (IVA mensual)*\n\n"
+            "1️⃣ Entra a *sii.cl* con tu RUT y clave\n"
+            "2️⃣ Ve a *Servicios online → IVA → Declarar y pagar F29*\n"
+            "3️⃣ Revisa los montos precargados y confirma\n"
+            "4️⃣ Si no tuviste ventas ese mes, igual debes declarar con monto *0*\n\n"
+            "💡 Si tienes dudas del proceso, escríbeme y te ayudo paso a paso.\n"
+            "🔗 https://homer.sii.cl/"
+        )
+ 
+    # ── Botón "Ya lo realicé" de alerta tributaria (HdU07) ───────────────────
+    if msg_lower in YA_LO_REALICE_TRIGGERS:
+        return (
+            "✅ *¡Excelente!* Gracias por confirmar que realizaste el trámite.\n\n"
+            "Recuerda que el próximo F29 vence el *día 12 del mes siguiente*.\n\n"
+            "¿Necesitas ayuda con otro trámite? Escríbeme cuando quieras. 💪"
+        )
+
             
     # ── AI Chat (default) ──
     return "__AI_QUERY__"
