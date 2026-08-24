@@ -1,6 +1,7 @@
 import logging
 
 from db.users import get_user, save_user
+from core.menu import get_menu_widget
 from core.roadmaps import (
     get_roadmap_text,
     mark_hito_done,
@@ -9,6 +10,7 @@ from core.roadmaps import (
     HITO_LISTO_ID,
     HITO_AYUDA_ID,
     HITO_VOLVER_ID,
+    MENU_FINANCIAL_ID,
 )
 from core.fondos import simulate_funds
 from core.onboarding import process_onboarding
@@ -21,34 +23,6 @@ from db.reminders import (
 )
 
 logger = logging.getLogger("financial")
-
-# ids usados por el menú interactivo (lista de Meta). Cada id se trata
-# como equivalente a su comando de texto correspondiente.
-MENU_OPTIONS = [
-    ("menu_roadmap", "📋 Mi roadmap"),
-    ("menu_listo", "✅ Marcar hito listo"),
-    ("menu_fondo", "🎯 Postular a fondo"),
-    ("menu_recordatorios_on", "🔔 Activar recordatorios"),
-    ("menu_recordatorios_off", "🔕 Pausar recordatorios"),
-    ("menu_reiniciar", "🔄 Reiniciar"),
-]
-
-
-def _menu_widget() -> dict:
-    opciones_texto = "\n".join(f"• {label}" for _, label in MENU_OPTIONS)
-    body = (
-        "📱 *Menú de FinancIAl*\n\n"
-        "Estas son tus opciones:\n\n"
-        f"{opciones_texto}\n\n"
-        "Tócalas en la lista de abajo, o simplemente *escribe tu pregunta* "
-        "y te respondo con IA 🤖"
-    )
-    return {
-        "type": "list",
-        "body": body,
-        "button_text": "Ver opciones",
-        "options": MENU_OPTIONS,
-    }
 
 
 def _record_reply_safely(phone: str, reply_to_message_id: str | None) -> bool:
@@ -81,17 +55,6 @@ def route_message(
     message: str,
     reply_to_message_id: str | None = None,
 ):
-    """Main router: determines what to do with each incoming message.
-
-    Devuelve un str (texto plano), el string "__AI_QUERY__", o un dict
-    {"type": "text"|"buttons"|"list", "body": ..., ...} cuando la respuesta
-    viene del flujo de onboarding, del menú, o de los botones del roadmap
-    (listo, ayuda, deshacer paso).
-
-    Los ids de botones (menu_roadmap, hito_listo, hito_ayuda, hito_volver,
-    etc.) se tratan como equivalentes a sus comandos de texto para que
-    funcione igual toque el usuario un botón o escriba el comando.
-    """
     message = message.strip()
     msg_lower = message.lower()
 
@@ -135,8 +98,7 @@ def route_message(
             )
         return (
             "🔔 *Recordatorios activados.*\n\n"
-            "Si pasan 3 días sin que avances en tu roadmap, te enviaré un "
-            "recordatorio por WhatsApp. Puedes pausarlos cuando quieras "
+            "Te avisaremos ante alertas importantes para tu negocio. Puedes pausarlos cuando quieras "
             "escribiendo *\"pausar recordatorios\"* o desde el menú."
         )
 
@@ -171,8 +133,8 @@ def route_message(
             reply_to_message_id,
         )
 
-    # ── Roadmap commands ──
-    roadmap_triggers = ["roadmap", "mi roadmap", "hitos", "qué me falta", "que me falta", "formalizar", "mis pasos", "mi ruta", "menu_roadmap"]
+    # ── Roadmap / Plan de crecimiento ──
+    roadmap_triggers = ["roadmap", "mi roadmap", "hitos", "qué me falta", "que me falta", "formalizar", "mis pasos", "mi ruta", "plan de crecimiento", "mi plan de crecimiento", "menu_roadmap"]
     if any(trigger in msg_lower for trigger in roadmap_triggers):
         _record_activity_safely(phone)
         return get_roadmap_text(user)
@@ -188,19 +150,18 @@ def route_message(
         return response
 
     # ── Revert last hito (deshacer paso) ──
-    if msg_lower == HITO_VOLVER_ID:
+    if msg_lower in [HITO_VOLVER_ID, "deshacer", "deshacer paso"]:
         response = revert_last_hito(user, save_user)
         _record_activity_safely(phone)
         return response
 
-    # ── Ayuda contextual del hito → NUEVO: inyecta contexto en IA ──
+    # ── Ayuda contextual del hito ──
     if msg_lower == HITO_AYUDA_ID:
         pending_hito = get_pending_milestone(user)
         if pending_hito:
-            # Retorna patrón especial para que webhook despache a IA con contexto
             return "__AI_QUERY_WITH_CONTEXT__"
         else:
-            return _menu_widget()  # Fallback si no hay hito pendiente
+            return get_menu_widget(user)
 
     if replied_to_reminder:
         _record_activity_safely(phone)
@@ -211,9 +172,13 @@ def route_message(
     if any(trigger in msg_lower for trigger in fund_triggers):
         return simulate_funds(user)
 
-    # ── Help / menu ──
-    if msg_lower in ["ayuda", "help", "menu", "menú", "opciones"]:
-        return _menu_widget()
+    # ── Menu FinancIAl ──
+    menu_triggers = [
+        "ayuda", "help", "menu", "menú", "opciones",
+        "menu_financial", MENU_FINANCIAL_ID
+    ]
+    if any(trigger == msg_lower for trigger in menu_triggers):
+        return get_menu_widget(user)
     
     # ── Manejo de insatisfacción ──
     if detect_unsatisfaction(message):
@@ -233,17 +198,13 @@ def route_message(
             response = handle_unsatisfaction_choice(
                 phone, choice_id, message, user, save_user
             )
-            if response == "__AI_QUERY_WITH_REFORMULATE__":
-                return response  # Especial: reformulación con contexto
-            else:
-                return response
+            return response
             
     # ── AI Chat (default) ──
     return "__AI_QUERY__"
 
 
 def split_message(text: str, max_len: int) -> list[str]:
-    """Split long message into chunks at paragraph boundaries."""
     if len(text) <= max_len:
         return [text]
 
@@ -253,7 +214,6 @@ def split_message(text: str, max_len: int) -> list[str]:
             parts.append(text)
             break
 
-        # Find last newline before limit
         split_at = text.rfind("\n", 0, max_len)
         if split_at == -1:
             split_at = max_len
@@ -263,83 +223,37 @@ def split_message(text: str, max_len: int) -> list[str]:
 
     return parts
 
+
 UNSATISFIED_PATTERNS = {
-    # Respuesta no sirvió
     "no me sirvió", "no sirvio", "eso no me sirvió", "eso no sirvio",
-    "no me funcionó", "no funciono",
-    
-    # No entendió
-    "sigo sin entender", "no entiendo", "aún tengo dudas", "todavia tengo dudas",
-    "me sigue confundiendo", "confundido", "confundida",
-    
-    # Respuesta incompleta/insatisfactoria
-    "eso no fue lo que", "no es lo que", "no era lo que",
-    "no me sirve", "no me ayuda",
-    
-    # Petición de aclaración
-    "puedes explicar mejor", "explica mejor", "más detalles", "mas detalles",
+    "no me funcionó", "no funciono", "sigo sin entender", "no entiendo",
+    "aún tengo dudas", "todavia tengo dudas", "me sigue confundiendo",
+    "confundido", "confundida", "eso no fue lo que", "no es lo que",
+    "no era lo que", "no me sirve", "no me ayuda", "puedes explicar mejor",
+    "explica mejor", "más detalles", "mas detalles",
 }
 
+
 def detect_unsatisfaction(message: str) -> bool:
-    """
-    Detecta si el usuario está insatisfecho con la respuesta del asesor virtual.
-    
-    Se activa cuando el usuario escribe cosas como:
-    - "eso no me sirvió"
-    - "sigo sin entender"
-    - "no entiendo"
-    - "aún tengo dudas"
-    - "no me funcionó"
-    
-    Args:
-        message: str con el mensaje del usuario
-        
-    Returns:
-        bool: True si detecta patrón de insatisfacción
-    """
     if not message:
         return False
-    
     msg_lower = message.lower().strip()
-    
-    # Búsqueda de patrones (substring match)
-    for pattern in UNSATISFIED_PATTERNS:
-        if pattern in msg_lower:
-            return True
-    
-    return False
+    return any(pattern in msg_lower for pattern in UNSATISFIED_PATTERNS)
+
 
 def handle_unsatisfaction_response(user: dict) -> dict:
-    """
-    Ofrece opciones interactivas cuando el usuario no quedó satisfecho
-    con la respuesta del asesor virtual.
-    
-    Presenta 3 opciones:
-    1. 🔄 Reformular: Intenta otra forma de explicar
-    2. 👨‍💼 Soporte humano: Ofrece contacto directo
-    3. 📋 Continuar roadmap: Vuelve al flujo principal
-    
-    Args:
-        user: dict con datos del usuario (para personalización opcional)
-        
-    Returns:
-        dict {"type": "buttons", "body": ..., "options": [...]}
-    """
-    rubro_display = user.get("rubro", "tu emprendimiento").capitalize()
-    
     body = (
         "Entiendo que no quedó claro. 😊 *¿Qué prefieres hacer?*\n\n"
         "Puedo intentar explicarlo de otra forma, "
-        "conectarte con un asesor real, o continuamos con tu roadmap."
+        "conectarte con un asesor real, o volvemos a tu panel."
     )
-    
     return {
         "type": "buttons",
         "body": body,
         "options": [
             ("unsatisfied_reformulate", "🔄 Reformular respuesta"),
             ("unsatisfied_support", "👨‍💼 Hablar con asesor"),
-            ("unsatisfied_continue_roadmap", "📋 Continuar roadmap"),
+            ("unsatisfied_continue_roadmap", "📋 Continuar"),
         ],
     }
 
@@ -351,28 +265,10 @@ def handle_unsatisfaction_choice(
     user: dict,
     save_user_fn,
 ) -> dict | str:
-    """
-    Maneja la opción que eligió el usuario cuando estaba insatisfecho.
-    
-    Args:
-        phone: teléfono del usuario
-        choice_id: ID de la opción elegida (unsatisfied_*)
-        message: contenido recibido desde WhatsApp
-        user: dict con datos del usuario
-        save_user_fn: función para guardar usuario
-        
-    Returns:
-        dict (para botones/listas) o str "__AI_QUERY_WITH_REFORMULATE__" (para IA)
-    """
-    
     if choice_id == "unsatisfied_reformulate":
-        # El webhook recupera directamente desde messages la última pregunta
-        # real del usuario. El contenido recibido aquí es solamente el id del
-        # botón y no se debe persistir como si fuera la pregunta original.
         return "__AI_QUERY_WITH_REFORMULATE__"
     
     elif choice_id == "unsatisfied_support":
-        # Ofrece contacto de soporte humano
         return {
             "type": "text",
             "body": (
@@ -385,11 +281,7 @@ def handle_unsatisfaction_choice(
         }
     
     elif choice_id == "unsatisfied_continue_roadmap":
-        # Vuelve al roadmap
         _record_activity_safely(phone)
-        from core.roadmaps import get_roadmap_text
         return get_roadmap_text(user)
     
-    else:
-        # Fallback (no debería ocurrir)
-        return "No entendí tu elección. Escribe *'roadmap'* para ver tu progreso."
+    return "No entendí tu elección. Escribe *'menu'* para ver tus opciones."

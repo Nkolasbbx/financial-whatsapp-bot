@@ -5,10 +5,20 @@ import threading
 
 import httpx
 
-
-
-
-from config import OLLAMA_URL, OLLAMA_MODEL,IA_API_KEY, DB_DSN, MODEL_NAME,HF_TOKEN,DEBUG,TWILIO_WHATSAPP_NUMBER,RES_URL,RES_KEY,RES_MODEL
+import dependencies
+from config import (
+    DB_DSN,
+    DEBUG,
+    HF_TOKEN,
+    IA_API_KEY,
+    MODEL_NAME,
+    OLLAMA_MODEL,
+    OLLAMA_URL,
+    RES_KEY,
+    RES_MODEL,
+    RES_URL,
+    TWILIO_WHATSAPP_NUMBER,
+)
 from db.users import (
     contar_mensajes,
     get_messages,
@@ -16,17 +26,15 @@ from db.users import (
     save_message,
     save_user,
 )
-from services.whatsapp import WhatsAppAPIError, send_interactive_buttons, send_text
 from services.message_router import split_message
+from services.whatsapp import WhatsAppAPIError, send_interactive_buttons, send_text
 
-
-import dependencies
 
 def _format_hito_context(hito_context: dict | None) -> str:
     """Formatea el contexto del hito para inyectar en system prompt."""
     if not hito_context:
         return ""
-    
+
     return f"""📌 [CONTEXTO DEL HITO ACTUAL - AYUDA CONTEXTUALIZADA]:
 Tu usuario está pidiendo ayuda específica para este hito:
 - *Nombre del hito*: {hito_context.get('title', 'N/A')}
@@ -43,12 +51,13 @@ Enfócate EXCLUSIVAMENTE en guiar al usuario para completar ESTE HITO específic
 
 """
 
+
 def _format_reformulate_section(reformulate_mode: bool = False, comuna: str = "") -> str:
     """Formatea instrucciones especiales para reformulación."""
     if not reformulate_mode:
         return ""
-    
-    return f"""🔄 [MODO REFORMULACIÓN ESPECIAL]:
+
+    return """🔄 [MODO REFORMULACIÓN ESPECIAL]:
 El usuario NO quedó satisfecho con la respuesta anterior.
 Intenta explicar lo MISMO de una forma RADICALMENTE diferente:
 - Si usaste tecnicismos, ahora usa analogías cotidianas.
@@ -57,6 +66,7 @@ Intenta explicar lo MISMO de una forma RADICALMENTE diferente:
 - Mantén máximo 2-3 oraciones, pero de forma muy diferente.
 
 """
+
 
 logger = logging.getLogger("financial")
 
@@ -68,7 +78,6 @@ def configure_ollama_endpoint(ollama_url: str, ollama_model: str, ia_api_key: st
     }
 
     if ia_api_key:
-        # ☁️ MODO NUBE (Groq Cloud)
         base_url = ollama_url.rstrip("/")
         headers["Authorization"] = f"Bearer {ia_api_key}"
         for sufijo in ["/openai/v1", "/v1"]:
@@ -76,7 +85,6 @@ def configure_ollama_endpoint(ollama_url: str, ollama_model: str, ia_api_key: st
                 base_url = base_url[:-len(sufijo)]
         endpoint_url = f"{base_url}/openai/v1/chat/completions"
     else:
-        # 🚇 MODO TUNEL LOCAL (Ngrok de tu compañero)
         headers["ngrok-skip-browser-warning"] = "true"
         if "/v1" not in ollama_url:
             endpoint_url = f"{ollama_url.rstrip('/')}/v1/chat/completions"
@@ -86,15 +94,15 @@ def configure_ollama_endpoint(ollama_url: str, ollama_model: str, ia_api_key: st
     return endpoint_url, headers
 
 
-def llamar_llm(messages: list, max_tokens: int = 600, temperature: float = 0.2,ollama_url:str=None ,ollama_model:str=None , ia_api_key:str=None) -> str:
-    """
-    Llama al LLM (Groq Cloud u Ollama/Ngrok según configuración en .env).
-    Recibe una lista de mensajes en formato OpenAI:
-        [{"role": "system"/"user"/"assistant", "content": "..."}]
-    """
-
-
-
+def llamar_llm(
+    messages: list,
+    max_tokens: int = 600,
+    temperature: float = 0.2,
+    ollama_url: str = None,
+    ollama_model: str = None,
+    ia_api_key: str = None,
+) -> str:
+    """Llama al LLM (Groq Cloud u Ollama/Ngrok según configuración en .env)."""
     endpoint_url, headers = configure_ollama_endpoint(ollama_url, ollama_model, ia_api_key)
 
     logger.info(f"🚀 Despachando inferencia a: {endpoint_url}")
@@ -123,54 +131,40 @@ def llamar_llm(messages: list, max_tokens: int = 600, temperature: float = 0.2,o
         return ""
 
 
-
-
-
 async def obtener_embedding_remoto(texto: str, prefix: str = "query") -> list[float]:
-    """
-    Genera el embedding usando la nueva API de Inference Providers de Hugging Face
-    (feature-extraction, proveedor hf-inference), a través del router unificado.
-    """
+    """Genera el embedding usando la API de Inference Providers de Hugging Face."""
     hf_token = HF_TOKEN
-
     model_name = MODEL_NAME
 
-    # Nueva URL del router (api-inference.huggingface.co está deprecado)
     url = f"https://router.huggingface.co/hf-inference/models/{model_name}/pipeline/feature-extraction"
 
     headers = {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
 
-    # Formateo con el prefijo 'query:' / 'passage:' requerido por E5
     texto_con_prefijo = f"{prefix}: {texto}"
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(
             url,
             headers=headers,
-            json={"inputs": texto_con_prefijo, "options": {"wait_for_model": True}}
+            json={"inputs": texto_con_prefijo, "options": {"wait_for_model": True}},
         )
         response.raise_for_status()
         data = response.json()
 
-        # Normalización de la respuesta de Hugging Face
         if isinstance(data, list) and len(data) > 0:
-            # Si retorna una matriz 2D [[vector]], extraemos la primera fila
             if isinstance(data[0], list):
                 return [float(x) for x in data[0]]
             return [float(x) for x in data]
 
         raise ValueError("Formato de respuesta inesperado desde Hugging Face Inference API")
 
+
 def actualizar_resumen_conversacion(phone: str) -> str | None:
-    """
-    Genera un resumen de los últimos mensajes del usuario y lo guarda
-    en users.resumen_conversacion. Devuelve el resumen generado, o None
-    si no había mensajes o algo falló.
-    """
+    """Genera un resumen de los últimos mensajes del usuario y lo guarda en la BD."""
     historial = get_messages(phone, limit=50)
 
     if not historial:
@@ -192,15 +186,13 @@ nunca termines a mitad de una frase.
 Conversación:
 {conversacion_texto}"""
 
-
     resumen = llamar_llm(
         messages=[{"role": "user", "content": prompt_resumen}],
-        # FIX: 150 palabras en español suele superar los 200 tokens (el
-        # español gasta más tokens por palabra que el inglés). Con
-        # max_tokens=200 el resumen quedaba cortado a mitad de oración.
-        # Se sube el margen a 320 para dar espacio de sobra.
         max_tokens=320,
-        temperature=0.2, ollama_url=RES_URL,ollama_model=RES_MODEL,ia_api_key= RES_KEY
+        temperature=0.2,
+        ollama_url=RES_URL,
+        ollama_model=RES_MODEL,
+        ia_api_key=RES_KEY,
     )
 
     if not resumen:
@@ -221,11 +213,7 @@ Conversación:
 
 
 def actualizar_resumen_en_background(phone: str, background_tasks=None):
-    """
-    Dispara la actualización del resumen sin bloquear la respuesta al usuario.
-    - Si se pasa un `background_tasks` de FastAPI (BackgroundTasks), lo usa.
-    - Si no, lanza un hilo simple con threading.
-    """
+    """Dispara la actualización del resumen en segundo plano."""
     if background_tasks is not None:
         background_tasks.add_task(actualizar_resumen_conversacion, phone)
     else:
@@ -276,21 +264,18 @@ Usa prioritariamente este contexto para responder.
 {contexto_rag}
 """
 
+
 async def obtener_contexto_rag(message: str, comuna_usuario: str) -> dict:
-    """
-    Devuelve el contexto RAG para la comuna correcta según el router de detección.
-    Si la comuna detectada no está soportada, no consulta la BD (ahorra una query)
-    y devuelve directamente el mensaje de sin cobertura.
-    """
+    """Devuelve el contexto RAG para la comuna correcta."""
     deteccion = detectar_comuna(message, comuna_usuario)
     comuna_busqueda = deteccion["comuna"]
- 
+
     if not deteccion["soportada"]:
         return {
             "contexto": f"SIN COBERTURA: no manejamos información de la comuna '{comuna_busqueda}'. Solo Recoleta y El Bosque están disponibles.",
             "fuentes": [],
         }
- 
+
     contexto = ""
     fuentes = []
     try:
@@ -298,22 +283,25 @@ async def obtener_contexto_rag(message: str, comuna_usuario: str) -> dict:
             raise RuntimeError("El pool PostgreSQL para RAG no está disponible")
 
         query_vector = await obtener_embedding_remoto(message)
- 
+
         conn = dependencies.db_pool.getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     SELECT content, metadata
                     FROM documents
                     WHERE metadata->>'comuna' ILIKE %s OR metadata->>'comuna' ILIKE '%%general%%'
                     ORDER BY embedding <=> %s::vector
                     LIMIT 4;
-                """, (f"%{comuna_busqueda}%", query_vector))
- 
+                """,
+                    (f"%{comuna_busqueda}%", query_vector),
+                )
+
                 resultados = cur.fetchall()
         finally:
             dependencies.db_pool.putconn(conn)
- 
+
         if resultados:
             for res in resultados:
                 meta = res[1] if res[1] else {}
@@ -336,54 +324,68 @@ async def obtener_contexto_rag(message: str, comuna_usuario: str) -> dict:
                 )
         else:
             contexto = f"SIN INFORMACIÓN disponible para la comuna '{comuna_busqueda}' en la base de datos."
- 
+
     except Exception as e:
         logger.error(f"❌ Error RAG Supabase: {e}")
         contexto = "Error temporal al acceder a las normativas municipales."
- 
+
     return {"contexto": contexto, "fuentes": fuentes}
 
 
 COMUNAS_SOPORTADAS = ["recoleta", "el bosque"]
- 
-# Lista amplia SOLO para detectar cuando el usuario pregunta por una comuna
-# que no está soportada (para no confundir "no la mencionó" con "preguntó por
-# otra comuna que no cubrimos"). Amplía esta lista si quieres más cobertura.
+
 OTRAS_COMUNAS_CONOCIDAS = [
-    "providencia", "santiago", "ñuñoa", "nunoa", "maipú", "maipu",
-    "la florida", "puente alto", "las condes", "vitacura", "peñalolén",
-    "penalolen", "quilicura", "independencia", "conchalí", "conchali",
-    "huechuraba", "renca", "cerro navia", "quinta normal", "estación central",
-    "estacion central", "pedro aguirre cerda", "san miguel", "la cisterna",
-    "lo espejo", "san ramón", "san ramon", "la granja", "macul", "peñaflor",
-    "penaflor", "colina", "lampa", "til til", "melipilla",
+    "providencia",
+    "santiago",
+    "ñuñoa",
+    "nunoa",
+    "maipú",
+    "maipu",
+    "la florida",
+    "puente alto",
+    "las condes",
+    "vitacura",
+    "peñalolén",
+    "penalolen",
+    "quilicura",
+    "independencia",
+    "conchalí",
+    "conchali",
+    "huechuraba",
+    "renca",
+    "cerro navia",
+    "quinta normal",
+    "estación central",
+    "estacion central",
+    "pedro aguirre cerda",
+    "san miguel",
+    "la cisterna",
+    "lo espejo",
+    "san ramón",
+    "san ramon",
+    "la granja",
+    "macul",
+    "peñaflor",
+    "penaflor",
+    "colina",
+    "lampa",
+    "til til",
+    "melipilla",
 ]
 
 
 def detectar_comuna(message: str, comuna_perfil: str) -> dict:
-    """
-    Determina sobre qué comuna debe responder el asistente.
- 
-    Devuelve:
-        {
-            "comuna": str,        # comuna a usar en el retrieval
-            "soportada": bool,    # si tenemos datos de esa comuna
-            "explicita": bool,    # si el usuario la mencionó explícitamente
-        }
-    """
+    """Determina sobre qué comuna debe responder el asistente."""
     mensaje_lower = message.lower()
- 
-    # 1. ¿Menciona explícitamente una de las comunas soportadas?
+
     for comuna in COMUNAS_SOPORTADAS:
         if comuna in mensaje_lower:
             return {"comuna": comuna, "soportada": True, "explicita": True}
- 
-    # 2. ¿Menciona explícitamente OTRA comuna que no cubrimos?
+
     for comuna in OTRAS_COMUNAS_CONOCIDAS:
         if comuna in mensaje_lower:
             return {"comuna": comuna, "soportada": False, "explicita": True}
- 
-    # 3. No mencionó ninguna comuna -> usar la del perfil
+
     comuna_perfil_normalizada = (comuna_perfil or "").lower().strip()
     return {
         "comuna": comuna_perfil_normalizada,
@@ -396,36 +398,19 @@ async def get_ai_response(
     user: dict,
     message: str,
     ollama_available: bool,
-    hito_context: dict | None = None,  # ← NUEVO
-    reformulate_mode: bool = False,    # ← NUEVO
-    background_tasks=None
+    hito_context: dict | None = None,
+    reformulate_mode: bool = False,
+    background_tasks=None,
 ) -> str:
-    """
-    RAG Avanzado con soporte para:
-    - hito_context: Inyecta contexto del hito pendiente para ayuda contextualizada
-    - reformulate_mode: Indica que debe reformular con enfoque diferente
-    
-    Args:
-        user: dict con datos del usuario
-        message: str con el mensaje del usuario
-        ollama_available: bool
-        hito_context: dict opcional con {title, description, rubro, comuna}
-        reformulate_mode: bool para modo reformulación especial
-        background_tasks: BackgroundTasks opcional
-        
-    Returns:
-        str con la respuesta de IA
-    """
     phone = user.get("phone")
     comuna_usuario = (user.get("comuna") or "").lower().strip()
 
-    # ── 1. RECUPERACIÓN RAG ──
+    # 1. Recuperación RAG
     contexto_rag = await obtener_contexto_rag(message, comuna_usuario)
-
     contexto_texto = contexto_rag["contexto"]
     fuentes_rag = contexto_rag["fuentes"]
- 
-    # ── 2. PROMPT AUMENTADO (perfil + progreso) ──
+
+    # 2. Prompt aumentado
     roadmap = user.get("roadmap") or []
     completed = sum(1 for h in roadmap if h.get("done"))
     total = len(roadmap)
@@ -434,16 +419,11 @@ async def get_ai_response(
     if current_hito:
         progreso += f". Siguiente hito: {current_hito['title']}"
 
-    # Formatear secciones dinámicas
     hito_context_section = _format_hito_context(hito_context)
     reformulate_section = _format_reformulate_section(reformulate_mode)
 
     resumen_previo = user.get("resumen_conversacion") or "Sin historial previo relevante."
 
-    # FIX: antes se pasaba el dict `contexto_rag` completo (su repr()
-    # terminaba metido en el system prompt como texto plano con llaves,
-    # comillas y claves de Python). Ahora se pasa `contexto_texto`, que es
-    # el string ya formateado para el modelo.
     system = SYSTEM_PROMPT_EXTENDED.format(
         rubro=user.get("rubro", "No definido"),
         comuna=user.get("comuna", "No definida"),
@@ -455,24 +435,21 @@ async def get_ai_response(
         contexto_rag=contexto_texto,
     )
 
-    # NOTA: se eliminó el bloque `system_con_rag` que se construía aparte
-    # (duplicando resumen_conversacion y contexto_rag) y que nunca se
-    # usaba realmente en `messages` — código muerto. `system` ya incluye
-    # ambos bloques a través del propio SYSTEM_PROMPT_EXTENDED.
-
-    # ── 3. HISTORIAL RECIENTE DE CONVERSACIÓN ──
-
+    # 3. Historial
     history = get_messages(phone, limit=6) if phone else user.get("conversation_history", [])[-6:]
     messages = [{"role": "system", "content": system}]
     messages.extend(history)
     messages.append({"role": "user", "content": message})
 
-    # ── 4. GENERACIÓN DE RESPUESTA ──
-
-
-
-
-    ai_text = llamar_llm(messages=messages, max_tokens=600, temperature=0.2,ollama_url=OLLAMA_URL,ollama_model=OLLAMA_MODEL,ia_api_key=IA_API_KEY)  
+    # 4. Generación
+    ai_text = llamar_llm(
+        messages=messages,
+        max_tokens=600,
+        temperature=0.2,
+        ollama_url=OLLAMA_URL,
+        ollama_model=OLLAMA_MODEL,
+        ia_api_key=IA_API_KEY,
+    )
 
     if not ai_text:
         return "😅 Tuve un problema al procesar tu consulta con el modelo. ¿Puedes intentar de nuevo?"
@@ -493,9 +470,8 @@ async def get_ai_response(
             for source, source_url, source_date in fuentes_unicas
         )
         ai_text = f"{ai_text.rstrip()}\n\n*Fuentes y fecha de la información:*\n{citas}"
- 
-    # ── 6. PERSISTENCIA EN BASE DE DATOS ──
 
+    # 5. Persistencia
     if phone:
         save_message(phone, "user", message)
         save_message(phone, "assistant", ai_text)
@@ -506,47 +482,38 @@ async def get_ai_response(
 
     return ai_text
 
-# Límite del body de mensajes interactivos de WhatsApp Cloud API.
+
+# Límite de caracteres en WhatsApp Cloud API para botones interactivos
 _INTERACTIVE_BODY_LIMIT = 1024
 
-# El id "ayuda" ya es reconocido por route_message() (junto con "help",
-# "menu", etc.) y abre el menú principal, así que no hace falta ningún
-# cambio en services/message_router.py para que este botón funcione.
-_AYUDA_BUTTON = [("ayuda", "❓ Ayuda")]
+# Botón interactivo para regresar al Menú Principal de FinancIAl
+_MENU_BUTTON = [("menu_financial", "📱 Menú principal")]
 
-_CLOSING_LINE = "💬 ¿Tienes otra pregunta? Solo escríbeme."
+_CLOSING_LINE = "💬 ¿Tienes otra duda? Escríbela o regresa al menú:"
 
 
-async def _send_ai_response_with_help(phone: str, ai_text: str) -> None:
-    """Envía la respuesta de IA seguida del botón de Ayuda y la invitación
-    a seguir preguntando. Si la respuesta es muy larga para el límite de
-    mensajes interactivos, se envía primero como texto plano en partes y
-    se cierra con un mensaje corto que trae el botón."""
+async def _send_ai_response_with_menu(phone: str, ai_text: str) -> None:
+    """Envía la respuesta de IA con un botón para regresar al Menú Principal de FinancIAl."""
     body_with_footer = f"{ai_text}\n\n{_CLOSING_LINE}"
 
     if len(body_with_footer) <= _INTERACTIVE_BODY_LIMIT:
-        await send_interactive_buttons(phone, body_with_footer, _AYUDA_BUTTON)
+        await send_interactive_buttons(phone, body_with_footer, _MENU_BUTTON)
         return
 
     for part in split_message(ai_text, 3500):
         await send_text(phone, part)
 
-    await send_interactive_buttons(phone, _CLOSING_LINE, _AYUDA_BUTTON)
+    await send_interactive_buttons(phone, _CLOSING_LINE, _MENU_BUTTON)
 
 
 async def process_ai_and_send(
     phone: str,
     message: str,
     ollama_available: bool,
-    hito_context: dict | None = None,  # ← NUEVO
-    reformulate_mode: bool = False,    # ← NUEVO
+    hito_context: dict | None = None,
+    reformulate_mode: bool = False,
 ):
-    """Genera la respuesta de IA y la envía mediante Meta.
-    
-    Ahora soporta:
-    - hito_context: para ayuda contextualizada al hito
-    - reformulate_mode: para reformulación de respuesta insatisfactoria
-    """
+    """Genera la respuesta de IA y la envía mediante WhatsApp."""
     user = await asyncio.to_thread(get_user, phone)
 
     if not user:
@@ -557,13 +524,13 @@ async def process_ai_and_send(
         user,
         message,
         ollama_available,
-        hito_context=hito_context,  # ← PASAR
-        reformulate_mode=reformulate_mode,  # ← PASAR
+        hito_context=hito_context,
+        reformulate_mode=reformulate_mode,
     )
     await asyncio.to_thread(save_user, phone, user)
 
     try:
-        await _send_ai_response_with_help(phone, ai_response)
+        await _send_ai_response_with_menu(phone, ai_response)
         logger.info("Respuesta de IA enviada a %s", phone)
     except WhatsAppAPIError as error:
         logger.error("No se pudo enviar la respuesta de IA a %s: %s", phone, error)
@@ -577,10 +544,10 @@ async def process_ai_and_send_Twillio(
     save_user_fn,
     twilio_client,
     ollama_available: bool,
-    hito_context: dict | None = None,  # ← NUEVO
-    reformulate_mode: bool = False,  # ← NUEVO
+    hito_context: dict | None = None,
+    reformulate_mode: bool = False,
 ):
-    """Process AI query and send response via Twilio (runs in background)."""
+    """Procesa consulta de IA y envía mediante Twilio."""
     user = get_user_fn(phone_clean)
     if not user:
         return
@@ -589,8 +556,8 @@ async def process_ai_and_send_Twillio(
         user,
         message,
         ollama_available,
-        hito_context=hito_context,  # ← PASAR
-        reformulate_mode=reformulate_mode,  # ← PASAR
+        hito_context=hito_context,
+        reformulate_mode=reformulate_mode,
     )
     save_user_fn(phone_clean, user)
 
