@@ -24,18 +24,6 @@ from db.reminders import (
 
 logger = logging.getLogger("financial")
 
-
-# ids usados por el menú interactivo (lista de Meta). Cada id se trata
-# como equivalente a su comando de texto correspondiente.
-MENU_OPTIONS = [
-    ("menu_roadmap", "📋 Mi roadmap"),
-    ("menu_listo", "✅ Marcar hito listo"),
-    ("menu_fondo", "🎯 Postular a fondo"),
-    ("menu_recordatorios_on", "🔔 Activar recordatorios"),
-    ("menu_recordatorios_off", "🔕 Pausar recordatorios"),
-    ("menu_reiniciar", "🔄 Reiniciar"),
-]
-
 # Textos exactos que envía Meta cuando el usuario presiona
 # los botones de la plantilla tributaria (HdU07).
 VER_MAS_INFO_TRIGGERS = [
@@ -51,22 +39,6 @@ YA_LO_REALICE_TRIGGERS = [
     "ya lo realicé",
     "ya lo realice",
 ]
-
-def _menu_widget() -> dict:
-    opciones_texto = "\n".join(f"• {label}" for _, label in MENU_OPTIONS)
-    body = (
-        "📱 *Menú de FinancIAl*\n\n"
-        "Estas son tus opciones:\n\n"
-        f"{opciones_texto}\n\n"
-        "Tócalas en la lista de abajo, o simplemente *escribe tu pregunta* "
-        "y te respondo con IA 🤖"
-    )
-    return {
-        "type": "list",
-        "body": body,
-        "button_text": "Ver opciones",
-        "options": MENU_OPTIONS,
-    }
 
 
 def _record_reply_safely(phone: str, reply_to_message_id: str | None) -> bool:
@@ -178,13 +150,20 @@ def route_message(
         )
 
     # ── Roadmap / Plan de crecimiento ──
-    roadmap_triggers = ["roadmap", "mi roadmap", "hitos", "qué me falta", "que me falta", "formalizar", "mis pasos", "mi ruta", "plan de crecimiento", "mi plan de crecimiento", "menu_roadmap"]
+    roadmap_triggers = [
+        "roadmap", "mi roadmap", "hitos", "qué me falta", "que me falta",
+        "formalizar", "mis pasos", "mi ruta", "plan de crecimiento",
+        "mi plan de crecimiento", "menu_roadmap"
+    ]
     if any(trigger in msg_lower for trigger in roadmap_triggers):
         _record_activity_safely(phone)
         return get_roadmap_text(user)
 
     # ── Mark hito done ──
-    done_triggers = ["listo", "hecho", "completado", "ya lo hice", "ya está", "ya esta", "siguiente", "menu_listo", HITO_LISTO_ID]
+    done_triggers = [
+        "listo", "hecho", "completado", "ya lo hice", "ya está",
+        "ya esta", "siguiente", "menu_listo", HITO_LISTO_ID
+    ]
     if any(trigger in msg_lower for trigger in done_triggers):
         response = mark_hito_done(user, save_user)
         if get_pending_milestone(user) is None:
@@ -212,7 +191,10 @@ def route_message(
         return get_roadmap_text(user)
 
     # ── Fund simulation ──
-    fund_triggers = ["fondo", "postular", "capital semilla", "capital abeja", "sercotec", "corfo", "financiamiento", "menu_fondo"]
+    fund_triggers = [
+        "fondo", "postular", "capital semilla", "capital abeja",
+        "sercotec", "corfo", "financiamiento", "menu_fondo"
+    ]
     if any(trigger in msg_lower for trigger in fund_triggers):
         return simulate_funds(user)
 
@@ -242,14 +224,9 @@ def route_message(
             response = handle_unsatisfaction_choice(
                 phone, choice_id, message, user, save_user
             )
+            return response
 
-            if response == "__AI_QUERY_WITH_REFORMULATE__":
-                return response  # Especial: reformulación con contexto
-            else:
-                return response
-
-
-     # ── Botón "Ver más información" de alerta tributaria (HdU07) ─────────────
+    # ── Botón "Ver más información" de alerta tributaria (HdU07) ─────────────
     if msg_lower in VER_MAS_INFO_TRIGGERS:
         return (
             "📋 *Cómo declarar el F29 (IVA mensual)*\n\n"
@@ -269,7 +246,6 @@ def route_message(
             "¿Necesitas ayuda con otro trámite? Escríbeme cuando quieras. 💪"
         )
 
-            
     # ── AI Chat (default) ──
     return "__AI_QUERY__"
 
