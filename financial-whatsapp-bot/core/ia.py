@@ -1,6 +1,8 @@
 import logging
 import os
 import threading
+import re
+import unicodedata
 
 import httpx
 
@@ -279,6 +281,55 @@ async def obtener_contexto_rag(message: str, comuna_usuario: str) -> dict:
 
 
 COMUNAS_SOPORTADAS = ["recoleta", "el bosque"]
+
+CONSULTA_DOCUMENTAL_TERMINOS = (
+    "tramite", "trámite", "formalizar", "formalizacion", "formalización",
+    "requisito", "requisitos", "permiso", "permisos", "patente", "patentes",
+    "resolucion sanitaria", "resolución sanitaria", "sii", "impuesto",
+    "boleta", "factura", "inicio de actividades", "constitucion", "constitución",
+    "empresa", "ley", "normativa", "reglamento", "plazo", "costo", "costos",
+    "cuanto cuesta", "cuánto cuesta", "municipalidad", "seremi",
+)
+
+MENSAJES_CONVERSACIONALES = {
+    "hola", "holaa", "holaaa", "buenas", "buenos dias", "buenas tardes",
+    "buenas noches", "que tal", "qué tal", "como estas", "cómo estás",
+    "gracias", "muchas gracias", "ok", "vale", "adios", "adiós", "chao",
+}
+
+
+def _normalizar_mensaje(message: str) -> str:
+    """Normaliza mayúsculas, tildes y signos para clasificar mensajes."""
+    message_normalizado = unicodedata.normalize("NFD", message.lower())
+    message_sin_tildes = "".join(
+        caracter for caracter in message_normalizado
+        if unicodedata.category(caracter) != "Mn"
+    )
+    return re.sub(r"[^a-z0-9\s]", " ", message_sin_tildes)
+
+
+def requiere_rag(message: str) -> bool:
+    """Indica si el mensaje requiere consultar información documental."""
+    mensaje_normalizado = _normalizar_mensaje(message)
+    mensaje_limpio = " ".join(mensaje_normalizado.split())
+
+    if not mensaje_limpio:
+        return False
+
+    if any(
+        re.search(rf"\b{re.escape(_normalizar_mensaje(termino))}\b", mensaje_limpio)
+        for termino in CONSULTA_DOCUMENTAL_TERMINOS
+    ):
+        return True
+
+    if mensaje_limpio in {
+        _normalizar_mensaje(mensaje_conversacional)
+        for mensaje_conversacional in MENSAJES_CONVERSACIONALES
+    }:
+        return False
+
+    # Ante una pregunta ambigua se consulta RAG para no omitir una duda real.
+    return True
  
 # Lista amplia SOLO para detectar cuando el usuario pregunta por una comuna
 # que no está soportada (para no confundir "no la mencionó" con "preguntó por
@@ -336,10 +387,14 @@ async def get_ai_response(user: dict, message: str, ollama_available: bool, back
     phone = user.get("phone")
     comuna_usuario = (user.get("comuna") or "").lower().strip()
  
-    # ── 1. RECUPERACIÓN RAG (con router de comuna integrado) ──
-    contexto_rag = await obtener_contexto_rag(message, comuna_usuario)
-    contexto_texto = contexto_rag["contexto"]
-    fuentes_rag = contexto_rag["fuentes"]
+    # ── 1. RECUPERACIÓN RAG solo para consultas informativas ──
+    if requiere_rag(message):
+        contexto_rag = await obtener_contexto_rag(message, comuna_usuario)
+        contexto_texto = contexto_rag["contexto"]
+        fuentes_rag = contexto_rag["fuentes"]
+    else:
+        contexto_texto = "No se requiere información documental para este mensaje."
+        fuentes_rag = []
  
     # ── 2. PROMPT AUMENTADO (perfil + progreso) ──
     roadmap = user.get("roadmap") or []
