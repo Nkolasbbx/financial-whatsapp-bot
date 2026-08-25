@@ -25,6 +25,50 @@ from db.reminders import (
 logger = logging.getLogger("financial")
 
 
+# ids usados por el menú interactivo (lista de Meta). Cada id se trata
+# como equivalente a su comando de texto correspondiente.
+MENU_OPTIONS = [
+    ("menu_roadmap", "📋 Mi roadmap"),
+    ("menu_listo", "✅ Marcar hito listo"),
+    ("menu_fondo", "🎯 Postular a fondo"),
+    ("menu_recordatorios_on", "🔔 Activar recordatorios"),
+    ("menu_recordatorios_off", "🔕 Pausar recordatorios"),
+    ("menu_reiniciar", "🔄 Reiniciar"),
+]
+
+# Textos exactos que envía Meta cuando el usuario presiona
+# los botones de la plantilla tributaria (HdU07).
+VER_MAS_INFO_TRIGGERS = [
+    "ver más información.",
+    "ver mas informacion.",
+    "ver más información",
+    "ver mas informacion",
+]
+ 
+YA_LO_REALICE_TRIGGERS = [
+    "ya lo realicé.",
+    "ya lo realice.",
+    "ya lo realicé",
+    "ya lo realice",
+]
+
+def _menu_widget() -> dict:
+    opciones_texto = "\n".join(f"• {label}" for _, label in MENU_OPTIONS)
+    body = (
+        "📱 *Menú de FinancIAl*\n\n"
+        "Estas son tus opciones:\n\n"
+        f"{opciones_texto}\n\n"
+        "Tócalas en la lista de abajo, o simplemente *escribe tu pregunta* "
+        "y te respondo con IA 🤖"
+    )
+    return {
+        "type": "list",
+        "body": body,
+        "button_text": "Ver opciones",
+        "options": MENU_OPTIONS,
+    }
+
+
 def _record_reply_safely(phone: str, reply_to_message_id: str | None) -> bool:
     try:
         return record_incoming_reminder_reply(phone, reply_to_message_id)
@@ -198,7 +242,33 @@ def route_message(
             response = handle_unsatisfaction_choice(
                 phone, choice_id, message, user, save_user
             )
-            return response
+
+            if response == "__AI_QUERY_WITH_REFORMULATE__":
+                return response  # Especial: reformulación con contexto
+            else:
+                return response
+
+
+     # ── Botón "Ver más información" de alerta tributaria (HdU07) ─────────────
+    if msg_lower in VER_MAS_INFO_TRIGGERS:
+        return (
+            "📋 *Cómo declarar el F29 (IVA mensual)*\n\n"
+            "1️⃣ Entra a *sii.cl* con tu RUT y clave\n"
+            "2️⃣ Ve a *Servicios online → IVA → Declarar y pagar F29*\n"
+            "3️⃣ Revisa los montos precargados y confirma\n"
+            "4️⃣ Si no tuviste ventas ese mes, igual debes declarar con monto *0*\n\n"
+            "💡 Si tienes dudas del proceso, escríbeme y te ayudo paso a paso.\n"
+            "🔗 https://homer.sii.cl/"
+        )
+ 
+    # ── Botón "Ya lo realicé" de alerta tributaria (HdU07) ───────────────────
+    if msg_lower in YA_LO_REALICE_TRIGGERS:
+        return (
+            "✅ *¡Excelente!* Gracias por confirmar que realizaste el trámite.\n\n"
+            "Recuerda que el próximo F29 vence el *día 12 del mes siguiente*.\n\n"
+            "¿Necesitas ayuda con otro trámite? Escríbeme cuando quieras. 💪"
+        )
+
             
     # ── AI Chat (default) ──
     return "__AI_QUERY__"

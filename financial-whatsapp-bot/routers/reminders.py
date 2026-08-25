@@ -4,6 +4,7 @@ from fastapi import APIRouter, Header, HTTPException
 
 from config import CRON_SECRET
 from services.reminders import send_due_reminders
+from services.alertas_tributarias import send_tax_alerts
 
 router = APIRouter(prefix="/internal/reminders")
 
@@ -26,6 +27,8 @@ def validate_cron_authorization(authorization: str | None) -> None:
 async def run_reminders(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
-    """Ejecuta recordatorios desde Vercel Cron o una petición local manual."""
+    """Ejecuta recordatorios y alertas tributarias."""
     validate_cron_authorization(authorization)
-    return await send_due_reminders()
+    reminders_result = await send_due_reminders()
+    alerts_result = await send_tax_alerts()
+    return {**reminders_result, **alerts_result}
