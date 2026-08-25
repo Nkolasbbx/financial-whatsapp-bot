@@ -71,9 +71,25 @@ CRON_SECRET = (
     or os.getenv("REMINDER_CRON_SECRET", "")
 ).strip()
 
+# Límite distribuido de mensajes entrantes por número telefónico.
+RATE_LIMIT_ENABLED = (
+    os.getenv("RATE_LIMIT_ENABLED", "true").strip().lower() == "true"
+)
+RATE_LIMIT_MAX_MESSAGES = int(os.getenv("RATE_LIMIT_MAX_MESSAGES", "2"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+RATE_LIMIT_BLOCK_SECONDS = int(os.getenv("RATE_LIMIT_BLOCK_SECONDS", "60"))
+
 if REMINDER_DAYS < 1:
     raise ValueError("REMINDER_DAYS debe ser mayor que cero")
 
 if REMINDER_BATCH_SIZE < 1:
     raise ValueError("REMINDER_BATCH_SIZE debe ser mayor que cero")
 
+if RATE_LIMIT_MAX_MESSAGES < 1:
+    raise ValueError("RATE_LIMIT_MAX_MESSAGES debe ser mayor que cero")
+
+if RATE_LIMIT_WINDOW_SECONDS < 1:
+    raise ValueError("RATE_LIMIT_WINDOW_SECONDS debe ser mayor que cero")
+
+if RATE_LIMIT_BLOCK_SECONDS < 1:
+    raise ValueError("RATE_LIMIT_BLOCK_SECONDS debe ser mayor que cero")

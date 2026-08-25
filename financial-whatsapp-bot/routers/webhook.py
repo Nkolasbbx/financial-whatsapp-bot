@@ -9,6 +9,11 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, R
 from config import META_WEBHOOK_VERIFY_TOKEN, DEBUG
 from core.ia import process_ai_and_send, process_ai_and_send_Twillio
 from core.roadmaps import extract_hito_context
+from db.rate_limits import (
+    RATE_LIMIT_WARNING,
+    check_message_rate_limit,
+    is_rate_limit_exempt,
+)
 from db.reminders import update_reminder_delivery_status
 from db.users import get_last_user_message, get_user
 from services.message_router import route_message, split_message
@@ -190,6 +195,30 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                         logger.error("No se pudo responder al mensaje no textual: %s", error)
                     processed_messages += 1
                     continue
+
+                if not is_rate_limit_exempt(message):
+                    rate_limit = await asyncio.to_thread(
+                        check_message_rate_limit,
+                        phone,
+                    )
+                    if not rate_limit["allowed"]:
+                        logger.warning(
+                            "Mensaje bloqueado por rate limit: phone=%s "
+                            "retry_after=%s",
+                            phone,
+                            rate_limit["retry_after_seconds"],
+                        )
+                        if rate_limit["notify_user"]:
+                            try:
+                                await send_text(phone, RATE_LIMIT_WARNING)
+                            except WhatsAppAPIError as error:
+                                logger.error(
+                                    "No se pudo notificar el rate limit a %s: %s",
+                                    phone,
+                                    error,
+                                )
+                        processed_messages += 1
+                        continue
 
                 logger.info("Mensaje de WhatsApp recibido desde %s", phone)
                 reply_to_message_id = incoming.get("context", {}).get("id")

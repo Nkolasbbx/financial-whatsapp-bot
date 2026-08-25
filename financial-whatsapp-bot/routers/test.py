@@ -1,6 +1,13 @@
+import asyncio
+
 import dependencies
 from fastapi import APIRouter, Request, Response
 
+from db.rate_limits import (
+    RATE_LIMIT_WARNING,
+    check_message_rate_limit,
+    is_rate_limit_exempt,
+)
 from services.message_router import route_message
 from core.ia import get_ai_response
 from db.users import get_user, save_user
@@ -14,6 +21,21 @@ async def test_chat(request: Request):
     data = await request.json()
     phone = data.get("phone", "+56900000000")
     message = data.get("message", "")
+
+    if not is_rate_limit_exempt(message):
+        rate_limit = await asyncio.to_thread(
+            check_message_rate_limit,
+            phone,
+        )
+        if not rate_limit["allowed"]:
+            return {
+                "response": (
+                    RATE_LIMIT_WARNING if rate_limit["notify_user"] else ""
+                ),
+                "phone": phone,
+                "rate_limited": True,
+                "retry_after_seconds": rate_limit["retry_after_seconds"],
+            }
 
     response = route_message(phone, message)
 
