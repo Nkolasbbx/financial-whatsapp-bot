@@ -358,6 +358,13 @@ MENSAJES_CONVERSACIONALES = {
     "gracias", "muchas gracias", "ok", "vale", "adios", "adiós", "chao",
 }
 
+PATRONES_CONVERSACIONALES = (
+    r"^(hola+|buenas?|buenos dias|buenas tardes|buenas noches)( como estas| que tal| todo bien)?$",
+    r"^(hola+|buenas?) (wachin|wacho|loco|amigo|amiga|bro|compa|jefe|maestro|socio)$",
+    r"^(muchas gracias|gracias)( por todo| igualmente)?$",
+    r"^(ok|vale|adios|chao)$",
+)
+
 
 def _normalizar_mensaje(message: str) -> str:
     """Normaliza mayúsculas, tildes y signos para clasificar mensajes."""
@@ -383,10 +390,14 @@ def requiere_rag(message: str) -> bool:
     ):
         return True
 
-    if mensaje_limpio in {
+    mensajes_conversacionales = {
         _normalizar_mensaje(mensaje_conversacional)
         for mensaje_conversacional in MENSAJES_CONVERSACIONALES
-    }:
+    }
+    if (
+        mensaje_limpio in mensajes_conversacionales
+        or any(re.fullmatch(patron, mensaje_limpio) for patron in PATRONES_CONVERSACIONALES)
+    ):
         return False
 
     # Ante una pregunta ambigua se consulta RAG para no omitir una duda real.
