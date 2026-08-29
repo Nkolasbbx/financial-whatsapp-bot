@@ -34,6 +34,8 @@ RES_URL=os.getenv("RES_URL")
 RES_MODEL=os.getenv("RES_MODEL")
 RES_KEY=os.getenv("RES_KEY")
 
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
 
 HF_TOKEN= os.getenv("HF_TOKEN")
 MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")

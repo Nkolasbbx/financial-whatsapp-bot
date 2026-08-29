@@ -4,10 +4,9 @@ import logging
 from collections import deque
 
 import dependencies
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from config import META_WEBHOOK_VERIFY_TOKEN, DEBUG
-from core.ia import process_ai_and_send, process_ai_and_send_Twillio
 from core.roadmaps import extract_hito_context
 from db.reminders import update_reminder_delivery_status
 from db.users import get_last_user_message, get_user
@@ -25,34 +24,22 @@ logger = logging.getLogger("financial")
 
 router = APIRouter()
 
-_MAX_RECENT_MESSAGE_IDS = 10_000
-_recent_message_ids: deque[str] = deque()
-_recent_message_id_set: set[str] = set()
+_MESSAGE_ID_TTL_SECONDS = 86400  # 24h es de sobra para descartar duplicados de Meta
 
 
-def _remember_message(message_id: str) -> bool:
-    """Registra un mensaje y devuelve False cuando Meta ya lo había enviado."""
+async def _remember_message(redis, message_id: str) -> bool:
+    """Registra un mensaje en Redis y devuelve False si Meta ya lo había enviado."""
     if not message_id:
         return True
-    if message_id in _recent_message_id_set:
-        return False
-
-    if len(_recent_message_ids) >= _MAX_RECENT_MESSAGE_IDS:
-        oldest_id = _recent_message_ids.popleft()
-        _recent_message_id_set.discard(oldest_id)
-
-    _recent_message_ids.append(message_id)
-    _recent_message_id_set.add(message_id)
-    return True
+    # SET NX: solo escribe si la key no existe. Es atómico, así que no hay
+    # condición de carrera aunque lleguen dos webhooks casi simultáneos.
+    was_set = await redis.set(
+        f"msg_seen:{message_id}", "1", nx=True, ex=_MESSAGE_ID_TTL_SECONDS
+    )
+    return bool(was_set)
 
 
 def _extract_message_text(incoming: dict) -> str | None:
-    """Extrae texto normal o el id/etiqueta de una respuesta interactiva.
-
-    Para botones y listas se prioriza el `id` (p. ej. "rubro_textil",
-    "sii_si") sobre el título visible, porque la lógica de onboarding
-    matchea por id cuando la respuesta vino de un botón/lista.
-    """
     message_type = incoming.get("type")
     if message_type == "text":
         return incoming.get("text", {}).get("body", "").strip() or None
@@ -67,14 +54,6 @@ def _extract_message_text(incoming: dict) -> str | None:
 
 
 async def _send_response(phone: str, result) -> None:
-    """Despacha la respuesta de route_message según su tipo.
-
-    `result` puede ser:
-      - str: texto plano (compatibilidad con flujos existentes)
-      - dict {"type": "text", "body": ...}
-      - dict {"type": "buttons", "body": ..., "options": [(id, titulo), ...]}
-      - dict {"type": "list", "body": ..., "button_text": ..., "options": [(id, titulo), ...]}
-    """
     if isinstance(result, dict):
         result_type = result.get("type", "text")
         body = result.get("body", "")
@@ -91,12 +70,10 @@ async def _send_response(phone: str, result) -> None:
             )
             return
 
-        # type == "text" u otro no reconocido: cae a texto plano
         for part in split_message(body, 4000):
             await send_text(phone, part)
         return
 
-    # compatibilidad: result sigue siendo un string plano
     for part in split_message(result, 4000):
         await send_text(phone, part)
 
@@ -107,7 +84,6 @@ async def verify_whatsapp_webhook(
     token: str | None = Query(default=None, alias="hub.verify_token"),
     challenge: str | None = Query(default=None, alias="hub.challenge"),
 ):
-    """Responde al desafío que Meta utiliza al registrar el webhook."""
     if (
         mode == "subscribe"
         and META_WEBHOOK_VERIFY_TOKEN
@@ -121,8 +97,9 @@ async def verify_whatsapp_webhook(
 
 
 @router.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Recibe mensajes y estados de WhatsApp Cloud API."""
+async def whatsapp_webhook(request: Request):
+    """Recibe mensajes y estados de WhatsApp Cloud API. Todo el trabajo pesado
+    se encola en Redis; este endpoint solo valida, parsea y encola."""
     raw_body = await request.body()
     signature = request.headers.get("X-Hub-Signature-256", "")
 
@@ -138,6 +115,7 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     if payload.get("object") != "whatsapp_business_account":
         return {"status": "ignored"}
 
+    redis = request.app.state.redis
     processed_messages = 0
 
     for entry in payload.get("entry", []):
@@ -169,7 +147,7 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
 
             for incoming in value.get("messages", []):
                 message_id = incoming.get("id", "")
-                if not _remember_message(message_id):
+                if not await _remember_message(redis, message_id):
                     logger.info("Webhook duplicado ignorado: %s", message_id)
                     continue
 
@@ -193,6 +171,9 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
 
                 logger.info("Mensaje de WhatsApp recibido desde %s", phone)
                 reply_to_message_id = incoming.get("context", {}).get("id")
+
+                # route_message decide QUÉ tipo de tarea es (rápida vs IA),
+                # pero ya no ejecuta la IA aquí: solo clasifica.
                 result = await asyncio.to_thread(
                     route_message,
                     phone,
@@ -203,36 +184,26 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                 try:
                     if result == "__AI_QUERY__":
                         await send_text(phone, "🤔 Déjame pensar tu respuesta...")
-                        background_tasks.add_task(
-                            process_ai_and_send,
+                        await redis.enqueue_job(
+                            "process_ai_task",
                             phone,
                             message,
-                            dependencies.ollama_available,
                         )
-                    
+
                     elif result == "__AI_QUERY_WITH_CONTEXT__":
                         await send_text(phone, "🤔 Te ayudo con este hito...")
-                        
                         user = await asyncio.to_thread(get_user, phone)
-                        hito_context = None
-                        if user:
-                            from core.roadmaps import extract_hito_context
-                            hito_context = extract_hito_context(user)
-                        
-                        background_tasks.add_task(
-                            process_ai_and_send,
+                        hito_context = extract_hito_context(user) if user else None
+                        await redis.enqueue_job(
+                            "process_ai_task",
                             phone,
                             message,
-                            dependencies.ollama_available,
                             hito_context=hito_context,
                             reformulate_mode=False,
                         )
-                    
+
                     elif result == "__AI_QUERY_WITH_REFORMULATE__":
-                        last_message = await asyncio.to_thread(
-                            get_last_user_message,
-                            phone,
-                        )
+                        last_message = await asyncio.to_thread(get_last_user_message, phone)
 
                         if not last_message:
                             await send_text(
@@ -245,15 +216,14 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                                 phone,
                                 "Tienes razón, déjame explicarlo de otra forma...",
                             )
-                            background_tasks.add_task(
-                                process_ai_and_send,
+                            await redis.enqueue_job(
+                                "process_ai_task",
                                 phone,
                                 last_message,
-                                dependencies.ollama_available,
                                 hito_context=None,
                                 reformulate_mode=True,
                             )
-                    
+
                     else:
                         await _send_response(phone, result)
                         logger.info("Respuesta enviada a %s", phone)
