@@ -36,8 +36,9 @@ Confirmado contra la documentación de Railway: **el `Root Directory` de cada se
 
 Esto significa que, aunque los archivos ya están en el repo, todavía hay pasos manuales por servicio, una sola vez, al crear cada uno:
 
-1. `Settings → Source → Root Directory` = `financial-whatsapp-bot`.
+1. `Settings → Source → Root Directory` = `/financial-whatsapp-bot` (**con la barra inicial** — sin ella Railway no lo aplica, y Railpack termina analizando la raíz del monorepo entero en vez de la carpeta del bot; así falla con "could not determine how to build the app").
 2. `Settings → Config as Code Path` = `/financial-whatsapp-bot/railway.web.json` (o `railway.worker.json` en el otro servicio).
+3. Después de cambiar el Root Directory, Railway solo lo aplica a **deploys nuevos** — hay que disparar un redeploy manual (`Deployments → Deploy` o `Redeploy` en el último deployment) para que tome efecto.
 3. `Variables`: copiar manualmente lo que hoy vive en `.env` local (que está en `.gitignore` — Railway nunca lo lee). Para `REDIS_URL` específicamente, no se pega el DSN a mano: se referencia el servicio de Redis de Railway (ver `docs/redis-resilience-and-cost.md` para por qué conviene el Redis de Railway en vez de Upstash):
    ```
    REDIS_URL=${{Redis.REDIS_URL}}
