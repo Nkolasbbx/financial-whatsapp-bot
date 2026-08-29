@@ -59,6 +59,69 @@ Igual que en el dashboard: **después actualizá `.railway/railway.ts` a mano** 
 
 ---
 
+## Cómo deployar un cambio de código (guía rápida)
+
+Railway está conectado directo al repo de GitHub — no hay ningún paso manual de "subir" el código, deployar es simplemente pushear.
+
+### Paso a paso
+1. Hacé tu cambio de código como siempre (commit en una rama, PR, lo que uses) y mergealo/pusheálo a `main`.
+2. Railway detecta el push en `Nkolasbbx/financial-whatsapp-bot` y dispara un build + deploy **automático en los dos servicios** (`financial-whatsapp-bot` y `incredible-adventure`), porque ambos apuntan al mismo repo y Root Directory — no hay forma de deployar uno sin el otro con un push normal.
+3. Mirá que terminen bien:
+   - **Dashboard:** cada servicio → pestaña **Deployments** → el build más nuevo debería pasar de "Building" a "Deploying" a **Active** (punto verde).
+   - **CLI:**
+     ```bash
+     npx -y @railway/cli@latest status
+     ```
+     Confirmá que ambos servicios digan `● Online`.
+4. Si algo falla, revisá los logs del deploy que falló:
+   - **Dashboard:** click en ese deployment → logs.
+   - **CLI:**
+     ```bash
+     npx -y @railway/cli@latest logs --deployment --service financial-whatsapp-bot
+     npx -y @railway/cli@latest logs --deployment --service incredible-adventure
+     ```
+
+### Redeployar sin pushear código nuevo
+Útil si el build falló por algo transitorio, o si cambiaste una variable y por algún motivo no redeployó solo.
+```bash
+npx -y @railway/cli@latest redeploy --service financial-whatsapp-bot --yes
+npx -y @railway/cli@latest redeploy --service incredible-adventure --yes
+```
+Dashboard: servicio → **Deployments** → en el último deployment, botón **⋮ → Redeploy**.
+
+### Lo que un push a `main` NO hace
+No toca nada de `.railway/railway.ts` ni de la config de infraestructura (start command, restart policy, variables) — eso es independiente, ver la sección de Infrastructure as Code más abajo. Un push solo reconstruye y redeploya el código de la app con la configuración que ya esté puesta en Railway.
+
+---
+
+## Cómo prender y apagar los servicios (ahorrar costos)
+
+Railway cobra por cómputo mientras el contenedor está corriendo. Si en algún momento no necesitás el bot activo (por ejemplo, una pausa larga sin uso), podés escalar los servicios a **0 réplicas** en vez de borrar nada — apaga el cómputo pero deja toda la configuración (variables, start command, etc.) intacta para prenderlo de nuevo cuando quieras.
+
+⚠️ **Mientras estén apagados, el bot no responde nada**: ni el webhook de Meta (server apagado) ni los mensajes en cola (worker apagado). No es un modo "espera", es apagado real.
+
+### Apagar
+```bash
+npx -y @railway/cli@latest scale us-west=0 --service financial-whatsapp-bot
+npx -y @railway/cli@latest scale us-west=0 --service incredible-adventure
+```
+(`us-west` es la región donde están desplegados hoy — corroborá con `railway service list --json` si en algún momento la migran.)
+
+### Prender de nuevo
+```bash
+npx -y @railway/cli@latest scale us-west=1 --service financial-whatsapp-bot
+npx -y @railway/cli@latest scale us-west=1 --service incredible-adventure
+```
+
+### Por dashboard (equivalente)
+Servicio → **Settings → Scaling/Regions** → bajar/subir el número de réplicas de esa región (`0` para apagar, `1` para prender).
+
+### Notas
+- **Redis no hace falta apagarlo** para ahorrar la mayor parte del costo — el cómputo de los dos servicios (web + worker) es lo que más pesa. Si igual querés apagarlo: `npx -y @railway/cli@latest scale us-west=0 --service Redis`. Los datos del volumen (`redis-volume-LX-G`) no se borran al parar el contenedor — al prenderlo de nuevo la cola de jobs pendiente sigue ahí.
+- **`.railway/railway.ts` va a quedar desactualizado** (dice `replicas: { "us-west2": 1 }` para los tres recursos). Si corrés `railway config apply` mientras algo está en 0 réplicas, va a "corregir" eso de vuelta a 1 y prenderlo sin que lo pidas — tenelo presente si tocás infraestructura mientras el bot está apagado a propósito.
+
+---
+
 ## Camino A — Todo por el dashboard (sin CLI)
 
 Para el día a día (cambiar una variable, ver logs, redeployar) el dashboard alcanza y es más simple. La CLI/`.railway/railway.ts` importa sobre todo para cambios estructurales (start command, healthcheck, restart policy, agregar un servicio nuevo).
@@ -191,10 +254,11 @@ Todas viven en `financial-whatsapp-bot`; el worker las referencia todas desde ah
 - **`redis.exceptions.ConnectionError` a `localhost:6379` en el worker** → `REDIS_URL` no está seteada en `incredible-adventure`. Sintomática de que el worker no tiene ninguna variable de entorno configurada — revisar `railway variable list --service incredible-adventure` (o Variables en el dashboard).
 - **El botón "Deploy" del dashboard no arranca y no se puede descartar el aviso** → el servicio todavía usaba Config as Code (`railway.web.json`/`railway.worker.json`) y Railway empezó a bloquear deploys de servicios no migrados. Solución: migrar ese servicio a `.railway/railway.ts` (Camino B) o configurar sus settings de deploy directo en el dashboard (Camino A) y limpiar el campo "Config as Code Path" en Settings → General.
 - **`railway config migrate` no encuentra nada** → solo busca archivos llamados literalmente `railway.json`/`railway.toml`; no reconoce nombres custom como `railway.web.json`.
-- **`restartPolicyType`/`restartPolicyMaxRetries` no se persisten con `railway config apply`** → confirmado con dos intentos, `apply` dice éxito pero `plan` sigue mostrando el campo como pendiente. Configurarlo a mano en el dashboard (Camino A) mientras tanto.
+- **`restartPolicyType`/`restartPolicyMaxRetries` nunca aparecen en `railway config pull`/`plan`, ni configurados a mano en el dashboard** → confirmado: se configuró ON_FAILURE/10 manualmente en el dashboard en ambos servicios, y aun así `railway config pull --force` no trae ese campo (ni como valor seteado, ni de ninguna forma), y `railway config plan` lo sigue mostrando como pendiente (`null → 10`, `null → "ON_FAILURE"`) para siempre. No es un problema de tu configuración — la herramienta de IaC (`pull`/`plan`/`apply`) directamente no lee ni escribe ese campo todavía, aunque el campo sí existe y funciona en el dashboard y en el schema del SDK (`DeployConfig.restartPolicyType`). **No perseguir esto con más `apply`s** — confiar en lo que muestra el dashboard (Settings → Deploy → Restart Policy) como fuente de verdad para este campo puntual, ignorando el diff de `plan`.
+- **`Unknown region 'ams'` al correr `railway scale`** → el código de región interno que usa el grafo/IaC (`us-west2`, `ams`, etc.) no es el mismo que espera `railway scale`/`railway service scale`, que quiere el slug "humano" (`us-west`, `eu-west`, `us-east`, `southeast-asia`). Confirmá la región real con `railway service list --json` (campo `regions[].name`, ej. `us-west2`) y mapeala al slug correspondiente antes de escalar.
 - **`node: bad option: --experimental-strip-types`** → Node del sistema es menor a 22; ver sección de requisitos del Camino B.
 
 ## Pendientes
 - Borrar `railway.web.json` / `railway.worker.json` del repo (ya no hacen nada, pero no molestan hasta 2026-12-01).
 - Confirmar en el dashboard que el campo "Config as Code Path" de ambos servicios quedó vacío.
-- Revisar cada tanto si Railway ya arregló la persistencia de `restartPolicy*` vía `apply` (correr `railway config plan`; si da `0 to change`, ya se puede sacar el workaround manual del dashboard).
+- Revisar cada tanto si Railway ya arregló que `pull`/`plan`/`apply` lean `restartPolicy*` (correr `railway config pull --force` y mirar si el campo aparece en el archivo generado). Mientras tanto, el dashboard es la única fuente de verdad confiable para ese campo puntual.

@@ -3,12 +3,21 @@ import { defineRailway, github, preserve, project, redis, service, volume } from
 export default defineRailway(() => {
   const financialWhatsappBotRepo = github("Nkolasbbx/financial-whatsapp-bot", { checkSuites: false, rootDirectory: "/financial-whatsapp-bot" });
 
-  const Redis = redis("Redis", { region: "ams" });
+  const Redis = redis("Redis", { region: "us-west2" });
   Redis.deploy = { startCommand: "/bin/sh -c \"rm -rf $RAILWAY_VOLUME_MOUNT_PATH/lost+found/ && exec docker-entrypoint.sh redis-server --requirepass $REDIS_PASSWORD --save 60 1 --dir $RAILWAY_VOLUME_MOUNT_PATH\"" };
-  const redisVolumeLXG = volume("redis-volume-LX-G", { alerts: { usage: { "100": {}, "80": {}, "95": {} } }, allowOnlineResize: true, region: "ams", sizeMB: 500 });
+  const redisVolumeLXG = volume("redis-volume-LX-G", { alerts: { usage: { "100": {}, "80": {}, "95": {} } }, allowOnlineResize: true, region: "us-west2", sizeMB: 500 });
+
+  // restartPolicyType/restartPolicyMaxRetries: declarados acá como
+  // documentación de intención (ON_FAILURE / 10 reintentos), pero Railway
+  // ya está configurado a mano en el dashboard para esto — confirmado que
+  // `railway config pull` NO trae este campo aunque esté seteado en vivo, y
+  // `railway config plan` lo muestra como pendiente para siempre por lo
+  // mismo. Es una limitación conocida de la herramienta (ver
+  // docs/railway-deploy.md), no un error de configuración real. No hace
+  // falta correr `apply` para esto ni perseguir que `plan` dé "0 to change".
   const financialWhatsappBot = service("financial-whatsapp-bot", {
     source: financialWhatsappBotRepo,
-    replicas: { "ams": 1 },
+    replicas: { "us-west2": 1 },
     build: { builder: "RAILPACK" },
     deploy: {
       startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT",
@@ -17,7 +26,7 @@ export default defineRailway(() => {
       restartPolicyType: "ON_FAILURE",
       restartPolicyMaxRetries: 10,
     },
-    env: { CRON_SECRET: preserve(), DB_DSN: preserve(), DEBUG: preserve(), EMBEDDING_MODEL_NAME: preserve(), HF_TOKEN: preserve(), IA_API_KEY: preserve(), META_APP_SECRET: preserve(), META_GRAPH_API_VERSION: preserve(), META_PHONE_NUMBER_ID: preserve(), META_WABA_ID: preserve(), META_WEBHOOK_VERIFY_TOKEN: preserve(), META_WHATSAPP_TOKEN: preserve(), OLLAMA_MODEL: preserve(), OLLAMA_URL: preserve(), REDIS_URL: preserve(), REMINDERS_ENABLED: preserve(), REMINDER_BATCH_SIZE: preserve(), REMINDER_DAYS: preserve(), REMINDER_FINAL_TEMPLATE_NAME: preserve(), REMINDER_RECIPIENT_LABEL: preserve(), REMINDER_TEMPLATE_LANGUAGE: preserve(), REMINDER_TEMPLATE_NAME: preserve(), REMINDER_TIMEZONE: preserve(), RES_KEY: preserve(), RES_MODEL: preserve(), RES_URL: preserve(), SUPABASE_KEY: preserve(), SUPABASE_SERVICE_ROLE_KEY: preserve(), SUPABASE_URL: preserve(), TWILIO_ACCOUNT_SID: preserve(), TWILIO_AUTH_TOKEN: preserve(), TWILIO_WHATSAPP_NUMBER: preserve(), WHATSAPP_PROVIDER: preserve() },
+    env: { CRON_SECRET: preserve(), DB_DSN: preserve(), DEBUG: preserve(), EMBEDDING_MODEL_NAME: preserve(), HF_TOKEN: preserve(), IA_API_KEY: preserve(), META_APP_SECRET: preserve(), META_GRAPH_API_VERSION: preserve(), META_PHONE_NUMBER_ID: preserve(), META_WABA_ID: preserve(), META_WEBHOOK_VERIFY_TOKEN: preserve(), META_WHATSAPP_TOKEN: preserve(), OLLAMA_MODEL: preserve(), OLLAMA_URL: preserve(), RATE_LIMIT_BLOCK_SECONDS: preserve(), RATE_LIMIT_ENABLED: preserve(), RATE_LIMIT_MAX_MESSAGES: preserve(), RATE_LIMIT_WINDOW_SECONDS: preserve(), REDIS_URL: preserve(), REMINDERS_ENABLED: preserve(), REMINDER_BATCH_SIZE: preserve(), REMINDER_DAYS: preserve(), REMINDER_FINAL_TEMPLATE_NAME: preserve(), REMINDER_RECIPIENT_LABEL: preserve(), REMINDER_TEMPLATE_LANGUAGE: preserve(), REMINDER_TEMPLATE_NAME: preserve(), REMINDER_TIMEZONE: preserve(), RES_KEY: preserve(), RES_MODEL: preserve(), RES_URL: preserve(), SUPABASE_KEY: preserve(), SUPABASE_SERVICE_ROLE_KEY: preserve(), SUPABASE_URL: preserve(), TWILIO_ACCOUNT_SID: preserve(), TWILIO_AUTH_TOKEN: preserve(), TWILIO_WHATSAPP_NUMBER: preserve(), WHATSAPP_PROVIDER: preserve() },
   });
 
   // El worker no tiene credenciales propias: dependencies.init_dependencies()
@@ -28,7 +37,7 @@ export default defineRailway(() => {
   // también necesite, hay que agregarla acá también.
   const incredibleAdventure = service("incredible-adventure", {
     source: financialWhatsappBotRepo,
-    replicas: { "ams": 1 },
+    replicas: { "us-west2": 1 },
     build: { builder: "RAILPACK" },
     deploy: {
       startCommand: "arq worker.WorkerSettings",
