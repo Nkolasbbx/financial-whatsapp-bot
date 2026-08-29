@@ -15,6 +15,7 @@ from db.rate_limits import (
 )
 from db.reminders import update_reminder_delivery_status
 from db.users import get_last_user_message, get_user
+from phone_lock import acquire_phone_lock, release_phone_lock
 from services.message_router import route_message, split_message
 from services.whatsapp import (
     WhatsAppAPIError,
@@ -161,104 +162,122 @@ async def whatsapp_webhook(request: Request):
                     logger.warning("Mensaje de Meta sin teléfono válido")
                     continue
 
-                message = _extract_message_text(incoming)
-                if message is None:
-                    try:
-                        await send_text(
-                            phone,
-                            "Por ahora solo puedo procesar mensajes de texto. "
-                            "Escríbeme tu consulta y te ayudo 😊",
-                        )
-                    except WhatsAppAPIError as error:
-                        logger.error("No se pudo responder al mensaje no textual: %s", error)
-                    processed_messages += 1
-                    continue
-
-                if not is_rate_limit_exempt(message):
-                    rate_limit = await asyncio.to_thread(
-                        check_message_rate_limit,
-                        phone,
-                    )
-                    if not rate_limit["allowed"]:
-                        logger.warning(
-                            "Mensaje bloqueado por rate limit: phone=%s "
-                            "retry_after=%s",
-                            phone,
-                            rate_limit["retry_after_seconds"],
-                        )
-                        if rate_limit["notify_user"]:
-                            try:
-                                await send_text(phone, RATE_LIMIT_WARNING)
-                            except WhatsAppAPIError as error:
-                                logger.error(
-                                    "No se pudo notificar el rate limit a %s: %s",
-                                    phone,
-                                    error,
-                                )
+                # Lock distribuido en Redis: garantiza que, para este teléfono,
+                # no se envíe ninguna otra respuesta mientras un job de IA
+                # encolado por un mensaje anterior siga en curso en el worker.
+                # Si el mensaje termina encolándose (__AI_QUERY__ y variantes),
+                # NO se libera acá: se le pasa el token al job y es
+                # process_ai_task quien lo libera al terminar (ver worker.py).
+                lock_token = await acquire_phone_lock(redis, phone)
+                hand_off_to_worker = False
+                try:
+                    message = _extract_message_text(incoming)
+                    if message is None:
+                        try:
+                            await send_text(
+                                phone,
+                                "Por ahora solo puedo procesar mensajes de texto. "
+                                "Escríbeme tu consulta y te ayudo 😊",
+                            )
+                        except WhatsAppAPIError as error:
+                            logger.error("No se pudo responder al mensaje no textual: %s", error)
                         processed_messages += 1
                         continue
 
-                logger.info("Mensaje de WhatsApp recibido desde %s", phone)
-                reply_to_message_id = incoming.get("context", {}).get("id")
-
-                # route_message decide QUÉ tipo de tarea es (rápida vs IA),
-                # pero ya no ejecuta la IA aquí: solo clasifica.
-                result = await asyncio.to_thread(
-                    route_message,
-                    phone,
-                    message,
-                    reply_to_message_id,
-                )
-
-                try:
-                    if result == "__AI_QUERY__":
-                        await send_text(phone, "🤔 Déjame pensar tu respuesta...")
-                        await redis.enqueue_job(
-                            "process_ai_task",
+                    if not is_rate_limit_exempt(message):
+                        rate_limit = await asyncio.to_thread(
+                            check_message_rate_limit,
                             phone,
-                            message,
                         )
-
-                    elif result == "__AI_QUERY_WITH_CONTEXT__":
-                        await send_text(phone, "🤔 Te ayudo con este hito...")
-                        user = await asyncio.to_thread(get_user, phone)
-                        hito_context = extract_hito_context(user) if user else None
-                        await redis.enqueue_job(
-                            "process_ai_task",
-                            phone,
-                            message,
-                            hito_context=hito_context,
-                            reformulate_mode=False,
-                        )
-
-                    elif result == "__AI_QUERY_WITH_REFORMULATE__":
-                        last_message = await asyncio.to_thread(get_last_user_message, phone)
-
-                        if not last_message:
-                            await send_text(
+                        if not rate_limit["allowed"]:
+                            logger.warning(
+                                "Mensaje bloqueado por rate limit: phone=%s "
+                                "retry_after=%s",
                                 phone,
-                                "No pude encontrar tu pregunta anterior. "
-                                "¿Puedes escribirla nuevamente?",
+                                rate_limit["retry_after_seconds"],
                             )
-                        else:
-                            await send_text(
-                                phone,
-                                "Tienes razón, déjame explicarlo de otra forma...",
-                            )
+                            if rate_limit["notify_user"]:
+                                try:
+                                    await send_text(phone, RATE_LIMIT_WARNING)
+                                except WhatsAppAPIError as error:
+                                    logger.error(
+                                        "No se pudo notificar el rate limit a %s: %s",
+                                        phone,
+                                        error,
+                                    )
+                            processed_messages += 1
+                            continue
+
+                    logger.info("Mensaje de WhatsApp recibido desde %s", phone)
+                    reply_to_message_id = incoming.get("context", {}).get("id")
+
+                    # route_message decide QUÉ tipo de tarea es (rápida vs IA),
+                    # pero ya no ejecuta la IA aquí: solo clasifica.
+                    result = await asyncio.to_thread(
+                        route_message,
+                        phone,
+                        message,
+                        reply_to_message_id,
+                    )
+
+                    try:
+                        if result == "__AI_QUERY__":
+                            await send_text(phone, "🤔 Déjame pensar tu respuesta...")
                             await redis.enqueue_job(
                                 "process_ai_task",
                                 phone,
-                                last_message,
-                                hito_context=None,
-                                reformulate_mode=True,
+                                message,
+                                lock_token=lock_token,
                             )
+                            hand_off_to_worker = True
 
-                    else:
-                        await _send_response(phone, result)
-                        logger.info("Respuesta enviada a %s", phone)
-                except WhatsAppAPIError as error:
-                    logger.error("No se pudo enviar la respuesta a %s: %s", phone, error)
+                        elif result == "__AI_QUERY_WITH_CONTEXT__":
+                            await send_text(phone, "🤔 Te ayudo con este hito...")
+                            user = await asyncio.to_thread(get_user, phone)
+                            hito_context = extract_hito_context(user) if user else None
+                            await redis.enqueue_job(
+                                "process_ai_task",
+                                phone,
+                                message,
+                                hito_context=hito_context,
+                                reformulate_mode=False,
+                                lock_token=lock_token,
+                            )
+                            hand_off_to_worker = True
 
-                processed_messages += 1
+                        elif result == "__AI_QUERY_WITH_REFORMULATE__":
+                            last_message = await asyncio.to_thread(get_last_user_message, phone)
+
+                            if not last_message:
+                                await send_text(
+                                    phone,
+                                    "No pude encontrar tu pregunta anterior. "
+                                    "¿Puedes escribirla nuevamente?",
+                                )
+                            else:
+                                await send_text(
+                                    phone,
+                                    "Tienes razón, déjame explicarlo de otra forma...",
+                                )
+                                await redis.enqueue_job(
+                                    "process_ai_task",
+                                    phone,
+                                    last_message,
+                                    hito_context=None,
+                                    reformulate_mode=True,
+                                    lock_token=lock_token,
+                                )
+                                hand_off_to_worker = True
+
+                        else:
+                            await _send_response(phone, result)
+                            logger.info("Respuesta enviada a %s", phone)
+                    except WhatsAppAPIError as error:
+                        logger.error("No se pudo enviar la respuesta a %s: %s", phone, error)
+
+                    processed_messages += 1
+                finally:
+                    if not hand_off_to_worker:
+                        await release_phone_lock(redis, phone, lock_token)
 
     return {"status": "received", "processed_messages": processed_messages}

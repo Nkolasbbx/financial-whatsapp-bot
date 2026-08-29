@@ -1,5 +1,7 @@
 # Redis: arquitectura, bug y fix (proceso worker sin dependencias inicializadas)
 
+> Documentos relacionados: [redis-resilience-and-cost.md](./redis-resilience-and-cost.md) (timeouts endurecidos y costo en Upstash), [message-ordering-lock.md](./message-ordering-lock.md) (orden de respuesta por teléfono), [railway-deploy.md](./railway-deploy.md) (despliegue en producción).
+
 ## Contexto
 
 El bot corre en **dos procesos separados**:

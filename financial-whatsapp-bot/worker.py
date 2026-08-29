@@ -1,14 +1,13 @@
 import logging
 
-from arq.connections import RedisSettings
-
 import dependencies
-from config import REDIS_URL
 from core.ia import process_ai_and_send
+from phone_lock import release_phone_lock
+from redis_settings import get_redis_settings
 
 logger = logging.getLogger("financial.worker")
 
-REDIS_SETTINGS = RedisSettings.from_dsn(REDIS_URL)
+REDIS_SETTINGS = get_redis_settings()
 
 
 async def startup(ctx):
@@ -28,8 +27,15 @@ async def process_ai_task(
     message: str,
     hito_context: dict | None = None,
     reformulate_mode: bool = False,
+    lock_token: str | None = None,
 ):
-    """Job que ejecuta el worker: procesa la IA y envía la respuesta por WhatsApp."""
+    """Job que ejecuta el worker: procesa la IA y envía la respuesta por WhatsApp.
+
+    lock_token viene del lock de orden de respuesta que tomó el proceso web
+    al encolar este job (ver acquire_phone_lock en routers/webhook.py). Acá
+    se libera pase lo que pase, para que el siguiente mensaje de este mismo
+    teléfono no se responda antes de que esta respuesta termine de enviarse.
+    """
     logger.info("Procesando job IA para %s (reformulate=%s)", phone, reformulate_mode)
     try:
         await process_ai_and_send(
@@ -42,6 +48,9 @@ async def process_ai_task(
     except Exception:
         logger.exception("Fallo procesando tarea IA para %s", phone)
         raise  # re-lanzar: así arq marca el job como fallido y lo reintenta
+    finally:
+        if lock_token is not None:
+            await release_phone_lock(ctx["redis"], phone, lock_token)
 
 
 class WorkerSettings:

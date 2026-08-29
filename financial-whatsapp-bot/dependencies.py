@@ -12,11 +12,12 @@ from contextlib import asynccontextmanager
 import httpx
 import psycopg2
 from arq import create_pool
-from arq.connections import RedisSettings
 from fastapi import FastAPI
 from psycopg2 import pool
 from supabase import Client as SupabaseClient
 from supabase import create_client
+
+from redis_settings import get_redis_settings
 
 from config import (
     EMBEDDING_MODEL_NAME,
@@ -206,7 +207,7 @@ async def init_dependencies() -> None:
     if redis_configured():
         try:
             logger.info("🔌 Conectando pool de Redis para la cola de jobs...")
-            redis_pool = await create_pool(RedisSettings.from_dsn(REDIS_URL))
+            redis_pool = await create_pool(get_redis_settings())
             logger.info("Pool de Redis conectado")
         except Exception as error:
             logger.error("No se pudo conectar a Redis: %s", error)
