@@ -75,7 +75,15 @@ logger = logging.getLogger("financial")
 
 
 def configure_ollama_endpoint(ollama_url: str, ollama_model: str, ia_api_key: str):
-    """Configura dinámicamente el endpoint de Ollama/Groq Cloud según la URL y la presencia de la API Key."""
+    """Configura dinámicamente el endpoint del proveedor de IA.
+
+    Con ia_api_key seteada se asume cualquier proveedor compatible con la API
+    de OpenAI (Groq, OpenRouter, etc.): basta con que ollama_url sea la base
+    documentada por ese proveedor (incluyendo su propio prefijo de versión,
+    p.ej. "https://openrouter.ai/api/v1" o "https://api.groq.com/openai/v1")
+    y se le agrega "/chat/completions" tal cual, sin asumir un formato fijo.
+    Sin ia_api_key se asume Ollama local corriendo sin autenticación.
+    """
     headers = {
         "Content-Type": "application/json",
     }
@@ -83,10 +91,7 @@ def configure_ollama_endpoint(ollama_url: str, ollama_model: str, ia_api_key: st
     if ia_api_key:
         base_url = ollama_url.rstrip("/")
         headers["Authorization"] = f"Bearer {ia_api_key}"
-        for sufijo in ["/openai/v1", "/v1"]:
-            if base_url.endswith(sufijo):
-                base_url = base_url[:-len(sufijo)]
-        endpoint_url = f"{base_url}/openai/v1/chat/completions"
+        endpoint_url = f"{base_url}/chat/completions"
     else:
         headers["ngrok-skip-browser-warning"] = "true"
         if "/v1" not in ollama_url:

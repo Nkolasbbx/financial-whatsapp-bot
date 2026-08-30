@@ -21,6 +21,7 @@ from redis_settings import get_redis_settings
 
 from config import (
     EMBEDDING_MODEL_NAME,
+    IA_API_KEY,
     META_GRAPH_API_VERSION,
     META_PHONE_NUMBER_ID,
     META_WHATSAPP_TOKEN,
@@ -107,9 +108,9 @@ async def init_dependencies() -> None:
     else:
         logger.warning("Twilio no está configurado; el modo DEBUG con Twilio no funcionará")
 
-    if OLLAMA_URL and "groq.com" in OLLAMA_URL.lower():
+    if OLLAMA_URL and IA_API_KEY:
         ollama_available = True
-        logger.info("Groq Cloud configurado - modelo: %s", OLLAMA_MODEL)
+        logger.info("Proveedor de IA configurado (API compatible OpenAI) - modelo: %s", OLLAMA_MODEL)
     else:
         try:
             async with httpx.AsyncClient() as client:
