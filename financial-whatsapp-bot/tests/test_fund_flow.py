@@ -10,20 +10,24 @@ from core.fund_flow import (
 
 
 class FundFlowTests(unittest.TestCase):
-    @patch("core.fund_flow.list_active_funds")
+    @patch("core.fund_flow.evaluate_available_funds")
     @patch("core.fund_flow.start_fund_session")
     def test_start_flow_returns_interactive_fund_list(
         self,
         start_session_mock,
-        list_funds_mock,
+        evaluate_funds_mock,
     ):
-        list_funds_mock.return_value = [{
-            "id": "fund-1",
-            "slug": "capital_semilla_emprende",
-            "nombre": "Capital Semilla Emprende",
-            "emoji": "💰",
-            "fecha_cierre": "2099-04-30",
-            "requisitos": [{"clave": "sin_inicio_sii"}],
+        evaluate_funds_mock.return_value = [{
+            "fund": {
+                "id": "fund-1",
+                "slug": "capital_semilla_emprende",
+                "nombre": "Capital Semilla Emprende",
+                "emoji": "💰",
+                "fecha_cierre": None,
+            },
+            "percentage": 40,
+            "blocking_failures": [],
+            "unknown": 2,
         }]
 
         result = start_fund_flow({"id": "user-1", "inicio_sii": "no"})
@@ -33,6 +37,8 @@ class FundFlowTests(unittest.TestCase):
             result["options"][0][0],
             "fund_select:capital_semilla_emprende",
         )
+        self.assertIn("Capital Semilla Emprende", result["body"])
+        self.assertIn("Si quieres saber más", result["body"])
         start_session_mock.assert_called_once_with("user-1")
 
     @patch("core.fund_flow.find_active_fund", return_value={"id": "fund-1"})
