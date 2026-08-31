@@ -17,6 +17,7 @@ from config import (
     MODEL_NAME,
     OLLAMA_MODEL,
     OLLAMA_URL,
+    RAG_SIMILARITY_THRESHOLD,
     RES_KEY,
     RES_MODEL,
     RES_URL,
@@ -286,8 +287,16 @@ Usa prioritariamente este contexto para responder.
 {contexto_rag}
 """
 
-async def obtener_contexto_rag(message: str, comuna_usuario: str) -> dict:
-    """Devuelve el contexto RAG para la comuna correcta."""
+async def obtener_contexto_rag(
+    message: str,
+    comuna_usuario: str,
+    query_vector: list[float] | None = None,
+) -> dict:
+    """Devuelve el contexto RAG para la comuna correcta.
+
+    query_vector permite reutilizar un embedding ya calculado (p.ej. por
+    requiere_rag() al resolver un mensaje ambiguo) en vez de pedirlo de nuevo.
+    """
     deteccion = detectar_comuna(message, comuna_usuario)
     comuna_busqueda = deteccion["comuna"]
 
@@ -303,47 +312,62 @@ async def obtener_contexto_rag(message: str, comuna_usuario: str) -> dict:
         if dependencies.db_pool is None:
             raise RuntimeError("El pool PostgreSQL para RAG no está disponible")
 
-        query_vector = await obtener_embedding_remoto(message)
+        if query_vector is None:
+            query_vector = await obtener_embedding_remoto(message)
 
         conn = dependencies.db_pool.getconn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT content, metadata
+                    SELECT content, metadata, embedding <=> %s::vector AS distance
                     FROM documents
                     WHERE metadata->>'comuna' ILIKE %s OR metadata->>'comuna' ILIKE '%%general%%'
-                    ORDER BY embedding <=> %s::vector
+                    ORDER BY distance
                     LIMIT 4;
                 """,
-                    (f"%{comuna_busqueda}%", query_vector),
+                    (query_vector, f"%{comuna_busqueda}%"),
                 )
 
                 resultados = cur.fetchall()
         finally:
             dependencies.db_pool.putconn(conn)
 
-        if resultados:
-            for res in resultados:
-                meta = res[1] if res[1] else {}
-                file_name = meta.get("file_name", "Municipal")
-                comuna_doc = meta.get("comuna", "general")
-                if comuna_doc.lower() == "general":
-                    comuna_doc = "General (Aplica a todas las comunas del país)"
-                source = meta.get("source", file_name)
-                source_url = meta.get("source_url", "")
-                source_date = meta.get("source_date", "")
-                fuentes.append({
-                    "source": source,
-                    "source_url": source_url,
-                    "source_date": source_date,
-                })
-                contexto += (
-                    f"\n[Documento Oficial: {file_name}] | [Ámbito: {comuna_doc}]\n"
-                    f"[Fuente: {source}] | [URL: {source_url}] | [Fecha de revisión: {source_date}]\n"
-                    f"{res[0]}\n"
-                )
-        else:
+        descartados = 0
+        for res in resultados:
+            similarity = 1 - res[2]
+            if similarity < RAG_SIMILARITY_THRESHOLD:
+                descartados += 1
+                continue
+
+            meta = res[1] if res[1] else {}
+            file_name = meta.get("file_name", "Municipal")
+            comuna_doc = meta.get("comuna", "general")
+            if comuna_doc.lower() == "general":
+                comuna_doc = "General (Aplica a todas las comunas del país)"
+            source = meta.get("source", file_name)
+            source_url = meta.get("source_url", "")
+            source_date = meta.get("source_date", "")
+            fuentes.append({
+                "source": source,
+                "source_url": source_url,
+                "source_date": source_date,
+            })
+            contexto += (
+                f"\n[Documento Oficial: {file_name}] | [Ámbito: {comuna_doc}]\n"
+                f"[Fuente: {source}] | [URL: {source_url}] | [Fecha de revisión: {source_date}]\n"
+                f"{res[0]}\n"
+            )
+
+        if descartados:
+            logger.info(
+                "RAG: %d/%d chunks descartados por similitud < %.2f",
+                descartados,
+                len(resultados),
+                RAG_SIMILARITY_THRESHOLD,
+            )
+
+        if not fuentes:
             contexto = f"SIN INFORMACIÓN disponible para la comuna '{comuna_busqueda}' en la base de datos."
 
     except Exception as e:
@@ -388,19 +412,83 @@ def _normalizar_mensaje(message: str) -> str:
     return re.sub(r"[^a-z0-9\s]", " ", message_sin_tildes)
 
 
-def requiere_rag(message: str) -> bool:
-    """Indica si el mensaje requiere consultar información documental."""
+# Frases de ejemplo para resolver por embeddings los mensajes ambiguos que no
+# calzan ni con CONSULTA_DOCUMENTAL_TERMINOS ni con MENSAJES_CONVERSACIONALES.
+EJEMPLOS_DOCUMENTALES = (
+    "cuanto cuesta la patente comercial",
+    "que requisitos necesito para la resolucion sanitaria",
+    "que necesito para hacer el inicio de actividades",
+    "donde tramito el permiso municipal",
+    "cuales son los pasos para formalizar mi negocio",
+)
+
+EJEMPLOS_NO_DOCUMENTALES = (
+    "como va todo",
+    "no entendi bien lo que dijiste",
+    "jaja ok gracias por la ayuda",
+    "eres un robot o una persona",
+    "cuentame un chiste",
+)
+
+_cache_embeddings_ejemplos: dict[str, list[list[float]]] | None = None
+_lock_embeddings_ejemplos = asyncio.Lock()
+
+
+async def _obtener_embeddings_ejemplos() -> dict[str, list[list[float]]]:
+    """Calcula (una sola vez, cacheado en memoria) los embeddings de las frases
+    de ejemplo usadas para clasificar mensajes ambiguos."""
+    global _cache_embeddings_ejemplos
+
+    if _cache_embeddings_ejemplos is not None:
+        return _cache_embeddings_ejemplos
+
+    async with _lock_embeddings_ejemplos:
+        if _cache_embeddings_ejemplos is None:
+            _cache_embeddings_ejemplos = {
+                "documentales": [
+                    await obtener_embedding_remoto(frase, prefix="passage")
+                    for frase in EJEMPLOS_DOCUMENTALES
+                ],
+                "no_documentales": [
+                    await obtener_embedding_remoto(frase, prefix="passage")
+                    for frase in EJEMPLOS_NO_DOCUMENTALES
+                ],
+            }
+
+    return _cache_embeddings_ejemplos
+
+
+def _similitud_coseno(a: list[float], b: list[float]) -> float:
+    producto_punto = sum(x * y for x, y in zip(a, b))
+    norma_a = sum(x * x for x in a) ** 0.5
+    norma_b = sum(y * y for y in b) ** 0.5
+    if norma_a == 0 or norma_b == 0:
+        return 0.0
+    return producto_punto / (norma_a * norma_b)
+
+
+def _similitud_promedio(vector: list[float], ejemplos: list[list[float]]) -> float:
+    return sum(_similitud_coseno(vector, ejemplo) for ejemplo in ejemplos) / len(ejemplos)
+
+
+async def requiere_rag(message: str) -> tuple[bool, list[float] | None]:
+    """Indica si el mensaje requiere consultar información documental.
+
+    Devuelve (usa_rag, query_vector): query_vector viene seteado únicamente
+    cuando ya se calculó el embedding acá (rama ambigua), para que quien llame
+    pueda reutilizarlo en obtener_contexto_rag() sin pedirlo de nuevo.
+    """
     mensaje_normalizado = _normalizar_mensaje(message)
     mensaje_limpio = " ".join(mensaje_normalizado.split())
 
     if not mensaje_limpio:
-        return False
+        return False, None
 
     if any(
         re.search(rf"\b{re.escape(_normalizar_mensaje(termino))}\b", mensaje_limpio)
         for termino in CONSULTA_DOCUMENTAL_TERMINOS
     ):
-        return True
+        return True, None
 
     mensajes_conversacionales = {
         _normalizar_mensaje(mensaje_conversacional)
@@ -410,10 +498,24 @@ def requiere_rag(message: str) -> bool:
         mensaje_limpio in mensajes_conversacionales
         or any(re.fullmatch(patron, mensaje_limpio) for patron in PATRONES_CONVERSACIONALES)
     ):
-        return False
+        return False, None
 
-    # Ante una pregunta ambigua se consulta RAG para no omitir una duda real.
-    return True
+    # Mensaje ambiguo: se resuelve comparando por similitud contra frases de
+    # ejemplo en vez de asumir directamente que hay que consultar el RAG.
+    try:
+        query_vector = await obtener_embedding_remoto(message)
+        ejemplos = await _obtener_embeddings_ejemplos()
+        sim_documental = _similitud_promedio(query_vector, ejemplos["documentales"])
+        sim_no_documental = _similitud_promedio(query_vector, ejemplos["no_documentales"])
+
+        if sim_documental > sim_no_documental:
+            return True, query_vector
+        return False, None
+    except Exception as e:
+        # Ante un fallo de red al clasificar, se prefiere no omitir una duda
+        # real: mismo comportamiento que tenía el fallback anterior.
+        logger.error(f"❌ Error clasificando mensaje ambiguo para RAG: {e}")
+        return True, None
  
 # Lista amplia SOLO para detectar cuando el usuario pregunta por una comuna
 # que no está soportada (para no confundir "no la mencionó" con "preguntó por
@@ -491,8 +593,9 @@ async def get_ai_response(
 
  
     # ── 1. RECUPERACIÓN RAG solo para consultas informativas ──
-    if requiere_rag(message):
-        contexto_rag = await obtener_contexto_rag(message, comuna_usuario)
+    usa_rag, query_vector = await requiere_rag(message)
+    if usa_rag:
+        contexto_rag = await obtener_contexto_rag(message, comuna_usuario, query_vector=query_vector)
         contexto_texto = contexto_rag["contexto"]
         fuentes_rag = contexto_rag["fuentes"]
     else:
