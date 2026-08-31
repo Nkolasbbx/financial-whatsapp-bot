@@ -176,9 +176,21 @@ async def whatsapp_webhook(request: Request):
                         try:
                             await send_text(
                                 phone,
-                                "Por ahora solo puedo procesar mensajes de texto. "
-                                "Escríbeme tu consulta y te ayudo 😊",
+                                "Por ahora solo puedo procesar mensajes de texto o "
+                                "botones. Escríbeme tu consulta y te ayudo 😊",
                             )
+                            # Si el usuario todavía está en onboarding, no basta con
+                            # avisar: hay que repetir la pregunta del paso actual sin
+                            # perder el progreso (HdU01). route_message con mensaje
+                            # vacío no matchea ninguna opción válida del paso, así que
+                            # process_onboarding re-muestra la misma pregunta tal como
+                            # ya hace ante cualquier respuesta no reconocida.
+                            user = await asyncio.to_thread(get_user, phone)
+                            if user is None or user.get("onboarding_step") != "done":
+                                onboarding_prompt = await asyncio.to_thread(
+                                    route_message, phone, "", None
+                                )
+                                await _send_response(phone, onboarding_prompt)
                         except WhatsAppAPIError as error:
                             logger.error("No se pudo responder al mensaje no textual: %s", error)
                         processed_messages += 1

@@ -8,6 +8,10 @@ Cubre los criterios de aceptación de HdU05:
 - CA3       Junto a cada ❌ incluye recomendación concreta y plazo estimado.
 - CA4       Lee fechas desde Supabase, informa cierre y prioriza fondos vigentes.
 - CA5       Cada simulación lee el perfil actualizado del usuario (sin caché).
+- CA-urgencia (HdU05 backlog Sprint 1, "Evaluación de elegibilidad"): ordena
+  los requisitos pendientes de mayor a menor urgencia según su plazo
+  estimado (`plazo_dias`) vs. los días restantes del cierre, mostrando
+  primero los que todavía son alcanzables a tiempo.
 """
 
 from datetime import date, datetime
@@ -116,7 +120,7 @@ FONDOS_FALLBACK = [
             {"texto": "Persona natural mayor de 18 años", "clave": "mayor_edad", "recomendacion": None, "plazo": None},
             {"texto": "Sin inicio de actividades en el SII", "clave": "sin_inicio_sii", "recomendacion": None, "plazo": None},
             {"texto": "Ventas menores a 2.400 UF/año (~$90M CLP)", "clave": "ventas_semilla", "recomendacion": "Cuéntame cuánto vendiste el último año.", "plazo": None},
-            {"texto": "Capacitación en gestión empresarial", "clave": "capacitacion", "recomendacion": "Inscríbete en capacitasercotec.cl o en InnovaRecoleta. Ofrecen talleres gratuitos.", "plazo": "2 a 4 semanas"},
+            {"texto": "Capacitación en gestión empresarial", "clave": "capacitacion", "recomendacion": "Inscríbete en capacitasercotec.cl o en InnovaRecoleta. Ofrecen talleres gratuitos.", "plazo": "2 a 4 semanas", "plazo_dias": 28},
         ],
     },
     {
@@ -145,7 +149,7 @@ FONDOS_FALLBACK = [
             {"texto": "Mayor de 18 años", "clave": "mayor_edad", "recomendacion": None, "plazo": None},
             {"texto": "Sin inicio de actividades en primera categoría SII", "clave": "sin_inicio_sii", "recomendacion": None, "plazo": None},
             {"texto": "Rubro en sector no tradicional para mujeres", "clave": "rubro_pioneras", "recomendacion": "Este fondo aplica para rubros como manufactura, construcción, tecnología, transporte y minería.", "plazo": None},
-            {"texto": "Presentar proyecto de negocio con video pitch (90 seg)", "clave": "proyecto_negocio", "recomendacion": "Prepara un video de 90 segundos presentándote y explicando tu idea de negocio.", "plazo": "1 a 2 días"},
+            {"texto": "Presentar proyecto de negocio con video pitch (90 seg)", "clave": "proyecto_negocio", "recomendacion": "Prepara un video de 90 segundos presentándote y explicando tu idea de negocio.", "plazo": "1 a 2 días", "plazo_dias": 2},
         ],
     },
     {
@@ -156,9 +160,9 @@ FONDOS_FALLBACK = [
         "fecha_cierre": date(2027, 5, 31),
         "activo": True,
         "requisitos": [
-            {"texto": "Inicio de actividades con más de 12 meses de antigüedad", "clave": "inicio_sii_12m", "recomendacion": "Haz tu inicio de actividades en sii.cl (gratis, 1 día). Luego debes esperar 12 meses para postular.", "plazo": "12 meses desde el inicio de actividades"},
+            {"texto": "Inicio de actividades con más de 12 meses de antigüedad", "clave": "inicio_sii_12m", "recomendacion": "Haz tu inicio de actividades en sii.cl (gratis, 1 día). Luego debes esperar 12 meses para postular.", "plazo": "12 meses desde el inicio de actividades", "plazo_dias": 365},
             {"texto": "Ventas entre 200 y 25.000 UF/año", "clave": "ventas_crece", "recomendacion": "Cuéntame cuánto vendiste el último año y te digo si calificas.", "plazo": None},
-            {"texto": "3 cursos aprobados en capacitacion.sercotec.cl", "clave": "capacitacion_crece", "recomendacion": "Completa 3 cursos gratuitos en capacitacion.sercotec.cl antes del cierre.", "plazo": "1 a 2 semanas"},
+            {"texto": "3 cursos aprobados en capacitacion.sercotec.cl", "clave": "capacitacion_crece", "recomendacion": "Completa 3 cursos gratuitos en capacitacion.sercotec.cl antes del cierre.", "plazo": "1 a 2 semanas", "plazo_dias": 14},
             {"texto": "Actividad económica coherente con la convocatoria", "clave": "actividad_coherente", "recomendacion": "Verifica en las bases de la convocatoria que tu rubro esté incluido.", "plazo": None},
         ],
     },
@@ -228,6 +232,27 @@ def _fondo_aplica_para_usuario(fondo: dict, is_formal: bool) -> bool:
     return True
 
 
+def _urgencia_key(req: dict, dias_restantes_fondo: int) -> tuple:
+    """Ordena los requisitos pendientes de mayor a menor urgencia.
+
+    Compara el plazo estimado del requisito (`plazo_dias`) contra los días
+    que quedan para el cierre del fondo:
+    - Alcanzables a tiempo (holgura >= 0) van primero, del más urgente
+      (menos holgura) al menos urgente.
+    - No alcanzables a tiempo (holgura < 0) van después, del que estuvo más
+      cerca de llegar a tiempo al que definitivamente no alcanza.
+    - Sin plazo estimado definido (no comparable) van al final.
+    """
+    plazo_dias = req.get("plazo_dias")
+    if plazo_dias is None:
+        return (2, 0)
+
+    holgura = dias_restantes_fondo - plazo_dias
+    if holgura >= 0:
+        return (0, holgura)
+    return (1, -holgura)
+
+
 def simulate_funds(user: dict) -> str:
     """
     Simula el proceso de postulación a fondos concursables.
@@ -269,6 +294,8 @@ def simulate_funds(user: dict) -> str:
         link = fondo.get("link", "")
         requisitos = fondo.get("requisitos", [])
 
+        dias_restantes_fondo = (fecha_cierre - today).days
+
         reqs_evaluados = []
         for req in requisitos:
             clave = req.get("clave", "")
@@ -279,6 +306,7 @@ def simulate_funds(user: dict) -> str:
                 "cumple": cumple,
                 "recomendacion": req.get("recomendacion"),
                 "plazo": req.get("plazo"),
+                "plazo_dias": req.get("plazo_dias"),
             })
 
         met = sum(1 for r in reqs_evaluados if r["cumple"] is True)
@@ -288,10 +316,9 @@ def simulate_funds(user: dict) -> str:
         if fecha_cierre < today:
             estado_conv = "🔴 Convocatoria cerrada"
         else:
-            dias_restantes = (fecha_cierre - today).days
             estado_conv = (
                 f"🟢 Cierre: {fecha_cierre.strftime('%d/%m/%Y')} "
-                f"({dias_restantes} días)"
+                f"({dias_restantes_fondo} días)"
             )
 
         monto_texto = f" · Hasta ${monto:,.0f} CLP" if monto else ""
@@ -299,7 +326,17 @@ def simulate_funds(user: dict) -> str:
         lines.append(f"{estado_conv}{monto_texto}")
         lines.append(f"Compatibilidad: *{pct}%*")
 
-        for req in reqs_evaluados:
+        # CA2 (HdU05 backlog Sprint 1): los requisitos pendientes (no
+        # cumplidos) se muestran ordenados de mayor a menor urgencia; los
+        # ya cumplidos quedan primero, en su orden original.
+        cumplidos = [r for r in reqs_evaluados if r["cumple"] is True]
+        pendientes = sorted(
+            (r for r in reqs_evaluados if r["cumple"] is not True),
+            key=lambda r: _urgencia_key(r, dias_restantes_fondo),
+        )
+        reqs_ordenados = cumplidos + pendientes
+
+        for req in reqs_ordenados:
             lines.extend(_get_mensaje_requisito(req, req["cumple"], is_formal))
 
         if link:

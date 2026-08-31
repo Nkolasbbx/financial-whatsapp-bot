@@ -10,9 +10,7 @@ from fastapi import FastAPI
 from dependencies import lifespan
 from routers import reminders, test, webhook
 from db.users import get_messages
-from config import DEBUG,REDIS_URL
-
-print(f"REDIS_URL: {REDIS_URL}")
+from config import DEBUG
 
 logging.basicConfig(level=logging.INFO)
 

@@ -30,7 +30,7 @@ logger = logging.getLogger("financial")
 # Días de anticipación para cada tipo de alerta
 DIAS_ANTICIPACION_TRIBUTARIA = 5   # CA1: 5 días antes del vencimiento
 DIAS_ANTICIPACION_FONDOS = 7       # CA2: 7 días antes del cierre
-DIAS_ANTICIPACION_TRIBUTARIA = 30
+# DIAS_ANTICIPACION_TRIBUTARIA = 30  # CA1: 30 días antes del vencimiento (para pruebas)
 
 async def send_tax_alerts() -> dict:
     """
