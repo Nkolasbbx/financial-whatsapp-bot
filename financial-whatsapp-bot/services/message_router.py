@@ -1,6 +1,7 @@
 import logging
 
 from db.users import get_user, save_user
+from core.fund_flow import handle_fund_message, should_handle_fund_message
 from core.menu import get_menu_widget
 from core.roadmaps import (
     get_roadmap_text,
@@ -12,7 +13,6 @@ from core.roadmaps import (
     HITO_VOLVER_ID,
     MENU_FINANCIAL_ID,
 )
-from core.fondos import simulate_funds
 from core.onboarding import process_onboarding
 from db.reminders import (
     clear_completed_roadmap_schedule_by_phone,
@@ -149,6 +149,19 @@ def route_message(
             reply_to_message_id,
         )
 
+    # ── Fund application flow ──
+    # Se procesa antes del roadmap y de la IA para que respuestas breves como
+    # "sí", "no" o una cifra se asocien a la pregunta pendiente del fondo.
+    if should_handle_fund_message(user, message):
+        try:
+            return handle_fund_message(user, message)
+        except Exception as error:
+            logger.exception("No se pudo procesar el flujo de fondos: %s", error)
+            return (
+                "No pude procesar la evaluación de fondos en este momento. "
+                "Inténtalo nuevamente más tarde."
+            )
+
     # ── Roadmap / Plan de crecimiento ──
     roadmap_triggers = [
         "roadmap", "mi roadmap", "hitos", "qué me falta", "que me falta",
@@ -189,14 +202,6 @@ def route_message(
     if replied_to_reminder:
         _record_activity_safely(phone)
         return get_roadmap_text(user)
-
-    # ── Fund simulation ──
-    fund_triggers = [
-        "fondo", "postular", "capital semilla", "capital abeja",
-        "sercotec", "corfo", "financiamiento", "menu_fondo"
-    ]
-    if any(trigger in msg_lower for trigger in fund_triggers):
-        return simulate_funds(user)
 
     # ── Menu FinancIAl ──
     menu_triggers = [

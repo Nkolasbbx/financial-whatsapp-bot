@@ -17,11 +17,17 @@ Cubre los criterios de aceptación de HdU05:
 from datetime import date, datetime
 import logging
 
+from db.fondos import (
+    get_fund_answers,
+    get_requirement_definitions,
+    list_active_funds,
+)
+
 logger = logging.getLogger("financial")
 
 
-def _evaluar_requisito(clave: str, user: dict) -> bool | None:
-    """Evalúa si el usuario cumple un requisito dado su clave."""
+def _evaluar_requisito_legacy(clave: str, user: dict) -> bool | None:
+    """Evaluación de respaldo para instalaciones sin el catálogo nuevo."""
     is_formal = user.get("inicio_sii") == "si"
 
     rubro_lower = (user.get("rubro_raw") or user.get("rubro", "")).lower()
@@ -69,6 +75,177 @@ def _evaluar_requisito(clave: str, user: dict) -> bool | None:
     }
 
     return evaluadores.get(clave, None)
+
+
+def _evaluate_custom_requirement(
+    handler: str | None,
+    user: dict,
+) -> bool | None:
+    """Ejecuta reglas calculadas que no se expresan con un operador simple."""
+    if handler != "rubro_pioneras":
+        return None
+
+    rubro_lower = (user.get("rubro_raw") or user.get("rubro", "")).lower()
+    rubros_pioneras = [
+        "construccion", "construcción",
+        "tecnologia", "tecnología", "informatica", "informática", "computador",
+        "transporte", "almacenamiento",
+        "mineria", "minería",
+        "electricidad", "gas", "vapor",
+        "agua", "residuos", "descontaminacion",
+        "vehiculo", "vehículo", "automotor", "motocicleta",
+        "manufactura industrial",
+    ]
+    rubros_excluidos = [
+        "textil", "alimento", "joyeria", "joyería",
+        "artesania", "artesanía", "costura", "confeccion", "confección",
+    ]
+
+    if any(rubro in rubro_lower for rubro in rubros_excluidos):
+        return False
+    if any(rubro in rubro_lower for rubro in rubros_pioneras):
+        return True
+    return None
+
+
+def _apply_evaluation_rule(value, rule: dict, user: dict) -> bool | None:
+    """Aplica una regla declarativa del catálogo de requisitos."""
+    operator = rule.get("operator")
+    if operator == "custom":
+        return _evaluate_custom_requirement(rule.get("handler"), user)
+
+    if value is None:
+        return None
+
+    if operator == "equals":
+        return value == rule.get("expected")
+
+    if operator == "between":
+        if isinstance(value, bool):
+            return None
+        try:
+            numeric_value = float(value)
+            minimum = float(rule["min"])
+            maximum = float(rule["max"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return minimum <= numeric_value <= maximum
+
+    return None
+
+
+def evaluate_requirement(
+    requirement: dict,
+    user: dict,
+    answers: dict,
+    definitions: dict[str, dict],
+) -> bool | None:
+    """Evalúa un requisito con datos del perfil o respuestas persistidas."""
+    field_key = requirement.get("clave", "")
+    definition = definitions.get(field_key)
+    if not definition:
+        return _evaluar_requisito_legacy(field_key, user)
+
+    source_type = definition.get("source_type")
+    if source_type == "user_profile":
+        value = user.get(definition.get("profile_field"))
+    elif source_type == "user_answer":
+        value = answers.get(field_key)
+    elif source_type == "computed":
+        value = None
+    else:
+        return None
+
+    return _apply_evaluation_rule(
+        value,
+        definition.get("evaluation_rule") or {},
+        user,
+    )
+
+
+def evaluate_fund(
+    fund: dict,
+    user: dict,
+    answers: dict,
+    definitions: dict[str, dict],
+    today: date | None = None,
+    answered_keys: set[str] | None = None,
+) -> dict:
+    """Produce un resultado estructurado y reutilizable para un fondo."""
+    current_date = today or date.today()
+    closing_date = fund.get("fecha_cierre")
+    if isinstance(closing_date, str):
+        try:
+            closing_date = datetime.strptime(closing_date, "%Y-%m-%d").date()
+        except ValueError:
+            closing_date = None
+
+    days_remaining = (
+        (closing_date - current_date).days
+        if isinstance(closing_date, date)
+        else None
+    )
+
+    evaluated_requirements = []
+    for position, requirement in enumerate(fund.get("requisitos") or []):
+        field_key = requirement.get("clave", "")
+        definition = definitions.get(field_key, {})
+        result = evaluate_requirement(requirement, user, answers, definitions)
+        evaluated_requirements.append({
+            **requirement,
+            "cumple": result,
+            "question": definition.get("question"),
+            "answer_type": definition.get("answer_type"),
+            "options": definition.get("options") or [],
+            "evaluation_rule": definition.get("evaluation_rule") or {},
+            "question_order": definition.get("question_order", 100),
+            "position": position,
+        })
+
+    total = len(evaluated_requirements)
+    met = sum(req["cumple"] is True for req in evaluated_requirements)
+    failed = sum(req["cumple"] is False for req in evaluated_requirements)
+    unknown = total - met - failed
+
+    blocking_failures = [
+        req
+        for req in evaluated_requirements
+        if req["cumple"] is False
+        and req.get("obligatorio", True)
+        and req.get("corregible") is False
+    ]
+    missing_questions = sorted(
+        (
+            req
+            for req in evaluated_requirements
+            if req["cumple"] is None
+            and req.get("question")
+            and req.get("clave") not in (answered_keys or set())
+        ),
+        key=lambda req: (req["question_order"], req["position"]),
+    )
+
+    return {
+        "fund": {**fund, "fecha_cierre": closing_date},
+        "requirements": evaluated_requirements,
+        "met": met,
+        "failed": failed,
+        "unknown": unknown,
+        "total": total,
+        "percentage": round((met / total) * 100) if total else 0,
+        "days_remaining": days_remaining,
+        "is_open": days_remaining is not None and days_remaining >= 0,
+        "blocking_failures": blocking_failures,
+        "missing_questions": missing_questions,
+    }
+
+
+def fund_applies_to_user(fund: dict, user: dict) -> bool:
+    """Indica si el fondo corresponde al estado de formalización del perfil."""
+    return _fondo_aplica_para_usuario(
+        fund,
+        user.get("inicio_sii") == "si",
+    )
 
 
 def _get_mensaje_requisito(req: dict, cumple: bool | None, is_formal: bool) -> list[str]:
@@ -171,26 +348,13 @@ FONDOS_FALLBACK = [
 
 def _get_fondos_from_supabase() -> list[dict] | None:
     """Lee los fondos activos desde Supabase. Retorna None si no está disponible."""
-    import dependencies
-
-    if not dependencies.supabase:
-        return None
-
     try:
-        result = (
-            dependencies.supabase
-            .table("fondos")
-            .select("*")
-            .eq("activo", True)
-            .order("fecha_cierre", desc=False)
-            .execute()
-        )
-
-        if not result.data:
+        rows = list_active_funds()
+        if not rows:
             return None
 
         fondos = []
-        for row in result.data:
+        for row in rows:
             fecha_cierre = row.get("fecha_cierre")
             if isinstance(fecha_cierre, str):
                 try:
@@ -207,6 +371,8 @@ def _get_fondos_from_supabase() -> list[dict] | None:
                 "fecha_cierre": fecha_cierre,
                 "activo": row.get("activo", True),
                 "requisitos": row.get("requisitos", []),
+                "slug": row.get("slug"),
+                "aliases": row.get("aliases") or [],
             })
 
         return fondos if fondos else None
@@ -253,6 +419,64 @@ def _urgencia_key(req: dict, dias_restantes_fondo: int) -> tuple:
     return (1, -holgura)
 
 
+def format_fund_evaluation(evaluation: dict, user: dict) -> str:
+    """Formatea el resultado detallado de un único fondo seleccionado."""
+    fund = evaluation["fund"]
+    closing_date = fund.get("fecha_cierre")
+    days_remaining = evaluation.get("days_remaining")
+    is_formal = user.get("inicio_sii") == "si"
+
+    lines = [
+        f"{fund.get('emoji', '💰')} *{fund.get('nombre', 'Fondo')}*",
+    ]
+    if isinstance(closing_date, date):
+        if evaluation["is_open"]:
+            lines.append(
+                f"🟢 Cierre: {closing_date.strftime('%d/%m/%Y')} "
+                f"({days_remaining} días)"
+            )
+        else:
+            lines.append("🔴 Convocatoria cerrada")
+
+    monto = fund.get("monto_max")
+    if monto:
+        lines.append(f"💵 Hasta ${monto:,.0f} CLP")
+
+    lines.extend([
+        f"Compatibilidad confirmada: *{evaluation['percentage']}%*",
+        (
+            "Resumen: "
+            f"✅ {evaluation['met']} · "
+            f"❌ {evaluation['failed']} · "
+            f"⚠️ {evaluation['unknown']} por confirmar"
+        ),
+    ])
+    if evaluation["blocking_failures"]:
+        lines.append("\n⛔ *Existe un requisito excluyente no cumplido.*")
+
+    requirements = evaluation["requirements"]
+    completed = [req for req in requirements if req["cumple"] is True]
+    pending = sorted(
+        (req for req in requirements if req["cumple"] is not True),
+        key=lambda req: _urgencia_key(req, days_remaining or 0),
+    )
+    for requirement in completed + pending:
+        lines.extend(
+            _get_mensaje_requisito(
+                requirement,
+                requirement["cumple"],
+                is_formal,
+            )
+        )
+
+    if fund.get("link"):
+        lines.append(f"\n🔗 Más información: {fund['link']}")
+    lines.append(
+        "\nPuedes escribir *postular fondos* para evaluar otra convocatoria."
+    )
+    return "\n".join(lines)
+
+
 def simulate_funds(user: dict) -> str:
     """
     Simula el proceso de postulación a fondos concursables.
@@ -263,6 +487,19 @@ def simulate_funds(user: dict) -> str:
     is_formal = user.get("inicio_sii") == "si"
     rubro = user.get("rubro_raw") or user.get("rubro", "tu negocio")
     today = date.today()
+
+    answers = {}
+    definitions = {}
+    try:
+        definitions = get_requirement_definitions()
+        if user.get("id"):
+            answers = get_fund_answers(user["id"])
+    except Exception as error:
+        logger.warning(
+            "No se cargaron respuestas o definiciones de fondos; "
+            "se usará la evaluación compatible anterior: %s",
+            error,
+        )
 
     fondos_raw = _get_fondos_from_supabase()
     if not fondos_raw:
@@ -292,26 +529,16 @@ def simulate_funds(user: dict) -> str:
         fecha_cierre = fondo["fecha_cierre"]
         monto = fondo.get("monto_max")
         link = fondo.get("link", "")
-        requisitos = fondo.get("requisitos", [])
-
-        dias_restantes_fondo = (fecha_cierre - today).days
-
-        reqs_evaluados = []
-        for req in requisitos:
-            clave = req.get("clave", "")
-            cumple = _evaluar_requisito(clave, user)
-            reqs_evaluados.append({
-                "texto": req.get("texto", ""),
-                "clave": clave,
-                "cumple": cumple,
-                "recomendacion": req.get("recomendacion"),
-                "plazo": req.get("plazo"),
-                "plazo_dias": req.get("plazo_dias"),
-            })
-
-        met = sum(1 for r in reqs_evaluados if r["cumple"] is True)
-        total = len(reqs_evaluados)
-        pct = round((met / total) * 100) if total > 0 else 0
+        evaluation = evaluate_fund(
+            fondo,
+            user,
+            answers,
+            definitions,
+            today,
+        )
+        reqs_evaluados = evaluation["requirements"]
+        dias_restantes_fondo = evaluation["days_remaining"]
+        pct = evaluation["percentage"]
 
         if fecha_cierre < today:
             estado_conv = "🔴 Convocatoria cerrada"
@@ -325,6 +552,12 @@ def simulate_funds(user: dict) -> str:
         lines.append(f"\n*{emoji} {nombre}*")
         lines.append(f"{estado_conv}{monto_texto}")
         lines.append(f"Compatibilidad: *{pct}%*")
+        if evaluation["unknown"]:
+            lines.append(
+                f"Información pendiente: *{evaluation['unknown']} requisito(s)*"
+            )
+        if evaluation["blocking_failures"]:
+            lines.append("⛔ Existe al menos un requisito excluyente no cumplido.")
 
         # CA2 (HdU05 backlog Sprint 1): los requisitos pendientes (no
         # cumplidos) se muestran ordenados de mayor a menor urgencia; los
