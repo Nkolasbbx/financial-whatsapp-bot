@@ -163,6 +163,43 @@ def evaluate_requirement(
     )
 
 
+def _with_dynamic_recommendation(
+    requirement: dict,
+    result: bool | None,
+    answers: dict,
+) -> dict:
+    """Ajusta recomendaciones que dependen del valor respondido."""
+    enriched = dict(requirement)
+    if requirement.get("clave") != "ventas_crece" or result is not False:
+        return enriched
+
+    value = answers.get("ventas_crece")
+    try:
+        sales = float(value)
+    except (TypeError, ValueError):
+        return enriched
+
+    if sales < 200:
+        enriched.update({
+            "corregible": True,
+            "recomendacion": (
+                "Tus ventas todavía están bajo el mínimo de 200 UF. "
+                "Prepara un plan comercial para aumentar ventas y revisa "
+                "fondos dirigidos a negocios de menor tamaño mientras alcanzas "
+                "el requisito."
+            ),
+        })
+    elif sales > 25000:
+        enriched.update({
+            "corregible": False,
+            "recomendacion": (
+                "Tus ventas superan el máximo de 25.000 UF para Crece. "
+                "Busca instrumentos destinados a empresas de mayor tamaño."
+            ),
+        })
+    return enriched
+
+
 def evaluate_fund(
     fund: dict,
     user: dict,
@@ -191,6 +228,11 @@ def evaluate_fund(
         field_key = requirement.get("clave", "")
         definition = definitions.get(field_key, {})
         result = evaluate_requirement(requirement, user, answers, definitions)
+        requirement = _with_dynamic_recommendation(
+            requirement,
+            result,
+            answers,
+        )
         evaluated_requirements.append({
             **requirement,
             "cumple": result,
@@ -294,8 +336,8 @@ FONDOS_FALLBACK = [
         "fecha_cierre": date(2027, 4, 30),
         "activo": True,
         "requisitos": [
-            {"texto": "Persona natural mayor de 18 años", "clave": "mayor_edad", "recomendacion": None, "plazo": None},
-            {"texto": "Sin inicio de actividades en el SII", "clave": "sin_inicio_sii", "recomendacion": None, "plazo": None},
+            {"texto": "Persona natural mayor de 18 años", "clave": "mayor_edad", "recomendacion": "Este fondo exige ser mayor de 18 años. Mientras tanto, puedes avanzar en capacitaciones y preparar tu proyecto.", "plazo": None},
+            {"texto": "Sin inicio de actividades en el SII", "clave": "sin_inicio_sii", "recomendacion": "Si ya tienes inicio de actividades, revisa el fondo Crece para negocios formalizados.", "plazo": None},
             {"texto": "Ventas menores a 2.400 UF/año (~$90M CLP)", "clave": "ventas_semilla", "recomendacion": "Cuéntame cuánto vendiste el último año.", "plazo": None},
             {"texto": "Capacitación en gestión empresarial", "clave": "capacitacion", "recomendacion": "Inscríbete en capacitasercotec.cl o en InnovaRecoleta. Ofrecen talleres gratuitos.", "plazo": "2 a 4 semanas", "plazo_dias": 28},
         ],
@@ -308,10 +350,10 @@ FONDOS_FALLBACK = [
         "fecha_cierre": date(2027, 4, 30),
         "activo": True,
         "requisitos": [
-            {"texto": "Mujer emprendedora (sexo registral femenino)", "clave": "genero_femenino", "recomendacion": None, "plazo": None},
-            {"texto": "Mayor de 18 años", "clave": "mayor_edad", "recomendacion": None, "plazo": None},
-            {"texto": "Sin inicio de actividades en primera categoría SII", "clave": "sin_inicio_sii", "recomendacion": None, "plazo": None},
-            {"texto": "Sin beneficios SERCOTEC en los últimos 2 años", "clave": "sin_beneficio_reciente", "recomendacion": None, "plazo": None},
+            {"texto": "Mujer emprendedora (sexo registral femenino)", "clave": "genero_femenino", "recomendacion": "Puedes revisar Capital Semilla Emprende u otros fondos sin este requisito.", "plazo": None},
+            {"texto": "Mayor de 18 años", "clave": "mayor_edad", "recomendacion": "Mientras tanto, puedes avanzar en capacitaciones y preparar tu proyecto.", "plazo": None},
+            {"texto": "Sin inicio de actividades en primera categoría SII", "clave": "sin_inicio_sii", "recomendacion": "Si ya estás formalizado, revisa el fondo Crece.", "plazo": None},
+            {"texto": "Sin beneficios SERCOTEC en los últimos 2 años", "clave": "sin_beneficio_reciente", "recomendacion": "Verifica la fecha de tu último beneficio o revisa otras convocatorias.", "plazo": None},
         ],
     },
     {
@@ -322,9 +364,9 @@ FONDOS_FALLBACK = [
         "fecha_cierre": date(2027, 4, 30),
         "activo": True,
         "requisitos": [
-            {"texto": "Mujer emprendedora (sexo registral femenino)", "clave": "genero_femenino", "recomendacion": None, "plazo": None},
-            {"texto": "Mayor de 18 años", "clave": "mayor_edad", "recomendacion": None, "plazo": None},
-            {"texto": "Sin inicio de actividades en primera categoría SII", "clave": "sin_inicio_sii", "recomendacion": None, "plazo": None},
+            {"texto": "Mujer emprendedora (sexo registral femenino)", "clave": "genero_femenino", "recomendacion": "Puedes revisar Capital Semilla Emprende u otros fondos sin este requisito.", "plazo": None},
+            {"texto": "Mayor de 18 años", "clave": "mayor_edad", "recomendacion": "Mientras tanto, puedes avanzar en capacitaciones y preparar tu proyecto.", "plazo": None},
+            {"texto": "Sin inicio de actividades en primera categoría SII", "clave": "sin_inicio_sii", "recomendacion": "Si ya estás formalizado, revisa el fondo Crece.", "plazo": None},
             {"texto": "Rubro en sector no tradicional para mujeres", "clave": "rubro_pioneras", "recomendacion": "Este fondo aplica para rubros como manufactura, construcción, tecnología, transporte y minería.", "plazo": None},
             {"texto": "Presentar proyecto de negocio con video pitch (90 seg)", "clave": "proyecto_negocio", "recomendacion": "Prepara un video de 90 segundos presentándote y explicando tu idea de negocio.", "plazo": "1 a 2 días", "plazo_dias": 2},
         ],
@@ -364,8 +406,10 @@ def _get_fondos_from_supabase() -> list[dict] | None:
                     continue
 
             fondos.append({
+                "id": row.get("id"),
                 "nombre": row.get("nombre", ""),
                 "emoji": row.get("emoji", "💰"),
+                "entidad": row.get("entidad"),
                 "link": row.get("link", ""),
                 "monto_max": row.get("monto_max"),
                 "fecha_cierre": fecha_cierre,
@@ -398,6 +442,94 @@ def _fondo_aplica_para_usuario(fondo: dict, is_formal: bool) -> bool:
     return True
 
 
+def evaluate_available_funds(
+    user: dict,
+    today: date | None = None,
+    include_closed: bool = False,
+) -> list[dict]:
+    """Evalúa y ordena en una sola operación los fondos del perfil."""
+    current_date = today or date.today()
+    definitions = {}
+    answers = {}
+    try:
+        definitions = get_requirement_definitions()
+        if user.get("id"):
+            answers = get_fund_answers(user["id"])
+    except Exception as error:
+        logger.warning(
+            "No se pudo cargar el contexto estructurado de fondos: %s",
+            error,
+        )
+
+    funds = _get_fondos_from_supabase() or FONDOS_FALLBACK
+    evaluations = []
+    for fund in funds:
+        if not fund_applies_to_user(fund, user):
+            continue
+        evaluation = evaluate_fund(
+            fund,
+            user,
+            answers,
+            definitions,
+            current_date,
+        )
+        if not include_closed and not evaluation["is_open"]:
+            continue
+        evaluations.append(evaluation)
+
+    evaluations.sort(
+        key=lambda evaluation: (
+            0 if evaluation["is_open"] else 1,
+            1 if evaluation["blocking_failures"] else 0,
+            -evaluation["percentage"],
+            (
+                evaluation["days_remaining"]
+                if evaluation["days_remaining"] is not None
+                else float("inf")
+            ),
+            evaluation["fund"].get("nombre", ""),
+        )
+    )
+    return evaluations
+
+
+def format_funds_summary(evaluations: list[dict], max_length: int = 1000) -> str:
+    """Construye un resumen compacto apto para una lista de WhatsApp."""
+    header = "🎯 *Fondos disponibles para tu perfil*\n"
+    footer = (
+        "\n💡 Si quieres saber más sobre algún fondo, selecciónalo en la "
+        "lista o escribe su nombre."
+    )
+    lines = [header]
+    shown = 0
+
+    for evaluation in evaluations:
+        fund = evaluation["fund"]
+        closing_date = fund.get("fecha_cierre")
+        closing_text = (
+            closing_date.strftime("%d/%m/%Y")
+            if isinstance(closing_date, date)
+            else "sin fecha"
+        )
+        status = "⛔ con bloqueo" if evaluation["blocking_failures"] else "✅ evaluable"
+        block = (
+            f"{fund.get('emoji', '💰')} *{fund.get('nombre', 'Fondo')}*\n"
+            f"Compatibilidad: {evaluation['percentage']}% · {status}\n"
+            f"Cierre: {closing_text} · "
+            f"⚠️ {evaluation['unknown']} por confirmar\n"
+        )
+        candidate = "\n".join(lines + [block]) + footer
+        if len(candidate) > max_length:
+            break
+        lines.append(block)
+        shown += 1
+
+    if shown < len(evaluations):
+        lines.append(f"…y {len(evaluations) - shown} fondo(s) adicional(es).")
+    lines.append(footer.lstrip("\n"))
+    return "\n".join(lines)
+
+
 def _urgencia_key(req: dict, dias_restantes_fondo: int) -> tuple:
     """Ordena los requisitos pendientes de mayor a menor urgencia.
 
@@ -419,12 +551,45 @@ def _urgencia_key(req: dict, dias_restantes_fondo: int) -> tuple:
     return (1, -holgura)
 
 
+def get_requirement_urgency(
+    requirement: dict,
+    days_remaining: int | None,
+) -> dict:
+    """Explica si una acción todavía alcanza antes del cierre."""
+    duration = requirement.get("plazo_dias")
+    if duration is None or days_remaining is None:
+        return {
+            "status": "unknown",
+            "margin_days": None,
+            "label": "ℹ️ Sin plazo suficiente para calcular alcanzabilidad",
+        }
+
+    margin = days_remaining - int(duration)
+    if margin < 0:
+        label = f"❌ No alcanzable para este cierre (faltan {-margin} días)"
+        status = "not_reachable"
+    elif margin == 0:
+        label = "🚨 Debes comenzar inmediatamente"
+        status = "immediate"
+    elif margin <= 14:
+        label = f"⚠️ Urgente, pero alcanzable (margen de {margin} días)"
+        status = "urgent"
+    else:
+        label = f"✅ Todavía alcanzable (margen de {margin} días)"
+        status = "reachable"
+
+    return {
+        "status": status,
+        "margin_days": margin,
+        "label": label,
+    }
+
+
 def format_fund_evaluation(evaluation: dict, user: dict) -> str:
     """Formatea el resultado detallado de un único fondo seleccionado."""
     fund = evaluation["fund"]
     closing_date = fund.get("fecha_cierre")
     days_remaining = evaluation.get("days_remaining")
-    is_formal = user.get("inicio_sii") == "si"
 
     lines = [
         f"{fund.get('emoji', '💰')} *{fund.get('nombre', 'Fondo')}*",
@@ -456,23 +621,48 @@ def format_fund_evaluation(evaluation: dict, user: dict) -> str:
 
     requirements = evaluation["requirements"]
     completed = [req for req in requirements if req["cumple"] is True]
-    pending = sorted(
-        (req for req in requirements if req["cumple"] is not True),
+    unknown = [req for req in requirements if req["cumple"] is None]
+    failed = [req for req in requirements if req["cumple"] is False]
+    actionable = sorted(
+        (req for req in failed if req not in evaluation["blocking_failures"]),
         key=lambda req: _urgencia_key(req, days_remaining or 0),
     )
-    for requirement in completed + pending:
-        lines.extend(
-            _get_mensaje_requisito(
-                requirement,
-                requirement["cumple"],
-                is_formal,
-            )
-        )
+
+    if completed:
+        lines.append("\n✅ *Requisitos cumplidos*")
+        lines.extend(f"• {requirement['texto']}" for requirement in completed)
+
+    if unknown:
+        lines.append("\n⚠️ *Información por confirmar*")
+        lines.extend(f"• {requirement['texto']}" for requirement in unknown)
+
+    if actionable:
+        lines.append("\n📌 *Acciones recomendadas por urgencia*")
+        for position, requirement in enumerate(actionable, start=1):
+            lines.append(f"\n{position}. *{requirement['texto']}*")
+            if requirement.get("plazo"):
+                lines.append(f"⏱️ Tiempo estimado: {requirement['plazo']}")
+            urgency = get_requirement_urgency(requirement, days_remaining)
+            if requirement.get("plazo_dias") is not None:
+                lines.append(urgency["label"])
+            if requirement.get("recomendacion"):
+                lines.append(f"💡 {requirement['recomendacion']}")
+
+    if evaluation["blocking_failures"]:
+        lines.append("\n⛔ *Requisitos excluyentes no cumplidos*")
+        for requirement in evaluation["blocking_failures"]:
+            lines.append(f"\n• *{requirement['texto']}*")
+            if requirement.get("recomendacion"):
+                lines.append(f"💡 {requirement['recomendacion']}")
+
+    if not failed:
+        lines.append("\n🎉 No hay requisitos confirmados como incumplidos.")
 
     if fund.get("link"):
         lines.append(f"\n🔗 Más información: {fund['link']}")
     lines.append(
-        "\nPuedes escribir *postular fondos* para evaluar otra convocatoria."
+        "\n💡 Si quieres saber más sobre algún fondo, escribe su nombre o "
+        "*postular fondos*."
     )
     return "\n".join(lines)
 

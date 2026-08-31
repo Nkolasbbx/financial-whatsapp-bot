@@ -58,6 +58,25 @@ with requisitos_enriquecidos as (
                 end
             )
             || case req.value->>'clave'
+                when 'mayor_edad' then jsonb_build_object(
+                    'recomendacion',
+                    'Este fondo exige ser mayor de 18 años. Mientras tanto, puedes avanzar en capacitaciones y preparar tu proyecto para futuras convocatorias.'
+                )
+                when 'genero_femenino' then jsonb_build_object(
+                    'recomendacion',
+                    'Esta convocatoria está dirigida a mujeres emprendedoras. Puedes revisar Capital Semilla Emprende u otros fondos sin este requisito.'
+                )
+                when 'sin_inicio_sii' then jsonb_build_object(
+                    'recomendacion',
+                    'Si ya tienes inicio de actividades, revisa el fondo Crece u otras convocatorias dirigidas a negocios formalizados.'
+                )
+                when 'sin_beneficio_reciente' then jsonb_build_object(
+                    'recomendacion',
+                    'Verifica la fecha en que recibiste tu último beneficio SERCOTEC. Si todavía estás dentro del periodo restringido, revisa otras convocatorias disponibles.'
+                )
+                else '{}'::jsonb
+            end
+            || case req.value->>'clave'
                 when 'proyecto_negocio' then jsonb_build_object('plazo_dias', 2)
                 when 'capacitacion' then jsonb_build_object('plazo_dias', 28)
                 when 'inicio_sii' then jsonb_build_object('plazo_dias', 1)

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date, datetime
 
 from core.fondos import (
+    evaluate_available_funds,
     evaluate_fund,
     format_fund_evaluation,
+    format_funds_summary,
     fund_applies_to_user,
 )
 from db.fondos import (
@@ -20,7 +21,6 @@ from db.fondos import (
     get_fund_answer_records,
     get_fund_by_id,
     get_requirement_definitions,
-    list_active_funds,
     normalize_fund_text,
     save_fund_answer,
     start_fund_session,
@@ -54,42 +54,18 @@ FUND_NAME_HINTS = {"capital", "semilla", "abeja", "pioneras", "crece"}
 _INVALID_ANSWER = object()
 
 
-def _parse_date(value) -> date | None:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        try:
-            return date.fromisoformat(value)
-        except ValueError:
-            return None
-    return None
-
-
-def _available_funds(user: dict) -> list[dict]:
-    today = date.today()
-    available = []
-    for fund in list_active_funds():
-        closing_date = _parse_date(fund.get("fecha_cierre"))
-        if closing_date is not None and closing_date < today:
-            continue
-        if fund_applies_to_user(fund, user):
-            available.append(fund)
-    return available
-
-
 def _fund_list_widget(user: dict, prefix: str = "") -> dict | str:
-    funds = _available_funds(user)
-    if not funds:
+    evaluations = evaluate_available_funds(user)
+    if not evaluations:
         return (
             f"{prefix}⚠️ No encontré fondos vigentes compatibles con tu perfil "
             "en este momento. Puedes volver a consultar más adelante."
         )
 
     options = []
-    for fund in funds[:10]:
-        identifier = fund.get("slug") or fund["id"]
+    for evaluation in evaluations[:10]:
+        fund = evaluation["fund"]
+        identifier = fund.get("slug") or fund.get("id") or fund["nombre"]
         options.append(
             (
                 f"{FUND_SELECT_PREFIX}{identifier}",
@@ -98,9 +74,8 @@ def _fund_list_widget(user: dict, prefix: str = "") -> dict | str:
         )
 
     body = (
-        f"{prefix}🎯 *Fondos disponibles para tu perfil*\n\n"
-        "Selecciona una convocatoria para revisar sus requisitos y calcular "
-        "tu compatibilidad."
+        f"{prefix}"
+        f"{format_funds_summary(evaluations, max_length=max(300, 1000 - len(prefix)))}"
     )
     return {
         "type": "list",

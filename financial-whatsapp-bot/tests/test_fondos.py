@@ -2,7 +2,15 @@ import unittest
 from datetime import date
 from unittest.mock import patch
 
-from core.fondos import evaluate_fund, evaluate_requirement, simulate_funds
+from core.fondos import (
+    evaluate_available_funds,
+    evaluate_fund,
+    evaluate_requirement,
+    format_fund_evaluation,
+    format_funds_summary,
+    get_requirement_urgency,
+    simulate_funds,
+)
 
 
 def _definition(
@@ -169,6 +177,161 @@ class FundEvaluationTests(unittest.TestCase):
                 definitions,
             )
         )
+
+    def test_sales_recommendation_changes_according_to_value(self):
+        fund = {
+            "nombre": "Crece",
+            "fecha_cierre": "2027-05-31",
+            "requisitos": [{
+                "clave": "ventas_crece",
+                "texto": "Ventas entre 200 y 25.000 UF",
+                "obligatorio": True,
+                "corregible": None,
+            }],
+        }
+        definitions = {
+            "ventas_crece": _definition(
+                operator="between",
+                min=200,
+                max=25000,
+            )
+        }
+
+        below = evaluate_fund(
+            fund,
+            {},
+            {"ventas_crece": 100},
+            definitions,
+            today=date(2026, 8, 30),
+        )
+        above = evaluate_fund(
+            fund,
+            {},
+            {"ventas_crece": 30000},
+            definitions,
+            today=date(2026, 8, 30),
+        )
+
+        self.assertTrue(below["requirements"][0]["corregible"])
+        self.assertIn("bajo el mínimo", below["requirements"][0]["recomendacion"])
+        self.assertFalse(above["requirements"][0]["corregible"])
+        self.assertIn("superan el máximo", above["requirements"][0]["recomendacion"])
+        self.assertEqual(len(above["blocking_failures"]), 1)
+
+    def test_urgency_explains_reachability(self):
+        reachable = get_requirement_urgency(
+            {"plazo_dias": 14},
+            days_remaining=20,
+        )
+        unreachable = get_requirement_urgency(
+            {"plazo_dias": 28},
+            days_remaining=10,
+        )
+
+        self.assertEqual(reachable["status"], "urgent")
+        self.assertEqual(reachable["margin_days"], 6)
+        self.assertEqual(unreachable["status"], "not_reachable")
+        self.assertIn("No alcanzable", unreachable["label"])
+
+    def test_detailed_result_orders_actions_by_available_margin(self):
+        evaluation = {
+            "fund": {
+                "nombre": "Capital Semilla",
+                "emoji": "💰",
+                "fecha_cierre": date(2026, 9, 29),
+            },
+            "requirements": [
+                {
+                    "clave": "proyecto",
+                    "texto": "Preparar pitch",
+                    "cumple": False,
+                    "corregible": True,
+                    "plazo": "2 días",
+                    "plazo_dias": 2,
+                    "recomendacion": "Prepara el video.",
+                },
+                {
+                    "clave": "capacitacion",
+                    "texto": "Completar capacitación",
+                    "cumple": False,
+                    "corregible": True,
+                    "plazo": "28 días",
+                    "plazo_dias": 28,
+                    "recomendacion": "Inscríbete al curso.",
+                },
+            ],
+            "met": 0,
+            "failed": 2,
+            "unknown": 0,
+            "total": 2,
+            "percentage": 0,
+            "days_remaining": 30,
+            "is_open": True,
+            "blocking_failures": [],
+            "missing_questions": [],
+        }
+
+        message = format_fund_evaluation(evaluation, {})
+
+        self.assertLess(
+            message.index("Completar capacitación"),
+            message.index("Preparar pitch"),
+        )
+        self.assertIn("Acciones recomendadas por urgencia", message)
+        self.assertIn("Si quieres saber más", message)
+
+    @patch("core.fondos._get_fondos_from_supabase")
+    @patch("core.fondos.get_fund_answers", return_value={"requisito": True})
+    @patch("core.fondos.get_requirement_definitions")
+    def test_available_funds_are_grouped_and_sorted(
+        self,
+        definitions_mock,
+        _answers_mock,
+        funds_mock,
+    ):
+        definitions_mock.return_value = {"requisito": _definition()}
+        funds_mock.return_value = [
+            {
+                "nombre": "Fondo bloqueado",
+                "fecha_cierre": date(2027, 1, 1),
+                "requisitos": [{
+                    "clave": "requisito",
+                    "texto": "Requisito",
+                    "obligatorio": True,
+                    "corregible": False,
+                }],
+            },
+            {
+                "nombre": "Fondo compatible",
+                "fecha_cierre": date(2027, 2, 1),
+                "requisitos": [{
+                    "clave": "requisito",
+                    "texto": "Requisito",
+                    "obligatorio": True,
+                    "corregible": False,
+                }],
+            },
+        ]
+
+        # Se cambia la respuesta entre evaluaciones mediante una regla por fondo
+        # simulada: el primero queda bloqueado y el segundo cumplido.
+        with patch(
+            "core.fondos.evaluate_requirement",
+            side_effect=[False, True],
+        ):
+            evaluations = evaluate_available_funds(
+                {"id": "user-1", "inicio_sii": "no"},
+                today=date(2026, 8, 30),
+            )
+
+        self.assertEqual(
+            [item["fund"]["nombre"] for item in evaluations],
+            ["Fondo compatible", "Fondo bloqueado"],
+        )
+        summary = format_funds_summary(evaluations)
+        self.assertIn("Fondo compatible", summary)
+        self.assertIn("Fondo bloqueado", summary)
+        self.assertIn("escribe su nombre", summary)
 
     @patch("core.fondos._get_fondos_from_supabase")
     @patch("core.fondos.get_fund_answers", return_value={"mayor_edad": True})
