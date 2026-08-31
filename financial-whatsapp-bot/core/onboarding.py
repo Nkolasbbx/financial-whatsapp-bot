@@ -58,6 +58,17 @@ BACK_PHRASES = {
 
 VOLVER_HINT = '\n\n_Toca "↩️ Volver" o escribe "volver" si deseas corregir la pregunta anterior._'
 
+SII_EXPLANATION = (
+    '💡 *¿Qué es el "inicio de actividades" (estar formalizado)?*\n\n'
+    "Es el aviso que le das al SII (Servicio de Impuestos Internos) de que tu emprendimiento "
+    "ya funciona como un negocio. Al hacerlo puedes:\n"
+    "• Emitir boletas o facturas a tus clientes\n"
+    "• Postular a créditos, fondos concursables y licitaciones del Estado\n"
+    "• Evitar multas por operar sin estar registrado\n\n"
+    'Si *todavía no lo hiciste*, estás "no formalizado" — es súper común, y para eso te '
+    "armamos una ruta paso a paso. 🚀\n\n"
+)
+
 
 def is_ambiguous(text: str) -> bool:
     cleaned = (text or "").strip().lower()
@@ -164,6 +175,44 @@ def _prompt_step_3(prefix: str = "") -> dict:
     return _list(body, "Seleccionar estado", SII_LIST_OPTIONS)
 
 
+def _finalize_onboarding(user: dict, sii: str, save_user_fn) -> dict:
+    """Guarda inicio_sii ya resuelto ('si'/'no') y arma el cierre del onboarding + roadmap."""
+    user["inicio_sii"] = sii
+    user["onboarding_step"] = "done"
+    user["conversation_history"] = []
+    user["created_at"] = datetime.utcnow().isoformat()
+
+    rubro_disp = RUBRO_DISPLAY.get(user.get("rubro"), user.get("rubro_raw", "").capitalize())
+    comuna_disp = user.get("comuna", "tu comuna")
+
+    # Caso formalizado (sin lista de hitos)
+    if sii == "si":
+        user["roadmap"] = []
+        user["roadmap_completed_at"] = datetime.utcnow().isoformat()
+        save_user_fn(user["phone"], user)
+
+        felicitacion = (
+            f"🎉 *¡FELICITACIONES! Perfil completado con éxito.*\n\n"
+            f"Tu negocio de *{rubro_disp}* en *{comuna_disp}* ya está formalizado ante el SII. 🏢👏\n\n"
+            f"Bienvenido/a a *FinancIAl*.\n\n"
+        )
+    # Caso no formalizado (asigna hoja de ruta por rubro)
+    else:
+        roadmap_key = user.get("rubro", "otro")
+        user["roadmap"] = copy.deepcopy(ROADMAPS.get(roadmap_key, ROADMAPS["otro"]))
+        save_user_fn(user["phone"], user)
+
+        total = len(user["roadmap"])
+        felicitacion = (
+            f"🎉 *¡FELICITACIONES! Perfil completado con éxito.*\n\n"
+            f"📌 Rubro: *{rubro_disp}*\n"
+            f"📍 Comuna: *{comuna_disp}*\n\n"
+            f"Diseñamos una ruta personalizada de *{total} pasos* para formalizar tu negocio.\n\n"
+        )
+
+    return get_menu_widget(user, prefix=felicitacion)
+
+
 def process_onboarding(user: dict, message: str, save_user_fn) -> dict:
     raw = user.get("onboarding_step", 0)
     try:
@@ -245,45 +294,35 @@ def process_onboarding(user: dict, message: str, save_user_fn) -> dict:
             )
             return _prompt_step_3(guia_error)
 
-        user["inicio_sii"] = sii if sii != "no_sabe" else "no"
-        user["onboarding_step"] = "done"
-        user["conversation_history"] = []
-        user["created_at"] = datetime.utcnow().isoformat()
-
-        rubro_disp = RUBRO_DISPLAY.get(user.get("rubro"), user.get("rubro_raw", "").capitalize())
-        comuna_disp = user.get("comuna", "tu comuna")
-
-        # Caso formalizado (sin lista de hitos)
-        if sii == "si":
-            user["roadmap"] = []
-            user["roadmap_completed_at"] = datetime.utcnow().isoformat()
+        if sii == "no_sabe":
+            user["onboarding_step"] = "3_explicado"
             save_user_fn(user["phone"], user)
+            return _prompt_step_3(SII_EXPLANATION)
 
-            felicitacion = (
-                f"🎉 *¡FELICITACIONES! Perfil completado con éxito.*\n\n"
-                f"Tu negocio de *{rubro_disp}* en *{comuna_disp}* ya está formalizado ante el SII. 🏢👏\n\n"
-                f"Bienvenido/a a *FinancIAl*.\n\n"
-            )
-        # Caso no formalizado (asigna hoja de ruta por rubro)
-        else:
-            roadmap_key = user.get("rubro", "otro")
-            user["roadmap"] = copy.deepcopy(ROADMAPS.get(roadmap_key, ROADMAPS["otro"]))
+        return _finalize_onboarding(user, sii, save_user_fn)
+
+    # ── Paso 3b: ya vio la explicación de "inicio de actividades", espera respuesta real ──
+    if step == "3_explicado":
+        if is_back_command(message):
+            user["onboarding_step"] = 2
             save_user_fn(user["phone"], user)
+            return _prompt_step_2("↩️ *Volviste a la Pregunta 2 (Comuna).*\n\n")
 
-            total = len(user["roadmap"])
-            sii_explain = (
-                "💡 _Te guiaremos paso a paso para realizar tu inicio de actividades y permisos municipales._\n\n"
-                if sii == "no_sabe" else ""
+        sii = detect_sii(message)
+        if sii is None:
+            guia_error = (
+                "⚠️ *Respuesta no comprendida.*\n"
+                "Necesitamos saber tu estado ante el Servicio de Impuestos Internos.\n\n"
+                "👉 *Ejemplos de respuesta:*\n"
+                "• Toca el botón *'Seleccionar estado'* y elige una opción de la lista.\n"
+                "• O escribe por mensaje: *'Sí'*, *'No'*, o *'volver'*.\n\n"
             )
+            return _prompt_step_3(guia_error)
 
-            felicitacion = (
-                f"🎉 *¡FELICITACIONES! Perfil completado con éxito.*\n\n"
-                f"📌 Rubro: *{rubro_disp}*\n"
-                f"📍 Comuna: *{comuna_disp}*\n\n"
-                f"{sii_explain}"
-                f"Diseñamos una ruta personalizada de *{total} pasos* para formalizar tu negocio.\n\n"
-            )
-
-        return get_menu_widget(user, prefix=felicitacion)
+        # Ya vio la explicación: si sigue sin saber, lo registramos como no formalizado en vez
+        # de dejarlo en un loop — el criterio de aceptación solo exige explicar antes de
+        # registrar, no obligar a que responda con certeza.
+        resolved_sii = "no" if sii == "no_sabe" else sii
+        return _finalize_onboarding(user, resolved_sii, save_user_fn)
 
     return get_menu_widget(user)
