@@ -69,11 +69,20 @@ FastAPI
 ```text
 financial-whatsapp-bot/
 ├── documentación.md
+<<<<<<< Updated upstream
 ├── RAG/
 │   ├── data/                       # Contenido municipal procesado
 │   ├── docs/                       # Documentos PDF originales
 │   ├── env_example.env
 │   └── ingest_supabase.py          # Ingesta y generación de embeddings
+=======
+├── Ingest/
+│   ├── data/                       # Contenido municipal en Markdown (curado a mano o generado)
+│   ├── docs/                       # Documentos PDF originales + extracted_media/
+│   ├── env_example.env
+│   ├── .env                        # SUPABASE_DSN + config de Contextual Retrieval; no se versiona
+│   └── ingest_supabase_v2.py       # Ingesta, chunking Parent-Child, Contextual Retrieval y embeddings
+>>>>>>> Stashed changes
 └── financial-whatsapp-bot/
     ├── core/
     │   ├── fondos.py               # Simulación de fondos
@@ -181,7 +190,11 @@ DB_DSN=
 |---|---|
 | `SUPABASE_URL` | URL pública del proyecto Supabase. |
 | `SUPABASE_KEY` | Clave utilizada por el cliente REST. En backend debe protegerse como secreto. |
+<<<<<<< Updated upstream
 | `DB_DSN` | Cadena directa de PostgreSQL para consultas RAG con pgvector. |
+=======
+| `DB_DSN` | Cadena directa de PostgreSQL para consultas RAG con pgvector. **Debe apuntar al mismo proyecto** que `SUPABASE_URL` y que `SUPABASE_DSN` en `Ingest/.env` — si difieren, el bot consulta una base distinta a la que llena la ingesta y el RAG responde con datos viejos o vacíos (ver 13.2). |
+>>>>>>> Stashed changes
 
 ### 7.3 IA
 
@@ -527,12 +540,17 @@ Comunas actualmente soportadas:
 - Recoleta.
 - El Bosque.
 
+<<<<<<< Updated upstream
 La consulta recupera hasta cuatro documentos relevantes, filtrando por comuna o contenido general.
+=======
+La consulta (`obtener_contexto_rag` en `core/ia.py`) recupera hasta cuatro **secciones distintas** (parents) del documento, deduplicadas por `parent_id` para no gastar las cuatro posiciones de contexto en fragmentos repetidos del mismo documento, filtrando por comuna o contenido general (ver 13.2).
+>>>>>>> Stashed changes
 
 Si una comuna no está soportada, no consulta la base de datos. Si la comuna está soportada pero no se encuentra información, el prompt instruye al modelo para derivar al usuario a la municipalidad.
 
 ### 13.1 Ingesta documental
 
+<<<<<<< Updated upstream
 El script `RAG/ingest_supabase.py`:
 
 1. Lee archivos Markdown desde `RAG/data`.
@@ -544,6 +562,41 @@ El script `RAG/ingest_supabase.py`:
 
 La consulta utiliza el prefijo `query:` para las preguntas.
 
+=======
+El script `Ingest/ingest_supabase_v2.py` (reemplaza al antiguo `RAG/ingest_supabase.py`):
+
+1. Lee archivos Markdown desde `Ingest/data` (incluye `message.txt`, que pese a la extensión es código Python con el dict `DOCUMENT_METADATA` usado para fijar `source`/`source_url`/`source_date` por archivo) y procesa los PDF de `Ingest/docs` que no tengan ya una transcripción `.md` curada a mano.
+2. Extrae texto de los PDF con `pymupdf4llm`, con OCR (Tesseract, español) como respaldo automático solo en páginas sin texto legible.
+3. Arma chunking **Parent-Child**: cada sección (`##`) se trocea en un "parent" (~2800 caracteres, es lo que se guarda como `content` y se le muestra al modelo) y cada parent se subdivide en "children" (~400 caracteres, la unidad que realmente se embebe y contra la que se busca).
+4. Genera **Contextual Retrieval**: por cada lote de children de un mismo parent, un LLM (Ollama local u otro endpoint compatible OpenAI, configurable) escribe una frase corta que sitúa el fragmento dentro de la sección; esa frase se antepone solo al texto que se embebe, nunca al `content` que se guarda.
+5. Genera embeddings con prefijo `passage:`.
+6. Crea la tabla `documents` y el índice vectorial si no existen, y vacía la tabla (`TRUNCATE`) antes de insertar.
+7. Inserta `content` (parent completo), `metadata` (incluye `parent_id`, `child_index`, `section_header`, `context_summary`, además de los campos previos) y `embedding`.
+
+La consulta utiliza el prefijo `query:` para las preguntas.
+
+### 13.2 Cambios de ingesta y recuperación (agosto 2026)
+
+Resumen de los cambios hechos para mejorar la calidad de las respuestas del RAG sobre la nueva base de datos:
+
+**En `Ingest/` (chunking y contenido):**
+
+- Se reemplazó el chunking plano (fragmentos sueltos de ~800 caracteres) por **chunking Parent-Child**: se busca sobre chunks pequeños y precisos (children), pero se le entrega al modelo la sección completa (parent) — mejor precisión de búsqueda sin perder contexto en la respuesta.
+- Se agregó **Contextual Retrieval**: cada child se embebe junto con una frase de contexto generada por LLM, para que fragmentos ambiguos fuera de contexto (p. ej. "el derecho se paga en enero y julio") sean encontrables por el tema al que pertenecen.
+- Se crearon y curaron a mano 4 documentos `.md` nuevos para Recoleta que antes solo existían como PDF con tablas/imágenes complejas de OCR (`patentes_comerciales_recoleta.md`, `ordenanza_local_plan_regulador_recoleta.md`, `plano_uso_suelo_recoleta.md`, `ordenanza_municipal_derechos_2026.md`), excluyendo esos 4 PDF del pipeline automático para no duplicar contenido de peor calidad.
+- Se mejoró el fallback de OCR (idioma español, mayor resolución) para los PDF que sí se procesan automáticamente.
+- **Bugfix de datos**: `ordenanza_municipal_derechos_2026.md` (contenido 100% específico de Recoleta) había quedado etiquetado `comuna: general` porque el nombre del archivo no contenía "recoleta" y la heurística de `infer_metadata()` no lo detectó. Esto hacía que usuarios de otras comunas (ej. El Bosque) recibieran tarifas municipales de Recoleta como si aplicaran en general. Corregido agregando `comuna: recoleta` al frontmatter del archivo (para futuras reingestas) y parcheando directamente las 58 filas ya insertadas.
+
+**En `financial-whatsapp-bot/` (recuperación y configuración):**
+
+- `obtener_contexto_rag()` en `core/ia.py`: la consulta SQL ahora usa `SELECT DISTINCT ON (metadata->>'parent_id') ... ORDER BY metadata->>'parent_id', embedding <=> %s::vector`, envuelta en una subconsulta que reordena por distancia y aplica `LIMIT 4`. Antes, con el chunking plano, esto no hacía falta; con Parent-Child varios children del mismo parent pueden matchear la misma pregunta, y sin este `DISTINCT ON` el límite de 4 resultados se podía llenar con 2-3 copias del mismo `parent_id` (texto duplicado) en vez de 4 secciones distintas del reglamento. Ahora cada una de las 4 posiciones de contexto es una sección distinta.
+- El bloque de contexto que se arma para el prompt ahora incluye `[Sección: ...]` (desde `metadata->>'section_header'`) además de documento, ámbito, fuente, URL y fecha — ayuda al modelo a citar con más precisión de qué parte del reglamento viene cada dato.
+- **Bugfix crítico de configuración**: `DB_DSN` en el `.env` de la raíz apuntaba a un proyecto Supabase distinto (`ullabqyfzkwzvmsenbbu`, con solo 5 documentos antiguos y sin datos de Parent-Child) al que usa `SUPABASE_URL`/`SUPABASE_KEY` y al que escribe `Ingest/ingest_supabase_v2.py` (`ywpcqjdapsmnttumcoys`). El bot de IA estaba consultando esa base vieja para el RAG (aunque `users`/`fondos` sí usaban la base correcta vía el cliente REST de Supabase). Corregido igualando `DB_DSN` al mismo proyecto que `SUPABASE_URL` y que `Ingest/.env`.
+  ⚠️ **Si el proyecto está desplegado en Vercel**, este `DB_DSN` corregido solo aplica al `.env` local: hay que actualizar también la variable `DB_DSN` en el dashboard de Vercel (Project → Settings → Environment Variables) y volver a desplegar, o el entorno de producción seguirá leyendo la base vieja.
+
+**Metadata nueva disponible por chunk** (en `metadata`, columna jsonb de `documents`): `parent_id`, `child_index`, `section_header`, `context_summary`, `child_text`.
+
+>>>>>>> Stashed changes
 ## 14. Persistencia de usuarios y mensajes
 
 La lógica está centralizada principalmente en `financial-whatsapp-bot/db/users.py`.
@@ -755,6 +808,19 @@ Revisar:
 - Carga del modelo de embeddings.
 - `DB_DSN` para el RAG.
 
+<<<<<<< Updated upstream
+=======
+### El RAG responde con información vieja, incompleta o de la comuna equivocada
+
+Casi siempre es un `DB_DSN` que no apunta al mismo proyecto Supabase que usa `Ingest/ingest_supabase_v2.py` (comparar el `ref` del proyecto, la parte entre `postgres.` y `:` en la cadena de conexión, con el de `SUPABASE_URL`). Verificar con una consulta directa:
+
+```sql
+SELECT count(*), count(distinct metadata->>'parent_id') FROM documents;
+```
+
+Si `count(distinct parent_id)` da `0` con filas existentes, esa base no tiene los datos de la ingesta con Parent-Child — es la base equivocada. En Vercel, recordar actualizar `DB_DSN` también en las variables de entorno del proyecto, no solo en el `.env` local.
+
+>>>>>>> Stashed changes
 ## 21. Limitaciones y deuda técnica
 
 - La deduplicación de webhooks es solo en memoria y conserva hasta 10.000 IDs recientes.
