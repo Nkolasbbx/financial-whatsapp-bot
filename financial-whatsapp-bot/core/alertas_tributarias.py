@@ -15,13 +15,33 @@ import logging
 
 logger = logging.getLogger("financial")
 
+# Sitio de cada municipalidad para el link de pago de patente comercial.
+# Solo cubre las comunas que hoy soporta el onboarding (ver core/onboarding.py).
+PATENTE_MUNICIPAL_LINKS = {
+    "recoleta": "https://www.recoleta.cl/",
+    "el bosque": "https://www.municipalidadelbosque.cl/",
+}
+_PATENTE_MUNICIPAL_LINK_DEFAULT = PATENTE_MUNICIPAL_LINKS["recoleta"]
 
-def get_calendario_sii(year: int) -> list[dict]:
+
+def _link_patente_municipal(comuna: str | None) -> str:
+    """Elige el link de patente municipal según la comuna del usuario."""
+    return PATENTE_MUNICIPAL_LINKS.get(
+        (comuna or "").strip().lower(),
+        _PATENTE_MUNICIPAL_LINK_DEFAULT,
+    )
+
+
+def get_calendario_sii(year: int, comuna: str | None = None) -> list[dict]:
     """
     Retorna el calendario tributario del SII para el año dado.
     Fuente: sii.cl/contribuyentes/calendario_tributario.html
+
+    `comuna` determina el link de pago de patente municipal; sin comuna
+    (o con una no soportada) se usa Recoleta como default.
     """
     calendar = []
+    link_patente = _link_patente_municipal(comuna)
 
     # ── Formulario 29 (IVA + PPM) ─────────────────────────────────────────
     # Vence el día 12 de cada mes para contribuyentes del régimen general.
@@ -74,7 +94,7 @@ def get_calendario_sii(year: int) -> list[dict]:
             "Puedes hacerlo en la sucursal o en el sitio web de tu municipio."
         ),
         "fecha_vencimiento": date(year, 1, 31),
-        "link": "https://www.municipalidadderecoleta.cl/",
+        "link": link_patente,
         "tipo": "patente",
         "aplica_a": "formalizado",
     })
@@ -85,7 +105,7 @@ def get_calendario_sii(year: int) -> list[dict]:
             "Puedes hacerlo en la sucursal o en el sitio web de tu municipio."
         ),
         "fecha_vencimiento": date(year, 7, 31),
-        "link": "https://www.municipalidadderecoleta.cl/",
+        "link": link_patente,
         "tipo": "patente",
         "aplica_a": "formalizado",
     })
@@ -111,9 +131,10 @@ def get_alertas_proximas(
     limite = today + timedelta(days=dias_anticipacion)
     year = today.year
 
-    calendario = get_calendario_sii(year)
+    comuna = user.get("comuna")
+    calendario = get_calendario_sii(year, comuna)
     if today.month == 12:
-        calendario += get_calendario_sii(year + 1)
+        calendario += get_calendario_sii(year + 1, comuna)
 
     alertas = []
     for evento in calendario:

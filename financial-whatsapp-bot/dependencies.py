@@ -11,18 +11,23 @@ from contextlib import asynccontextmanager
 
 import httpx
 import psycopg2
+from arq import create_pool
 from fastapi import FastAPI
 from psycopg2 import pool
 from supabase import Client as SupabaseClient
 from supabase import create_client
 
+from redis_settings import get_redis_settings
+
 from config import (
     EMBEDDING_MODEL_NAME,
+    IA_API_KEY,
     META_GRAPH_API_VERSION,
     META_PHONE_NUMBER_ID,
     META_WHATSAPP_TOKEN,
     OLLAMA_MODEL,
     OLLAMA_URL,
+    REDIS_URL,
     RES_KEY,
     RES_MODEL,
     RES_URL,
@@ -46,6 +51,7 @@ twilio_client: TwilioClient | None = None
 db_pool: psycopg2.pool.ThreadedConnectionPool | None = None
 whatsapp_http_client: httpx.AsyncClient | None = None
 resumen_client: httpx.AsyncClient | None = None
+redis_pool = None  # pool de arq/Redis para la cola de jobs
 
 
 def twilio_configured() -> bool:
@@ -67,14 +73,22 @@ def resumen_configured() -> bool:
     return all((RES_URL, RES_MODEL, RES_KEY))
 
 
- 
- 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Inicializa y cierra las dependencias compartidas de la aplicación."""
+def redis_configured() -> bool:
+    """Indica si está presente la URL de conexión a Redis."""
+    return bool(REDIS_URL)
+
+
+async def init_dependencies() -> None:
+    """Inicializa las dependencias compartidas (Supabase, Postgres, Redis, etc.).
+
+    Se usa tanto desde el lifespan de FastAPI (proceso web) como desde los
+    hooks on_startup del worker de arq (proceso aparte): cada proceso tiene su
+    propia memoria, así que ambos deben llamar esta función para poblar los
+    globals de este módulo.
+    """
     global ollama_available, resumen_available, resumen_client
     global supabase, supabase_admin, embedding_model, db_pool
-    global whatsapp_http_client, twilio_client
+    global whatsapp_http_client, twilio_client, redis_pool
 
     if meta_whatsapp_configured():
         whatsapp_http_client = httpx.AsyncClient(timeout=30)
@@ -94,9 +108,9 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Twilio no está configurado; el modo DEBUG con Twilio no funcionará")
 
-    if OLLAMA_URL and "groq.com" in OLLAMA_URL.lower():
+    if OLLAMA_URL and IA_API_KEY:
         ollama_available = True
-        logger.info("Groq Cloud configurado - modelo: %s", OLLAMA_MODEL)
+        logger.info("Proveedor de IA configurado (API compatible OpenAI) - modelo: %s", OLLAMA_MODEL)
     else:
         try:
             async with httpx.AsyncClient() as client:
@@ -148,7 +162,7 @@ async def lifespan(app: FastAPI):
             "RES_URL/RES_MODEL/RES_KEY no configurados; "
             "los resúmenes con Groq quedan deshabilitados"
         )
- 
+
     if SUPABASE_URL and SUPABASE_KEY:
         try:
             supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -178,7 +192,6 @@ async def lifespan(app: FastAPI):
 
     if SUPABASE_DB_DSN:
         try:
-
             logger.info("🔌 Creando pool de conexiones Postgres para RAG...")
             db_pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=1,
@@ -192,7 +205,21 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("DB_DSN no configurado; la búsqueda RAG queda deshabilitada")
 
-    yield
+    if redis_configured():
+        try:
+            logger.info("🔌 Conectando pool de Redis para la cola de jobs...")
+            redis_pool = await create_pool(get_redis_settings())
+            logger.info("Pool de Redis conectado")
+        except Exception as error:
+            logger.error("No se pudo conectar a Redis: %s", error)
+            redis_pool = None
+    else:
+        logger.warning("REDIS_URL no configurado; la cola de jobs queda deshabilitada")
+
+
+async def shutdown_dependencies() -> None:
+    """Cierra las dependencias compartidas abiertas por init_dependencies()."""
+    global supabase_admin, db_pool, redis_pool, whatsapp_http_client, resumen_client
 
     if whatsapp_http_client is not None:
         await whatsapp_http_client.aclose()
@@ -207,4 +234,23 @@ async def lifespan(app: FastAPI):
         db_pool = None
         logger.info("Pool de conexiones Postgres cerrado")
 
+    if redis_pool is not None:
+        await redis_pool.close()
+        redis_pool = None
+        logger.info("Pool de Redis cerrado")
+
     supabase_admin = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Inicializa y cierra las dependencias compartidas del proceso web (uvicorn)."""
+    await init_dependencies()
+    # app.state.redis es específico del proceso web: el router de webhooks lo usa
+    # para encolar jobs. El worker de arq no lo necesita (crea su propia conexión
+    # Redis para administrar la cola, ver worker.py).
+    app.state.redis = redis_pool
+
+    yield
+
+    await shutdown_dependencies()

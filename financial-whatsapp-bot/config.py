@@ -34,6 +34,8 @@ RES_URL=os.getenv("RES_URL")
 RES_MODEL=os.getenv("RES_MODEL")
 RES_KEY=os.getenv("RES_KEY")
 
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
 
 HF_TOKEN= os.getenv("HF_TOKEN")
 MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")
@@ -71,9 +73,32 @@ CRON_SECRET = (
     or os.getenv("REMINDER_CRON_SECRET", "")
 ).strip()
 
+# Límite distribuido de mensajes entrantes por número telefónico.
+RATE_LIMIT_ENABLED = (
+    os.getenv("RATE_LIMIT_ENABLED", "true").strip().lower() == "true"
+)
+RATE_LIMIT_MAX_MESSAGES = int(os.getenv("RATE_LIMIT_MAX_MESSAGES", "2"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+RATE_LIMIT_BLOCK_SECONDS = int(os.getenv("RATE_LIMIT_BLOCK_SECONDS", "60"))
+
+# Similitud mínima (1 - distancia coseno de pgvector) para que un chunk del RAG
+# se considere lo bastante relevante como para llegar al prompt del LLM.
+RAG_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.6"))
+
 if REMINDER_DAYS < 1:
     raise ValueError("REMINDER_DAYS debe ser mayor que cero")
 
 if REMINDER_BATCH_SIZE < 1:
     raise ValueError("REMINDER_BATCH_SIZE debe ser mayor que cero")
 
+if RATE_LIMIT_MAX_MESSAGES < 1:
+    raise ValueError("RATE_LIMIT_MAX_MESSAGES debe ser mayor que cero")
+
+if RATE_LIMIT_WINDOW_SECONDS < 1:
+    raise ValueError("RATE_LIMIT_WINDOW_SECONDS debe ser mayor que cero")
+
+if RATE_LIMIT_BLOCK_SECONDS < 1:
+    raise ValueError("RATE_LIMIT_BLOCK_SECONDS debe ser mayor que cero")
+
+if not 0.0 <= RAG_SIMILARITY_THRESHOLD <= 1.0:
+    raise ValueError("RAG_SIMILARITY_THRESHOLD debe estar entre 0.0 y 1.0")

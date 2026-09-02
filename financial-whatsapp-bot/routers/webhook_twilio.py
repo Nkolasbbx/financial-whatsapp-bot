@@ -6,6 +6,11 @@ from fastapi import APIRouter, Request, Response, BackgroundTasks
 from twilio.twiml.messaging_response import MessagingResponse
 from services.message_router import route_message, split_message
 from core.ia import process_ai_and_send_Twillio
+from db.rate_limits import (
+    RATE_LIMIT_WARNING,
+    check_message_rate_limit,
+    is_rate_limit_exempt,
+)
 from db.users import get_last_user_message, get_user, save_user
 
 logger = logging.getLogger("financial")
@@ -19,13 +24,29 @@ async def whatsapp_webhook_twilio(request: Request, background_tasks: Background
     message = form.get("Body", "").strip()
     
     phone_clean = phone.replace("whatsapp:", "").strip()
+    twiml = MessagingResponse()
+
+    if not is_rate_limit_exempt(message):
+        rate_limit = await asyncio.to_thread(
+            check_message_rate_limit,
+            phone_clean,
+        )
+        if not rate_limit["allowed"]:
+            logger.warning(
+                "Mensaje Twilio bloqueado por rate limit: phone=%s "
+                "retry_after=%s",
+                phone_clean,
+                rate_limit["retry_after_seconds"],
+            )
+            if rate_limit["notify_user"]:
+                twiml.message(RATE_LIMIT_WARNING)
+            return Response(content=str(twiml), media_type="application/xml")
+
     response_text = await asyncio.to_thread(
         route_message,
         phone_clean,
         message,
     )
-
-    twiml = MessagingResponse()
     
     try:
         # ── CASO 1: Consulta normal ──

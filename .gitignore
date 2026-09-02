@@ -2,11 +2,8 @@
 .env
 __pycache__/
 *.pyc
-<<<<<<< Updated upstream
 venv/
 .venv/
 =======
-.DS_Store
-Ingest/.venv-linux
-Ingest/docs/extracted_media
->>>>>>> Stashed changes
+local_testing/
+
