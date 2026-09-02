@@ -1,7 +1,9 @@
+# .gitignore
 .env
-venv/
 __pycache__/
 *.pyc
-.DS_Store
-.venv-linux/
-ingest/docs/extracted_media
+venv/
+.venv/
+=======
+local_testing/
+

@@ -1,191 +1,288 @@
-# 🚀 FinancIAl WhatsApp Bot - Guía de Setup
+# FinancIAl WhatsApp Bot
+
+Bot de WhatsApp para orientar a microemprendedores chilenos. Usa FastAPI, Meta WhatsApp Cloud API, Supabase y un modelo compatible con la API de OpenAI (Groq u Ollama).
 
 ## Arquitectura
 
-```
+```text
 Emprendedor (WhatsApp)
-        │
-        ▼
-   Twilio (webhook)
-        │
-        ▼
-   FastAPI Backend ─── OpenAI (GPT-4o-mini)
-        │
-        ▼
-   Supabase (perfiles + roadmaps)
+        |
+        v
+Meta WhatsApp Cloud API
+        |
+        v
+FastAPI ---- Groq/Ollama
+        |
+        v
+Supabase
 ```
 
-## Setup en 30 minutos
+## Preparación
 
-### Paso 1: Clonar y preparar el proyecto
+Desde esta carpeta:
 
-```bash
-# Clonar o copiar los archivos
-cd financial-whatsapp-bot
-
-# Crear entorno virtual
+```powershell
 python -m venv venv
-source venv/bin/activate        # Mac/Linux
-# venv\Scripts\activate         # Windows
-
-# Instalar dependencias
-pip install -r requirements.txt
-
-# Copiar variables de entorno
-cp .env.example .env
+.\venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-### Paso 2: Configurar OpenAI (5 min)
+Completa `.env` con tus credenciales reales. El archivo ya está ignorado por Git.
 
-1. Ir a https://platform.openai.com/api-keys
-2. Crear una API key
-3. Copiar la key en `.env` → `OPENAI_API_KEY=sk-...`
+## Variables de Meta
 
-> 💡 GPT-4o-mini cuesta ~$0.15 por 1M tokens. Para el MVP gastarán menos de $1.
+```env
+WHATSAPP_PROVIDER=meta
+META_WHATSAPP_TOKEN=
+META_PHONE_NUMBER_ID=
+META_WABA_ID=
+META_WEBHOOK_VERIFY_TOKEN=
+META_APP_SECRET=
+META_GRAPH_API_VERSION=
+```
 
-### Paso 3: Configurar Twilio Sandbox (10 min)
+- `META_WHATSAPP_TOKEN`: token temporal de pruebas o token permanente de un System User.
+- `META_PHONE_NUMBER_ID`: identificador del número, no el número visible.
+- `META_WABA_ID`: identificador de la cuenta de WhatsApp Business.
+- `META_WEBHOOK_VERIFY_TOKEN`: secreto definido por el equipo; debe coincidir con el ingresado al registrar el webhook.
+- `META_APP_SECRET`: clave secreta de la aplicación, usada para validar `X-Hub-Signature-256`.
+- `META_GRAPH_API_VERSION`: versión mostrada por Meta, incluyendo la `v` inicial.
 
-1. Crear cuenta en https://www.twilio.com/ (gratis)
-2. Ir a **Console → Messaging → Try it out → Send a WhatsApp message**
-3. Seguir las instrucciones para activar el sandbox:
-   - Te darán un número (ej: +14155238886)
-   - Te darán un código (ej: "join bright-cloud")
-4. Copiar credenciales en `.env`:
-   - `TWILIO_ACCOUNT_SID` → está en el Dashboard principal
-   - `TWILIO_AUTH_TOKEN` → está en el Dashboard principal
-   - `TWILIO_WHATSAPP_NUMBER` → el número del sandbox
+## Ejecutar localmente
 
-### Paso 4: Exponer el servidor (ngrok)
+```powershell
+.\venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000
+```
 
-Twilio necesita una URL pública para enviar los webhooks.
+Verifica el estado en:
 
-```bash
-# Instalar ngrok: https://ngrok.com/download
-# O con brew: brew install ngrok
+```text
+http://127.0.0.1:8000/
+```
 
-# En una terminal, levantar el servidor:
-uvicorn main:app --reload --port 8000
+## Exponer el webhook
 
-# En OTRA terminal, exponer con ngrok:
+En otra terminal:
+
+```powershell
 ngrok http 8000
 ```
 
-ngrok te dará una URL como `https://abc123.ngrok-free.app`
+Usa la URL HTTPS entregada por ngrok:
 
-### Paso 5: Conectar Twilio con tu servidor
-
-1. Ir a **Twilio Console → Messaging → Settings → WhatsApp Sandbox Settings**
-2. En "When a message comes in", poner:
-   ```
-   https://abc123.ngrok-free.app/webhook/whatsapp
-   ```
-   (usar TU url de ngrok)
-3. Método: **POST**
-4. Guardar
-
-### Paso 6: ¡Probar!
-
-1. Desde tu celular, envía el código de unión al sandbox
-   (ej: enviar "join bright-cloud" al +14155238886 por WhatsApp)
-2. Luego escribe "hola" y el bot debería responder
-
-Para que otros prueben (emprendedores, profesor), cada persona debe:
-1. Agregar el número del sandbox a sus contactos
-2. Enviar el código de unión
-3. ¡Listo! Ya pueden chatear con FinancIAl
-
----
-
-## Modo de prueba sin Twilio
-
-Si quieres probar la lógica sin WhatsApp:
-
-```bash
-# Solo necesitas OpenAI configurado (o ni eso para el flujo básico)
-uvicorn main:app --reload --port 8000
+```text
+https://tu-subdominio.ngrok-free.app/webhook/whatsapp
 ```
 
-Abre http://localhost:8000/test/chat en el navegador.
-Ahí tienes un chat de prueba que simula la conversación.
+## Configurar el webhook en Meta
 
----
+En la aplicación de Meta, entra a **WhatsApp → Configuración → Webhook**.
 
-## Configurar Supabase (opcional)
+Configura:
 
-Sin Supabase, los datos se guardan en memoria (se pierden al reiniciar).
-Para persistencia:
+```text
+Callback URL: https://tu-subdominio.ngrok-free.app/webhook/whatsapp
+Verify token: el mismo valor de META_WEBHOOK_VERIFY_TOKEN
+```
 
-1. Crear proyecto en https://supabase.com/
-2. Ir a **SQL Editor** y ejecutar el contenido de `schema.sql`
-3. Ir a **Settings → API** y copiar:
-   - `SUPABASE_URL` → Project URL
-   - `SUPABASE_KEY` → anon/service_role key
-4. Pegar en `.env`
+Luego suscribe el campo `messages`.
 
----
+El backend expone:
 
-## Comandos disponibles en el bot
+- `GET /webhook/whatsapp`: responde al desafío de verificación de Meta.
+- `POST /webhook/whatsapp`: recibe mensajes y estados, y valida la firma de Meta.
 
-| Comando | Qué hace |
-|---------|----------|
+## Configuración de IA
+
+Para Groq:
+
+```env
+OLLAMA_URL=https://api.groq.com/openai/v1
+OLLAMA_MODEL=llama-3.3-70b-versatile
+IA_API_KEY=
+```
+
+Para Ollama o un túnel compatible, cambia URL y modelo y deja `IA_API_KEY` vacía.
+
+## Supabase
+
+```env
+SUPABASE_URL=
+SUPABASE_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+DB_DSN=
+```
+
+`SUPABASE_URL` y `SUPABASE_KEY` almacenan perfiles y mensajes.
+`SUPABASE_SERVICE_ROLE_KEY` se utiliza únicamente en el backend para procesar
+los recordatorios protegidos por RLS. `DB_DSN` permite la búsqueda RAG directa
+en Postgres.
+
+## Comandos del bot
+
+| Comando | Acción |
+|---|---|
 | `hola` | Inicia el onboarding |
-| `mi roadmap` | Muestra el progreso de formalización |
-| `listo` | Marca el hito actual como completado |
-| `postular a fondo` | Simula postulación a fondos |
+| `mi roadmap` | Muestra el progreso |
+| `listo` | Completa el hito actual |
+| `postular a fondo` | Simula una postulación |
 | `ayuda` | Muestra el menú |
-| `reiniciar` | Borra el perfil y empieza de nuevo |
-| _(cualquier otra cosa)_ | Responde con IA contextualizada |
+| `reiniciar` | Reinicia el perfil |
+| `activar recordatorios` | Acepta recordatorios después de 3 días sin avance |
+| `pausar recordatorios` | Detiene futuros recordatorios |
+| Cualquier pregunta | Respuesta contextual con IA |
 
----
+## Recordatorios proactivos
 
-## Deploy en producción (Vercel / Railway)
+Los avisos 1 y 2 utilizan `recordatorio_roadmap`; el tercer y último aviso usa
+`last_reminder_roadmap`. Ambas plantillas reciben `{{1}}` como etiqueta del
+destinatario y `{{2}}` como título del hito pendiente.
 
-### Railway (recomendado para FastAPI)
-
-1. Ir a https://railway.app/
-2. New Project → Deploy from GitHub
-3. Agregar variables de entorno
-4. Railway da una URL pública automáticamente
-5. Configurar esa URL en Twilio
-
-### Procfile para Railway:
+```env
+REMINDERS_ENABLED=false
+REMINDER_TEMPLATE_NAME=recordatorio_roadmap
+REMINDER_FINAL_TEMPLATE_NAME=last_reminder_roadmap
+REMINDER_TEMPLATE_LANGUAGE=es_CL
+REMINDER_RECIPIENT_LABEL=emprendedor/a
+REMINDER_DAYS=3
+REMINDER_TIMEZONE=America/Santiago
+REMINDER_BATCH_SIZE=50
+CRON_SECRET=
 ```
+
+El mismo endpoint acepta `GET` y `POST`. Vercel Cron utiliza `GET`; para una
+prueba manual también puede utilizarse `POST`. Ambos requieren:
+
+```text
+Authorization: Bearer CRON_SECRET
+```
+
+El endpoint se encuentra fuera del esquema público de OpenAPI. Los intentos,
+estados de entrega y respuestas se guardan en `reminder_deliveries`.
+
+### Probar la rutina localmente
+
+Con Uvicorn levantado y el mismo `CRON_SECRET` configurado en `.env`:
+
+```powershell
+$cronSecret = "valor_configurado_en_tu_env_local"
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://127.0.0.1:8000/internal/reminders/run" `
+    -Headers @{ Authorization = "Bearer $cronSecret" }
+```
+
+La petición también puede realizarse con `GET`, que reproduce la llamada de
+Vercel:
+
+```powershell
+Invoke-RestMethod `
+    -Method Get `
+    -Uri "http://127.0.0.1:8000/internal/reminders/run" `
+    -Headers @{ Authorization = "Bearer $cronSecret" }
+```
+
+## Despliegue en Vercel
+
+El archivo `vercel.json` registra una ejecución diaria de:
+
+```text
+GET /internal/reminders/run
+Horario: 0 13 * * * (13:00 UTC)
+```
+
+En Chile corresponde aproximadamente a las 09:00 en horario de invierno y a
+las 10:00 en horario de verano. Vercel Cron trabaja siempre en UTC.
+
+### 1. Preparar el código
+
+1. Confirma que los cambios estén en la rama que despliega el proyecto.
+2. Sube la rama a GitHub.
+3. Integra los cambios en la rama de producción conectada a Vercel.
+4. Comprueba que el nuevo deployment finalice correctamente.
+
+Los cron jobs se activan solamente en deployments de producción, no en los
+deployments Preview.
+
+### 2. Configurar las variables de producción
+
+En **Vercel → Project → Settings → Environment Variables**, agrega las
+variables descritas en `.env.example`, al menos:
+
+```env
+DEBUG=false
+META_WHATSAPP_TOKEN=
+META_PHONE_NUMBER_ID=
+META_WABA_ID=
+META_WEBHOOK_VERIFY_TOKEN=
+META_APP_SECRET=
+META_GRAPH_API_VERSION=v26.0
+SUPABASE_URL=
+SUPABASE_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+REMINDERS_ENABLED=true
+REMINDER_TEMPLATE_NAME=recordatorio_roadmap
+REMINDER_FINAL_TEMPLATE_NAME=last_reminder_roadmap
+REMINDER_TEMPLATE_LANGUAGE=es_CL
+REMINDER_RECIPIENT_LABEL=emprendedor/a
+REMINDER_DAYS=3
+REMINDER_TIMEZONE=America/Santiago
+REMINDER_BATCH_SIZE=50
+CRON_SECRET=
+```
+
+Genera un secreto nuevo y largo para `CRON_SECRET`. Vercel enviará ese valor
+automáticamente en el encabezado `Authorization: Bearer ...`; no se configura
+el encabezado manualmente en el panel. Después de agregar o cambiar variables,
+vuelve a desplegar el proyecto.
+
+### 3. Activar y revisar el cron
+
+Después del deployment de producción:
+
+1. Entra a **Vercel → Project → Settings → Cron Jobs**.
+2. Confirma que aparezca `/internal/reminders/run`.
+3. Revisa sus ejecuciones en **Logs**.
+4. Comprueba en Supabase los cambios de `users` y los registros de
+   `reminder_deliveries`.
+
+En el plan Hobby la rutina puede ejecutarse una vez al día y Vercel puede
+iniciarla en cualquier momento dentro de la hora configurada. Además, Vercel
+no reintenta automáticamente una ejecución fallida.
+
+### 4. Restaurar el webhook de Meta
+
+Una vez validado el deployment, configura en Meta la URL estable:
+
+```text
+https://TU-DOMINIO-VERCEL/webhook/whatsapp
+```
+
+El identificador de verificación debe coincidir con
+`META_WEBHOOK_VERIFY_TOKEN`, y el campo `messages` debe continuar suscrito.
+Cambiar el webhook de ngrok a Vercel no modifica los cron jobs.
+
+### 5. Comprobación inicial
+
+Para una prueba controlada, usa un usuario propio con recordatorios activados y
+una fecha `next_reminder_at` vencida. Primero invoca manualmente el endpoint de
+producción con `Authorization: Bearer ...`. Cuando el resultado sea correcto,
+deja la ejecución diaria a cargo de Vercel.
+
+## Producción
+
+Antes de producción:
+
+1. Sustituye el token temporal por un token permanente de Meta.
+2. Usa una URL HTTPS estable en lugar de ngrok.
+3. Registra el número definitivo de WhatsApp Business.
+4. Crea plantillas aprobadas para mensajes iniciados fuera de la ventana de atención.
+5. Configura los secretos únicamente como variables del entorno del hosting.
+6. Verifica el cron diario y sus logs antes de habilitar un lote grande.
+
+El `Procfile` permite iniciar la aplicación en plataformas compatibles:
+
+```text
 web: uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
-
----
-
-## Estructura del proyecto
-
-```
-financial-whatsapp-bot/
-├── main.py              # Toda la lógica del bot
-├── requirements.txt     # Dependencias Python
-├── schema.sql           # Schema de Supabase
-├── .env.example         # Template de variables
-├── .env                 # Variables reales (NO subir a Git)
-├── Procfile             # Para deploy en Railway
-└── README.md            # Esta guía
-```
-
----
-
-## FAQ
-
-**¿Cuánto cuesta?**
-- Twilio sandbox: gratis
-- OpenAI GPT-4o-mini: ~$0.15/1M tokens (menos de $1 para el MVP)
-- Supabase: gratis (tier free hasta 500MB)
-- ngrok: gratis (tier free)
-- Total MVP: ~$0-1 USD
-
-**¿Cuántos usuarios soporta el sandbox?**
-- Sin límite de usuarios, pero cada uno debe enviar el código de unión
-- Para producción real, necesitan verificar su número de WhatsApp Business ($)
-
-**¿Los datos se pierden?**
-- Sin Supabase: sí, al reiniciar el servidor
-- Con Supabase: no, todo persiste
-
-**¿Puedo probar sin WhatsApp?**
-- Sí, abre http://localhost:8000/test/chat en el navegador

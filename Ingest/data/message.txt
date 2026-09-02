@@ -1,0 +1,72 @@
+DOCUMENT_METADATA = {
+    "step1_constitution_general.md": {
+        "source": "Ministerio de Economia, Fomento y Turismo; base de conocimiento del proyecto",
+        "source_url": "https://www.registrodeempresasysociedades.cl/",
+        "source_date": "2026-08-18",
+    },
+    "step2_sii_actividades_general.md": {
+        "source": "Servicio de Impuestos Internos; base de conocimiento del proyecto",
+        "source_url": "https://www.sii.cl/portales/emprendedor/#formalizate",
+        "source_date": "2026-08-18",
+    },
+    "step3_permisos_el_bosque.md": {
+        "source": "Municipalidad de El Bosque; base de conocimiento del proyecto",
+        "source_url": "https://www.municipalidadelbosque.cl/direcciones/direccion-de-desarrollo-innovacion-y-emprendimiento-territorial/",
+        "source_date": "2026-08-18",
+    },
+    "step3_permisos_general.md": {
+        "source": "Legislacion chilena y base de conocimiento del proyecto",
+        "source_url": "https://www.bcn.cl/portal/leyfacil/recurso/patentes-municipales",
+        "source_date": "2026-08-18",
+    },
+    "step3_permisos_recoleta.md": {
+        "source": "Municipalidad de Recoleta; base de conocimiento del proyecto",
+        "source_url": "https://www.recoleta.cl/",
+        "source_date": "2026-08-18",
+    },
+    "fondos_sercotec_requisitos_transversales.md": {
+        "source": "Sercotec, ChileAtiende y Ventanilla Unica Social; sintesis transversal del proyecto",
+        "source_url": "https://www.sercotec.cl/",
+        "source_date": "2026-08-30",
+    },
+    "fondo_capital_semilla_emprende.md": {
+        "source": "Sercotec, ficha del programa y bases de convocatoria 2026",
+        "source_url": "https://www.sercotec.cl/programas/capital-semilla-emprende/",
+        "source_date": "2026-08-30",
+    },
+    "fondo_capital_abeja_emprende.md": {
+        "source": "Sercotec, ficha del programa y bases de convocatoria 2026; ChileAtiende",
+        "source_url": "https://www.sercotec.cl/programas/capital-abeja-emprende/",
+        "source_date": "2026-08-30",
+    },
+    "fondo_capital_pioneras_emprende.md": {
+        "source": "Sercotec, bases de convocatoria 2026; Mi Portal Emprendimiento",
+        "source_url": "https://www.sercotec.cl/wp-content/uploads/2026/06/Bases-Capital-Pioneras-2026-Sercotec-Metropolitana-VB%C2%B0.pdf",
+        "source_date": "2026-08-30",
+    },
+    "fondo_crece.md": {
+        "source": "Sercotec, ficha del programa Crece; convocatoria nacional 2026",
+        "source_url": "https://www.sercotec.cl/programas/crece/",
+        "source_date": "2026-08-30",
+    },
+    "patentes_comerciales_recoleta.md": {
+        "source": "RecoletaTransparente, Tramites ante el organo, 'Patentes Comerciales'; Municipalidad de Recoleta",
+        "source_url": "https://www.recoleta.cl/",
+        "source_date": "2026-08-24",
+    },
+    "ordenanza_local_plan_regulador_recoleta.md": {
+        "source": "Ordenanza Local del Nuevo Plan Regulador de Recoleta; Asesoria Urbana-SECPLAC I. Municipalidad de Recoleta y Direccion de Proyectos e Investigaciones UC",
+        "source_url": "https://www.recoleta.cl/",
+        "source_date": "2005-01-08",
+    },
+    "plano_uso_suelo_recoleta.md": {
+        "source": "Plano PRR-01 'Usos de Suelo', Plan Regulador de Recoleta; Direccion de Obras Municipales de Recoleta",
+        "source_url": "https://www.recoleta.cl/",
+        "source_date": "2005-01-08",
+    },
+    "ordenanza_municipal_derechos_2026.md": {
+        "source": "Ordenanza sobre Derechos Municipales por Permisos, Concesiones y Servicios de la Municipalidad de Recoleta para el ano 2026",
+        "source_url": "https://www.recoleta.cl/",
+        "source_date": "2026-01-01",
+    },
+}

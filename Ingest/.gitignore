@@ -1,0 +1,6 @@
+.env
+<<<<<<< Updated upstream
+=======
+.venv-linux/
+docs/extracted_media
+>>>>>>> Stashed changes
