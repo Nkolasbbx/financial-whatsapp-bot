@@ -25,11 +25,7 @@ from db.alertas import (
     registrar_alerta_enviada,
 )
 from services.message_router import split_message
-from services.whatsapp import (
-    send_interactive_buttons,
-    send_template_with_menu_followup,
-    send_text,
-)
+from services.whatsapp import send_interactive_buttons, send_template, send_text
 
 logger = logging.getLogger("financial")
 
@@ -123,7 +119,7 @@ async def send_tax_alerts() -> dict:
                 for en, es in meses.items():
                     fecha_str = fecha_str.replace(en, es)
 
-                await send_template_with_menu_followup(
+                await send_template(
                     user["phone"],
                     "recordatorio_fecha_tributaria",
                     "es_CL",

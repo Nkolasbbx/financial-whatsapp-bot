@@ -8,7 +8,6 @@ from phone_lock import release_phone_lock
 from redis_settings import get_redis_settings
 from services.alertas_tributarias import send_tax_alerts
 from services.reminders import send_due_reminders
-from services.whatsapp import send_menu_followup
 
 logger = logging.getLogger("financial.worker")
 
@@ -58,13 +57,6 @@ async def process_ai_task(
             await release_phone_lock(ctx["redis"], phone, lock_token)
 
 
-async def send_menu_followup_task(ctx, phone: str):
-    """Job encolado por send_template_with_menu_followup (services/whatsapp.py):
-    envía el botón de Menú Principal después del defer configurado, para que
-    le llegue al usuario luego de que la plantilla ya tuvo tiempo de entregarse."""
-    await send_menu_followup(phone)
-
-
 async def run_reminders_job(ctx):
     """Cron de arq: dispara recordatorios y alertas tributarias/de fondos.
 
@@ -87,7 +79,7 @@ async def run_reminders_job(ctx):
 
 
 class WorkerSettings:
-    functions = [process_ai_task, send_menu_followup_task]
+    functions = [process_ai_task]
     cron_jobs = [
         cron(run_reminders_job, hour=set(range(24)), minute=0, run_at_startup=False),
     ]
