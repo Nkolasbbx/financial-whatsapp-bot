@@ -217,10 +217,6 @@ def route_message(
         else:
             return get_menu_widget(user)
 
-    if replied_to_reminder:
-        _record_activity_safely(phone)
-        return get_roadmap_text(user)
-
     # ── Menu FinancIAl ──
     menu_triggers = [
         "ayuda", "help", "menu", "menú", "opciones",
@@ -268,6 +264,14 @@ def route_message(
             "Recuerda que el próximo F29 vence el *día 12 del mes siguiente*.\n\n"
             "¿Necesitas ayuda con otro trámite? Escríbeme cuando quieras. 💪"
         )
+
+    # ── Respuesta a un recordatorio sin botón/comando reconocido ──
+    # Se evalúa último, después de todos los botones e intenciones explícitas
+    # (menú, insatisfacción, alertas), para que un botón concreto como
+    # "menu_financial" siempre gane sobre este fallback genérico.
+    if replied_to_reminder:
+        _record_activity_safely(phone)
+        return get_roadmap_text(user)
 
     # ── AI Chat (default) ──
     return "__AI_QUERY__"
