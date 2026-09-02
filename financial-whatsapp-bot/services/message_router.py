@@ -2,7 +2,7 @@ import logging
 
 from db.users import get_user, reset_user_profile, save_user
 from core.fund_flow import handle_fund_message, should_handle_fund_message
-from core.menu import get_menu_widget
+from core.menu import MENU_BUTTON, get_menu_widget
 from core.roadmaps import (
     get_roadmap_text,
     mark_hito_done,
@@ -110,15 +110,23 @@ def route_message(
             logger.error("No se pudieron activar los recordatorios: %s", error)
             reminders_were_enabled = False
         if not reminders_were_enabled:
-            return (
-                "No pude activar los recordatorios en este momento. "
-                "Inténtalo nuevamente más tarde."
-            )
-        return (
-            "🔔 *Recordatorios activados.*\n\n"
-            "Te avisaremos ante alertas importantes para tu negocio. Puedes pausarlos cuando quieras "
-            "escribiendo *\"pausar recordatorios\"* o desde el menú."
-        )
+            return {
+                "type": "buttons",
+                "body": (
+                    "No pude activar los recordatorios en este momento. "
+                    "Inténtalo nuevamente más tarde."
+                ),
+                "options": MENU_BUTTON,
+            }
+        return {
+            "type": "buttons",
+            "body": (
+                "🔔 *Recordatorios activados.*\n\n"
+                "Te avisaremos ante alertas importantes para tu negocio. Puedes pausarlos cuando quieras "
+                "escribiendo *\"pausar recordatorios\"* o desde el menú."
+            ),
+            "options": MENU_BUTTON,
+        }
 
     pause_commands = {
         "pausar recordatorios",
@@ -134,15 +142,23 @@ def route_message(
             logger.error("No se pudieron pausar los recordatorios: %s", error)
             reminders_were_disabled = False
         if not reminders_were_disabled:
-            return (
-                "No pude pausar los recordatorios en este momento. "
-                "Inténtalo nuevamente más tarde."
-            )
-        return (
-            "🔕 *Recordatorios pausados.*\n\n"
-            "Puedes volver a activarlos cuando quieras escribiendo "
-            "*\"activar recordatorios\"* o desde el menú."
-        )
+            return {
+                "type": "buttons",
+                "body": (
+                    "No pude pausar los recordatorios en este momento. "
+                    "Inténtalo nuevamente más tarde."
+                ),
+                "options": MENU_BUTTON,
+            }
+        return {
+            "type": "buttons",
+            "body": (
+                "🔕 *Recordatorios pausados.*\n\n"
+                "Puedes volver a activarlos cuando quieras escribiendo "
+                "*\"activar recordatorios\"* o desde el menú."
+            ),
+            "options": MENU_BUTTON,
+        }
 
     replied_to_reminder = False
     if reply_to_message_id or int(user.get("reminder_count") or 0) > 0:

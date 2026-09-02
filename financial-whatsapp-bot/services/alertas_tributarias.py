@@ -16,6 +16,7 @@ from core.alertas_tributarias import (
     get_alertas_fondos_proximos,
     get_alertas_proximas,
 )
+from core.menu import INTERACTIVE_BODY_LIMIT, MENU_BUTTON
 from db.alertas import (
     alerta_ya_enviada,
     get_users_for_fund_alerts,
@@ -23,13 +24,35 @@ from db.alertas import (
     marcar_alerta_fallida,
     registrar_alerta_enviada,
 )
-from services.whatsapp import send_template, send_text
+from services.message_router import split_message
+from services.whatsapp import (
+    send_interactive_buttons,
+    send_template_with_menu_followup,
+    send_text,
+)
 
 logger = logging.getLogger("financial")
 
 # Días de anticipación para cada tipo de alerta
 DIAS_ANTICIPACION_TRIBUTARIA = 30  # CA1: 30 días antes del vencimiento (F29)
 DIAS_ANTICIPACION_FONDOS = 7       # CA2: 7 días antes del cierre
+
+
+async def _send_fund_alert_with_menu(phone: str, mensaje: str) -> None:
+    """CA2: envía la alerta de fondo con botón de Menú Principal.
+
+    format_alerta_fondo() genera mensajes cortos y de longitud acotada, pero
+    se aplica el mismo guard de 1024 caracteres que core/ia.py como red de
+    seguridad ante textos de fondo inusualmente largos (no es el camino común).
+    """
+    if len(mensaje) <= INTERACTIVE_BODY_LIMIT:
+        await send_interactive_buttons(phone, mensaje, MENU_BUTTON)
+        return
+
+    for part in split_message(mensaje, 3500):
+        await send_text(phone, part)
+    await send_interactive_buttons(phone, "📱 Volver al menú principal:", MENU_BUTTON)
+
 
 async def send_tax_alerts() -> dict:
     """
@@ -100,7 +123,7 @@ async def send_tax_alerts() -> dict:
                 for en, es in meses.items():
                     fecha_str = fecha_str.replace(en, es)
 
-                await send_template(
+                await send_template_with_menu_followup(
                     user["phone"],
                     "recordatorio_fecha_tributaria",
                     "es_CL",
@@ -182,7 +205,7 @@ async def send_tax_alerts() -> dict:
 
             try:
                 mensaje = format_alerta_fondo(fondo)
-                await send_text(user["phone"], mensaje)
+                await _send_fund_alert_with_menu(user["phone"], mensaje)
 
                 await asyncio.to_thread(
                     registrar_alerta_enviada,

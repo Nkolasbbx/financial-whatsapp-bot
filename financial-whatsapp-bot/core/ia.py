@@ -30,6 +30,7 @@ from db.users import (
     save_message,
     save_user,
 )
+from core.menu import INTERACTIVE_BODY_LIMIT, MENU_BUTTON
 from services.message_router import split_message
 from services.whatsapp import WhatsAppAPIError, send_interactive_buttons, send_text
 
@@ -693,12 +694,6 @@ async def get_ai_response(
     return ai_text
 
 
-# Límite de caracteres en WhatsApp Cloud API para botones interactivos
-_INTERACTIVE_BODY_LIMIT = 1024
-
-# Botón interactivo para regresar al Menú Principal de FinancIAl
-_MENU_BUTTON = [("menu_financial", "📱 Menú principal")]
-
 _CLOSING_LINE = "💬 ¿Tienes otra duda? Escríbela o regresa al menú:"
 
 
@@ -706,14 +701,14 @@ async def _send_ai_response_with_menu(phone: str, ai_text: str) -> None:
     """Envía la respuesta de IA con un botón para regresar al Menú Principal de FinancIAl."""
     body_with_footer = f"{ai_text}\n\n{_CLOSING_LINE}"
 
-    if len(body_with_footer) <= _INTERACTIVE_BODY_LIMIT:
-        await send_interactive_buttons(phone, body_with_footer, _MENU_BUTTON)
+    if len(body_with_footer) <= INTERACTIVE_BODY_LIMIT:
+        await send_interactive_buttons(phone, body_with_footer, MENU_BUTTON)
         return
 
     for part in split_message(ai_text, 3500):
         await send_text(phone, part)
 
-    await send_interactive_buttons(phone, _CLOSING_LINE, _MENU_BUTTON)
+    await send_interactive_buttons(phone, _CLOSING_LINE, MENU_BUTTON)
 
 
 async def process_ai_and_send(

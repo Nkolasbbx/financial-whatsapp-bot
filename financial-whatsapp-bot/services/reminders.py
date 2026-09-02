@@ -17,7 +17,7 @@ from db.reminders import (
     mark_reminder_failed,
     mark_reminder_sent,
 )
-from services.whatsapp import extract_provider_message_id, send_template
+from services.whatsapp import extract_provider_message_id, send_template_with_menu_followup
 
 logger = logging.getLogger("financial")
 
@@ -90,7 +90,7 @@ async def send_due_reminders() -> dict:
             continue
 
         try:
-            response = await send_template(
+            response = await send_template_with_menu_followup(
                 user["phone"],
                 template_name,
                 REMINDER_TEMPLATE_LANGUAGE,

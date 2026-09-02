@@ -10,6 +10,7 @@ from config import (
     META_PHONE_NUMBER_ID,
     META_WHATSAPP_TOKEN,
 )
+from core.menu import MENU_BUTTON
 
 logger = logging.getLogger("financial")
 
@@ -240,3 +241,36 @@ async def send_interactive_list(
             },
         }
     )
+
+
+_TEMPLATE_FOLLOWUP_BODY = "📱 Puedes volver al menú principal cuando quieras:"
+
+
+async def send_template_with_menu_followup(
+    phone: str,
+    template_name: str,
+    language_code: str,
+    parameters: list[str] | None = None,
+) -> dict:
+    """Envía una plantilla aprobada por Meta y, si el envío tiene éxito, un
+    segundo mensaje interactivo corto con solo el botón de Menú Principal.
+
+    Las plantillas aprobadas tienen sus botones fijos por Meta y no admiten
+    inyección de botones por código — por eso el botón de menú se manda como
+    un mensaje interactivo independiente inmediatamente después.
+
+    Devuelve la respuesta de Meta para el envío de la PLANTILLA (no la del
+    mensaje de seguimiento), preservando el wamid usado para tracking de
+    entregas/respuestas. Un fallo al enviar el mensaje de seguimiento se
+    registra en el log y nunca se propaga, para no marcar como fallido un
+    envío de plantilla que sí tuvo éxito.
+    """
+    response = await send_template(phone, template_name, language_code, parameters)
+    try:
+        await send_interactive_buttons(phone, _TEMPLATE_FOLLOWUP_BODY, MENU_BUTTON)
+    except Exception:
+        logger.warning(
+            "No se pudo enviar el botón de menú de seguimiento a %s", phone,
+            exc_info=True,
+        )
+    return response
