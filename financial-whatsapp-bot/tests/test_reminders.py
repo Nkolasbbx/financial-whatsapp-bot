@@ -43,7 +43,7 @@ class ReminderTests(unittest.IsolatedAsyncioTestCase):
     @patch("services.reminders.mark_reminder_sent")
     @patch("services.reminders.create_reminder_delivery", return_value="delivery-1")
     @patch("services.reminders.get_due_reminder_users")
-    @patch("services.reminders.send_template_with_menu_followup", new_callable=AsyncMock)
+    @patch("services.reminders.send_template", new_callable=AsyncMock)
     async def test_third_reminder_uses_final_template(
         self,
         send_template_mock,

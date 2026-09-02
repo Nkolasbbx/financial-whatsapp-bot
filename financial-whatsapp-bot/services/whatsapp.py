@@ -9,6 +9,7 @@ from config import (
     META_GRAPH_API_VERSION,
     META_PHONE_NUMBER_ID,
     META_WHATSAPP_TOKEN,
+    TEMPLATE_MENU_FOLLOWUP_DELAY_SECONDS,
 )
 from core.menu import MENU_BUTTON
 
@@ -246,31 +247,69 @@ async def send_interactive_list(
 _TEMPLATE_FOLLOWUP_BODY = "📱 Puedes volver al menú principal cuando quieras:"
 
 
+async def send_menu_followup(phone: str) -> None:
+    """Envía el mensaje de seguimiento con solo el botón de Menú Principal.
+
+    Job de arq (worker.py::send_menu_followup_task) delega acá para reusar
+    el mismo payload/manejo de errores del resto de los envíos interactivos.
+    """
+    try:
+        await send_interactive_buttons(phone, _TEMPLATE_FOLLOWUP_BODY, MENU_BUTTON)
+    except Exception:
+        logger.warning(
+            "No se pudo enviar el botón de menú de seguimiento a %s", phone,
+            exc_info=True,
+        )
+
+
 async def send_template_with_menu_followup(
     phone: str,
     template_name: str,
     language_code: str,
     parameters: list[str] | None = None,
 ) -> dict:
-    """Envía una plantilla aprobada por Meta y, si el envío tiene éxito, un
-    segundo mensaje interactivo corto con solo el botón de Menú Principal.
+    """Envía una plantilla aprobada por Meta y encola el botón de Menú
+    Principal como mensaje de seguimiento independiente.
 
     Las plantillas aprobadas tienen sus botones fijos por Meta y no admiten
     inyección de botones por código — por eso el botón de menú se manda como
-    un mensaje interactivo independiente inmediatamente después.
+    un mensaje interactivo aparte.
+
+    Se ENCOLA (arq/Redis) en vez de enviarse en el mismo request: Meta puede
+    tardar en entregar una plantilla más de lo que tarda un mensaje de
+    sesión común, así que mandar el seguimiento de forma síncrona
+    inmediatamente después terminaba llegándole al usuario antes que la
+    propia plantilla. Encolarlo con un pequeño defer
+    (`TEMPLATE_MENU_FOLLOWUP_DELAY_SECONDS`) le da tiempo a la plantilla de
+    entregarse primero.
 
     Devuelve la respuesta de Meta para el envío de la PLANTILLA (no la del
     mensaje de seguimiento), preservando el wamid usado para tracking de
-    entregas/respuestas. Un fallo al enviar el mensaje de seguimiento se
-    registra en el log y nunca se propaga, para no marcar como fallido un
-    envío de plantilla que sí tuvo éxito.
+    entregas/respuestas. Un fallo al encolar el seguimiento se registra en
+    el log y nunca se propaga, para no marcar como fallido un envío de
+    plantilla que sí tuvo éxito.
     """
+    import dependencies
+
     response = await send_template(phone, template_name, language_code, parameters)
+
+    if dependencies.redis_pool is None:
+        logger.warning(
+            "No se pudo encolar el botón de menú de seguimiento a %s: "
+            "Redis no está configurado",
+            phone,
+        )
+        return response
+
     try:
-        await send_interactive_buttons(phone, _TEMPLATE_FOLLOWUP_BODY, MENU_BUTTON)
+        await dependencies.redis_pool.enqueue_job(
+            "send_menu_followup_task",
+            phone,
+            _defer_by=TEMPLATE_MENU_FOLLOWUP_DELAY_SECONDS,
+        )
     except Exception:
         logger.warning(
-            "No se pudo enviar el botón de menú de seguimiento a %s", phone,
+            "No se pudo encolar el botón de menú de seguimiento a %s", phone,
             exc_info=True,
         )
     return response

@@ -85,6 +85,13 @@ RATE_LIMIT_BLOCK_SECONDS = int(os.getenv("RATE_LIMIT_BLOCK_SECONDS", "60"))
 # se considere lo bastante relevante como para llegar al prompt del LLM.
 RAG_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.6"))
 
+# Meta puede tardar en entregar una plantilla más de lo que tarda un mensaje
+# de sesión común: encolar el botón de menú de seguimiento con este defer
+# evita que le llegue al usuario antes que la propia plantilla.
+TEMPLATE_MENU_FOLLOWUP_DELAY_SECONDS = int(
+    os.getenv("TEMPLATE_MENU_FOLLOWUP_DELAY_SECONDS", "3")
+)
+
 if REMINDER_DAYS < 1:
     raise ValueError("REMINDER_DAYS debe ser mayor que cero")
 
@@ -102,3 +109,6 @@ if RATE_LIMIT_BLOCK_SECONDS < 1:
 
 if not 0.0 <= RAG_SIMILARITY_THRESHOLD <= 1.0:
     raise ValueError("RAG_SIMILARITY_THRESHOLD debe estar entre 0.0 y 1.0")
+
+if TEMPLATE_MENU_FOLLOWUP_DELAY_SECONDS < 0:
+    raise ValueError("TEMPLATE_MENU_FOLLOWUP_DELAY_SECONDS no puede ser negativo")
