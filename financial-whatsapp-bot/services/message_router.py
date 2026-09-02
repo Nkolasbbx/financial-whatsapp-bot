@@ -1,6 +1,6 @@
 import logging
 
-from db.users import get_user, save_user
+from db.users import get_user, reset_user_profile, save_user
 from core.fund_flow import handle_fund_message, should_handle_fund_message
 from core.menu import get_menu_widget
 from core.roadmaps import (
@@ -89,10 +89,12 @@ def route_message(
 
     # ── Reset command ──
     if msg_lower in ["reiniciar", "reset", "empezar de nuevo", "menu_reiniciar"]:
-        from db.users import users_db
-        users_db.pop(phone, None)
-        new_user = {"phone": phone, "onboarding_step": 0}
-        save_user(phone, new_user)
+        new_user = reset_user_profile(phone, user)
+        if not new_user:
+            return (
+                "No pude reiniciar tu perfil en este momento. "
+                "Inténtalo nuevamente más tarde."
+            )
         return process_onboarding(new_user, message, save_user)
 
     activation_commands = {

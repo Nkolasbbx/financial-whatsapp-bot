@@ -8,6 +8,14 @@ logger = logging.getLogger("financial")
 # Se utiliza como fallback cuando Supabase no está configurado.
 users_db: dict[str, dict] = {}
 
+_RESET_PRESERVED_FIELDS = {"id", "phone", "auth_user_id", "created_at"}
+_RESET_SAFE_DEFAULTS = {
+    "onboarding_step": 0,
+    "reminders_enabled": False,
+    "reminders_paused": False,
+    "reminder_count": 0,
+}
+
 
 def get_user(phone: str) -> dict | None:
     """Obtiene el perfil de un usuario mediante su número telefónico."""
@@ -134,6 +142,56 @@ def save_user(phone: str, data: dict) -> dict | None:
 
     users_db[phone] = db_data
     return db_data
+
+
+def reset_user_profile(phone: str, current_user: dict) -> dict | None:
+    """Limpia el estado funcional y conserva la identidad del usuario.
+
+    Las columnas se obtienen del propio registro para que futuras columnas
+    funcionales también se reinicien sin mantener una lista duplicada. Los
+    campos de control que pueden ser NOT NULL reciben valores iniciales
+    seguros en lugar de SQL NULL.
+    """
+    import dependencies
+
+    reset_payload = {
+        column: None
+        for column in current_user
+        if column not in _RESET_PRESERVED_FIELDS
+        and column != "conversation_history"
+    }
+    for column, value in _RESET_SAFE_DEFAULTS.items():
+        if column in current_user or column == "onboarding_step":
+            reset_payload[column] = value
+    if "updated_at" in current_user:
+        reset_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    client = dependencies.supabase_admin or dependencies.supabase
+    if client:
+        try:
+            result = (
+                client.table("users")
+                .update(reset_payload)
+                .eq("phone", phone)
+                .execute()
+            )
+            if result.data:
+                users_db.pop(phone, None)
+                return result.data[0]
+            return None
+        except Exception as error:
+            logger.error("Supabase reset_user_profile error: %s", error)
+            return None
+
+    reset_user = {
+        field: current_user.get(field)
+        for field in _RESET_PRESERVED_FIELDS
+        if current_user.get(field) is not None
+    }
+    reset_user.update(reset_payload)
+    reset_user["phone"] = phone
+    users_db[phone] = reset_user
+    return reset_user
 
 
 def save_message(
