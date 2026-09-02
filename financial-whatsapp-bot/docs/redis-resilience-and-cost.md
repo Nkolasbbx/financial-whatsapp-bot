@@ -12,7 +12,7 @@ redis.exceptions.TimeoutError: Timeout connecting to server
 
 El worker procesaba un job normalmente (3.33s de ejecución), y al intentar escribir el resultado de vuelta en Redis (`finish_job` → `tr.execute()`), o al hacer polling de nuevos jobs (`_poll_iteration` → `zrangebyscore`), la conexión no se pudo (re)establecer a tiempo. Ese error **no se reintenta**: mata el `main_task` del worker, y arq termina el proceso completo.
 
-### Causa raíz
+### Causa raí (escribo esto para un push en develop)
 
 `REDIS_URL` apunta a **Upstash** (`rediss://...upstash.io:6379`), un Redis remoto sobre TLS — no un `localhost`. `RedisSettings` de arq trae por defecto:
 

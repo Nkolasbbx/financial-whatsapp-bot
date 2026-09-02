@@ -56,6 +56,19 @@ Enfócate EXCLUSIVAMENTE en guiar al usuario para completar ESTE HITO específic
 """
 
 
+def _format_visible_hito_context(hito_context: dict | None) -> str:
+    """Muestra al usuario el perfil usado para contextualizar la ayuda."""
+    if not hito_context:
+        return ""
+
+    return (
+        "📌 *Contexto del hito*\n"
+        f"• *Hito:* {hito_context.get('title') or 'No definido'}\n"
+        f"• *Rubro:* {hito_context.get('rubro') or 'No definido'}\n"
+        f"• *Comuna:* {hito_context.get('comuna') or 'No definida'}"
+    )
+
+
 def _format_reformulate_section(reformulate_mode: bool = False, comuna: str = "") -> str:
     """Formatea instrucciones especiales para reformulación."""
     if not reformulate_mode:
@@ -649,6 +662,10 @@ async def get_ai_response(
 
     if not ai_text:
         return "😅 Tuve un problema al procesar tu consulta con el modelo. ¿Puedes intentar de nuevo?"
+
+    visible_hito_context = _format_visible_hito_context(hito_context)
+    if visible_hito_context:
+        ai_text = f"{visible_hito_context}\n\n{ai_text.lstrip()}"
 
     fuentes_unicas = []
     for fuente in fuentes_rag:

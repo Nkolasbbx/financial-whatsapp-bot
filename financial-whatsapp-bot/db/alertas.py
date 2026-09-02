@@ -53,17 +53,32 @@ def get_users_for_tax_alerts() -> list[dict]:
 
 def get_users_for_fund_alerts() -> list[dict]:
     """
-    CA2: Retorna usuarios NO formalizados con onboarding completado.
+    CA2: Retorna usuarios no formalizados que terminaron el onboarding,
+    tienen un roadmap activo y todavía poseen hitos pendientes.
     """
     client = _admin_client()
     result = (
         client.table("users")
-        .select("id, phone, inicio_sii, rubro, rubro_raw, comuna")
+        .select(
+            "id, phone, inicio_sii, rubro, rubro_raw, comuna, "
+            "roadmap, roadmap_completed_at"
+        )
         .eq("inicio_sii", "no")
         .eq("onboarding_step", "done")
+        .is_("roadmap_completed_at", "null")
         .execute()
     )
-    return result.data or []
+
+    users = result.data or []
+    return [
+        user
+        for user in users
+        if isinstance(user.get("roadmap"), list)
+        and any(
+            isinstance(milestone, dict) and not milestone.get("done", False)
+            for milestone in user["roadmap"]
+        )
+    ]
 
 
 def alerta_ya_enviada(user_id: str, tipo: str, fecha_vencimiento: date) -> bool:

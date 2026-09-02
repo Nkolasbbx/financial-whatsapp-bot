@@ -19,6 +19,23 @@ def fake_embedding_factory(message_vector):
     return fake_embedding
 
 
+class VisibleHitoContextTests(unittest.TestCase):
+    def test_formats_hito_rubro_and_comuna_for_the_user(self):
+        result = ia._format_visible_hito_context({
+            "title": "Solicitar resolución sanitaria",
+            "description": "Completar la solicitud ante la SEREMI.",
+            "rubro": "alimentos",
+            "comuna": "Recoleta",
+        })
+
+        self.assertIn("*Hito:* Solicitar resolución sanitaria", result)
+        self.assertIn("*Rubro:* alimentos", result)
+        self.assertIn("*Comuna:* Recoleta", result)
+
+    def test_without_hito_context_returns_empty_text(self):
+        self.assertEqual(ia._format_visible_hito_context(None), "")
+
+
 class RequiereRagTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         ia._cache_embeddings_ejemplos = None
