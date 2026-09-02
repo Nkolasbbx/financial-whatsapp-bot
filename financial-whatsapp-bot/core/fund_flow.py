@@ -31,6 +31,8 @@ logger = logging.getLogger("financial")
 
 FUND_SELECT_PREFIX = "fund_select:"
 FUND_ANSWER_PREFIX = "fund_answer:"
+FUND_UPDATE_DATA_ID = "fund_update_data"
+FUND_UPDATE_FIELD_PREFIX = "fund_update_field:"
 FUND_CANCEL_COMMANDS = {
     "cancelar",
     "cancelar evaluacion",
@@ -62,8 +64,8 @@ def _fund_list_widget(user: dict, prefix: str = "") -> dict | str:
             "en este momento. Puedes volver a consultar más adelante."
         )
 
-    options = []
-    for evaluation in evaluations[:10]:
+    options = [(FUND_UPDATE_DATA_ID, "🔄 Actualizar datos")]
+    for evaluation in evaluations[:9]:
         fund = evaluation["fund"]
         identifier = fund.get("slug") or fund.get("id") or fund["nombre"]
         options.append(
@@ -83,6 +85,92 @@ def _fund_list_widget(user: dict, prefix: str = "") -> dict | str:
         "button_text": "Elegir fondo",
         "options": options,
     }
+
+
+def _definition_label(field_key: str, definition: dict) -> str:
+    """Obtiene un nombre corto para mostrar un dato editable en WhatsApp."""
+    return (
+        definition.get("label")
+        or definition.get("texto")
+        or field_key.replace("_", " ").capitalize()
+    )
+
+
+def _update_data_widget(user: dict) -> dict | str:
+    """Lista solo respuestas editables usadas al evaluar postulaciones."""
+    definitions = get_requirement_definitions()
+    editable = [
+        (field_key, definition)
+        for field_key, definition in definitions.items()
+        if definition.get("source_type") == "user_answer"
+    ]
+    if not editable:
+        return (
+            "No encontré datos de postulación editables en este momento. "
+            "Puedes volver a intentarlo escribiendo *postular fondos*."
+        )
+
+    start_fund_session(user["id"])
+    return {
+        "type": "list",
+        "body": (
+            "🔄 *Actualizar datos de postulación*\n\n"
+            "Selecciona el requisito que cambió. Esto no modificará tu "
+            "rubro, comuna, estado SII ni roadmap."
+        ),
+        "button_text": "Elegir dato",
+        "options": [
+            (
+                f"{FUND_UPDATE_FIELD_PREFIX}{field_key}",
+                _definition_label(field_key, definition),
+            )
+            for field_key, definition in editable[:10]
+        ],
+    }
+
+
+def _start_data_update(user: dict, message: str) -> dict | str:
+    """Inicia la edición de una respuesta concreta de postulación."""
+    field_key = message.strip()[len(FUND_UPDATE_FIELD_PREFIX):]
+    definitions = get_requirement_definitions([field_key])
+    definition = definitions.get(field_key)
+    if definition is None or definition.get("source_type") != "user_answer":
+        return _update_data_widget(user)
+
+    start_fund_session(user["id"])
+    update_fund_session(
+        user["id"],
+        status="collecting_data",
+        pending_field_key=field_key,
+    )
+    return _question_widget(
+        definition,
+        f"Actualizarás *{_definition_label(field_key, definition)}*.\n\n",
+    )
+
+
+def _save_updated_data(user: dict, message: str, field_key: str) -> dict | str:
+    """Valida y reemplaza una respuesta guardada en fund_user_answers."""
+    definitions = get_requirement_definitions([field_key])
+    definition = definitions.get(field_key)
+    if definition is None or definition.get("source_type") != "user_answer":
+        cancel_fund_session(user["id"])
+        return _update_data_widget(user)
+
+    parsed_answer = _parse_answer(message, definition)
+    if parsed_answer is _INVALID_ANSWER:
+        return _question_widget(
+            definition,
+            "No pude interpretar esa respuesta.\n\n",
+        )
+
+    save_fund_answer(user["id"], field_key, parsed_answer)
+    finish_fund_session(user["id"])
+    label = _definition_label(field_key, definition)
+    return _fund_list_widget(
+        user,
+        f"✅ Actualicé *{label}*. Recalculé tus fondos con este dato.\n\n",
+    )
 
 
 def start_fund_flow(user: dict) -> dict | str:
@@ -213,7 +301,11 @@ def should_handle_fund_message(user: dict, message: str) -> bool:
     """Determina si el mensaje pertenece al flujo de fondos."""
     normalized = normalize_fund_text(message)
     raw_lower = message.strip().lower()
-    if raw_lower.startswith((FUND_SELECT_PREFIX, FUND_ANSWER_PREFIX)):
+    if raw_lower == FUND_UPDATE_DATA_ID:
+        return True
+    if raw_lower.startswith(
+        (FUND_SELECT_PREFIX, FUND_ANSWER_PREFIX, FUND_UPDATE_FIELD_PREFIX)
+    ):
         return True
     if normalized in FUND_CANCEL_COMMANDS:
         return True
@@ -243,12 +335,19 @@ def handle_fund_message(user: dict, message: str) -> dict | str:
         return "No pude identificar tu perfil. Escribe *menu* e intenta nuevamente."
 
     normalized = normalize_fund_text(message)
+    raw_lower = message.strip().lower()
     if normalized in FUND_CANCEL_COMMANDS:
         cancel_fund_session(user_id)
         return (
             "Evaluación de fondos cancelada. Puedes retomarla cuando quieras "
             "escribiendo *postular fondos*."
         )
+
+    if raw_lower == FUND_UPDATE_DATA_ID:
+        return _update_data_widget(user)
+
+    if raw_lower.startswith(FUND_UPDATE_FIELD_PREFIX):
+        return _start_data_update(user, message)
 
     if "postular" in normalized or normalized in {
         "fondo",
@@ -258,9 +357,19 @@ def handle_fund_message(user: dict, message: str) -> dict | str:
         return start_fund_flow(user)
 
     session = get_active_fund_session(user_id)
-    raw_lower = message.strip().lower()
     if raw_lower.startswith(FUND_SELECT_PREFIX):
         return _select_fund(user, message)
+
+    if (
+        session is not None
+        and not session.get("fondo_id")
+        and session.get("pending_field_key")
+    ):
+        return _save_updated_data(
+            user,
+            message,
+            session["pending_field_key"],
+        )
 
     if session is None:
         direct_fund = find_active_fund(message)
