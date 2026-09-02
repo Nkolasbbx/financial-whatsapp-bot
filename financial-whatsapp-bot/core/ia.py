@@ -312,62 +312,65 @@ async def obtener_contexto_rag(
         if dependencies.db_pool is None:
             raise RuntimeError("El pool PostgreSQL para RAG no está disponible")
 
-        if query_vector is None:
-            query_vector = await obtener_embedding_remoto(message)
+        query_vector = await obtener_embedding_remoto(message)
 
         conn = dependencies.db_pool.getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT content, metadata, embedding <=> %s::vector AS distance
-                    FROM documents
-                    WHERE metadata->>'comuna' ILIKE %s OR metadata->>'comuna' ILIKE '%%general%%'
+                # La ingesta (Ingest/ingest_supabase_v2.py) usa chunking
+                # Parent-Child + Contextual Retrieval: cada fila embebe un
+                # child chunk chico (preciso para buscar) + una frase de
+                # contexto generada por LLM, pero `content` guarda siempre la
+                # sección "parent" completa (más contexto para el modelo).
+                # Como un mismo parent puede tener varios children que
+                # matchean la pregunta, sin DISTINCT ON el LIMIT 4 podía
+                # llenarse con 2-3 copias del mismo parent_id (texto
+                # duplicado) en vez de secciones distintas. El DISTINCT ON
+                # se queda con el mejor match (menor distancia) por
+                # parent_id antes de aplicar el LIMIT, así las 4 posiciones
+                # de contexto son 4 secciones distintas del reglamento.
+                cur.execute("""
+                    SELECT content, metadata FROM (
+                        SELECT DISTINCT ON (metadata->>'parent_id')
+                            content, metadata, embedding <=> %s::vector AS distance
+                        FROM documents
+                        WHERE metadata->>'comuna' ILIKE %s OR metadata->>'comuna' ILIKE '%%general%%'
+                        ORDER BY metadata->>'parent_id', embedding <=> %s::vector
+                    ) AS mejores_por_seccion
                     ORDER BY distance
                     LIMIT 4;
-                """,
-                    (query_vector, f"%{comuna_busqueda}%"),
-                )
+                """, (query_vector, f"%{comuna_busqueda}%", query_vector))
 
                 resultados = cur.fetchall()
         finally:
             dependencies.db_pool.putconn(conn)
 
-        descartados = 0
-        for res in resultados:
-            similarity = 1 - res[2]
-            if similarity < RAG_SIMILARITY_THRESHOLD:
-                descartados += 1
-                continue
-
-            meta = res[1] if res[1] else {}
-            file_name = meta.get("file_name", "Municipal")
-            comuna_doc = meta.get("comuna", "general")
-            if comuna_doc.lower() == "general":
-                comuna_doc = "General (Aplica a todas las comunas del país)"
-            source = meta.get("source", file_name)
-            source_url = meta.get("source_url", "")
-            source_date = meta.get("source_date", "")
-            fuentes.append({
-                "source": source,
-                "source_url": source_url,
-                "source_date": source_date,
-            })
-            contexto += (
-                f"\n[Documento Oficial: {file_name}] | [Ámbito: {comuna_doc}]\n"
-                f"[Fuente: {source}] | [URL: {source_url}] | [Fecha de revisión: {source_date}]\n"
-                f"{res[0]}\n"
-            )
-
-        if descartados:
-            logger.info(
-                "RAG: %d/%d chunks descartados por similitud < %.2f",
-                descartados,
-                len(resultados),
-                RAG_SIMILARITY_THRESHOLD,
-            )
-
-        if not fuentes:
+        if resultados:
+            for res in resultados:
+                meta = res[1] if res[1] else {}
+                file_name = meta.get("file_name", "Municipal")
+                comuna_doc = meta.get("comuna", "general")
+                if comuna_doc.lower() == "general":
+                    comuna_doc = "General (Aplica a todas las comunas del país)"
+                source = meta.get("source", file_name)
+                source_url = meta.get("source_url", "")
+                source_date = meta.get("source_date", "")
+                # section_header viene con el "#"/"##" markdown de la
+                # ingesta (ver metadata "section_header" en
+                # process_document_to_rows de Ingest/ingest_supabase_v2.py).
+                seccion = (meta.get("section_header") or "").lstrip("#").strip()
+                seccion_tag = f" | [Sección: {seccion}]" if seccion else ""
+                fuentes.append({
+                    "source": source,
+                    "source_url": source_url,
+                    "source_date": source_date,
+                })
+                contexto += (
+                    f"\n[Documento Oficial: {file_name}]{seccion_tag} | [Ámbito: {comuna_doc}]\n"
+                    f"[Fuente: {source}] | [URL: {source_url}] | [Fecha de revisión: {source_date}]\n"
+                    f"{res[0]}\n"
+                )
+        else:
             contexto = f"SIN INFORMACIÓN disponible para la comuna '{comuna_busqueda}' en la base de datos."
 
     except Exception as e:
