@@ -91,6 +91,49 @@ async def _post_message(payload: dict) -> dict:
             await client.aclose()
 
 
+async def download_media(media_id: str) -> tuple[bytes, str]:
+    """Descarga un archivo multimedia (audio, imagen, etc.) recibido por
+    WhatsApp Cloud API.
+
+    Meta solo entrega un `media_id` en el webhook — hace falta un primer
+    llamado para resolver la URL temporal de descarga y un segundo para
+    bajar el archivo, ambos autenticados con el mismo token. Devuelve
+    (contenido_binario, mime_type).
+    """
+    import dependencies
+
+    if not dependencies.meta_whatsapp_configured():
+        raise WhatsAppAPIError("Meta WhatsApp Cloud API no está configurada")
+
+    headers = {"Authorization": f"Bearer {META_WHATSAPP_TOKEN}"}
+    metadata_url = f"https://graph.facebook.com/{META_GRAPH_API_VERSION}/{media_id}"
+
+    client = dependencies.whatsapp_http_client
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(timeout=30)
+
+    try:
+        metadata_response = await client.get(metadata_url, headers=headers)
+        metadata_response.raise_for_status()
+        metadata = metadata_response.json()
+
+        download_url = metadata.get("url")
+        if not download_url:
+            raise WhatsAppAPIError("Meta no devolvió una URL de descarga para el media")
+
+        file_response = await client.get(download_url, headers=headers)
+        file_response.raise_for_status()
+
+        return file_response.content, metadata.get("mime_type", "application/octet-stream")
+    except httpx.HTTPError as error:
+        logger.error("Error descargando media %s de WhatsApp: %s", media_id, error)
+        raise WhatsAppAPIError("No fue posible descargar el archivo de WhatsApp") from error
+    finally:
+        if owns_client:
+            await client.aclose()
+
+
 async def send_text(phone: str, content: str) -> dict:
     """Envía un mensaje de texto libre mediante WhatsApp Cloud API."""
     recipient = normalize_phone(phone).removeprefix("+")

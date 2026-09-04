@@ -17,8 +17,10 @@ from db.reminders import update_reminder_delivery_status
 from db.users import get_last_user_message, get_user
 from phone_lock import acquire_phone_lock, release_phone_lock
 from services.message_router import route_message, split_message
+from services.transcription import transcribe_audio
 from services.whatsapp import (
     WhatsAppAPIError,
+    download_media,
     normalize_phone,
     send_interactive_buttons,
     send_interactive_list,
@@ -57,6 +59,24 @@ def _extract_message_text(incoming: dict) -> str | None:
         reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
         return (reply.get("id") or reply.get("title") or "").strip() or None
     return None
+
+
+async def _transcribe_incoming_audio(incoming: dict) -> str | None:
+    """Prototipo de factibilidad (HdU01): intenta transcribir una nota de
+    voz a texto. Nunca lanza — cualquier fallo (descarga o transcripción)
+    devuelve None y el llamador cae al camino existente ("no puedo
+    procesar esto")."""
+    media_id = incoming.get("audio", {}).get("id")
+    if not media_id:
+        return None
+
+    try:
+        audio_bytes, mime_type = await download_media(media_id)
+    except WhatsAppAPIError as error:
+        logger.error("No se pudo descargar la nota de voz: %s", error)
+        return None
+
+    return await transcribe_audio(audio_bytes, mime_type)
 
 
 async def _send_response(phone: str, result) -> None:
@@ -172,6 +192,10 @@ async def whatsapp_webhook(request: Request):
                 hand_off_to_worker = False
                 try:
                     message = _extract_message_text(incoming)
+
+                    if message is None and incoming.get("type") == "audio":
+                        message = await _transcribe_incoming_audio(incoming)
+
                     if message is None:
                         try:
                             await send_text(
