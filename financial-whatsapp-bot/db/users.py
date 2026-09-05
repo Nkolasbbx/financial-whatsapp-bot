@@ -334,3 +334,51 @@ def contar_mensajes(phone: str) -> int:
     except Exception as error:
         logger.error("Supabase contar_mensajes error: %s", error)
         return 0
+
+
+def get_users_by_comuna(comuna: str) -> list[dict]:
+    """Todos los usuarios con onboarding completado en una comuna dada.
+
+    Usa el cliente administrativo (bypassa RLS) porque esto alimenta el
+    dashboard municipal — una consulta agregada sobre todos los usuarios,
+    no la de un usuario sobre sí mismo.
+    """
+    import dependencies
+
+    if dependencies.supabase_admin is None:
+        logger.error(
+            "No se pudo consultar usuarios por comuna: falta SUPABASE_SERVICE_ROLE_KEY"
+        )
+        return []
+
+    try:
+        result = (
+            dependencies.supabase_admin
+            .table("users")
+            .select(
+                "phone, rubro, comuna, inicio_sii, onboarding_step, "
+                "roadmap, roadmap_completed_at, created_at"
+            )
+            .eq("comuna", comuna)
+            .eq("onboarding_step", "done")
+            .execute()
+        )
+        usuarios = result.data or []
+
+        # roadmap es JSONB, pero Supabase a veces lo entrega como texto sin
+        # parsear (mismo caso que get_user()) — se normaliza acá también.
+        for usuario in usuarios:
+            if isinstance(usuario.get("roadmap"), str):
+                try:
+                    usuario["roadmap"] = json.loads(usuario["roadmap"])
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "El roadmap del usuario %s no contiene JSON válido",
+                        usuario.get("phone"),
+                    )
+                    usuario["roadmap"] = []
+
+        return usuarios
+    except Exception as error:
+        logger.error("Supabase get_users_by_comuna error: %s", error)
+        return []

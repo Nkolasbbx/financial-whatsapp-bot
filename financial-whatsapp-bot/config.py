@@ -85,6 +85,23 @@ RATE_LIMIT_BLOCK_SECONDS = int(os.getenv("RATE_LIMIT_BLOCK_SECONDS", "60"))
 # se considere lo bastante relevante como para llegar al prompt del LLM.
 RAG_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.6"))
 
+# Cuentas del panel municipal (InnovaRecoleta, El Bosque). Hardcodeadas a
+# propósito: solo hay 2 municipalidades clientes por ahora, no se justifica
+# un sistema de registro/roles todavía. Las contraseñas viven acá solo como
+# nombre de variable de entorno — el valor real nunca va en el código.
+ADMIN_ACCOUNTS = {
+    "recoleta": {
+        "password": os.getenv("ADMIN_RECOLETA_PASSWORD", ""),
+        "comuna": "Recoleta",
+        "nombre": "InnovaRecoleta",
+    },
+    "elbosque": {
+        "password": os.getenv("ADMIN_ELBOSQUE_PASSWORD", ""),
+        "comuna": "El Bosque",
+        "nombre": "Municipalidad de El Bosque",
+    },
+}
+
 if REMINDER_DAYS < 1:
     raise ValueError("REMINDER_DAYS debe ser mayor que cero")
 
