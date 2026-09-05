@@ -8,7 +8,7 @@ from dependencies import lifespan
 import logging
 from fastapi import FastAPI
 from dependencies import lifespan
-from routers import reminders, test, webhook
+from routers import portal, reminders, test, webhook
 from db.users import get_messages
 from config import DEBUG
 
@@ -26,6 +26,7 @@ else:
 app.include_router(webhook.router)
 app.include_router(test.router)
 app.include_router(reminders.router)
+app.include_router(portal.router)
 
 
 @app.get("/")

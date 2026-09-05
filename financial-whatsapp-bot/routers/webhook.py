@@ -17,6 +17,7 @@ from db.reminders import update_reminder_delivery_status
 from db.users import get_last_user_message, get_user
 from phone_lock import acquire_phone_lock, release_phone_lock
 from services.message_router import route_message, split_message
+from services.portal_auth import create_access_token
 from services.transcription import transcribe_audio
 from services.whatsapp import (
     WhatsAppAPIError,
@@ -280,6 +281,16 @@ async def whatsapp_webhook(request: Request):
                                 lock_token=lock_token,
                             )
                             hand_off_to_worker = True
+
+                        elif result == "__WEB_PANEL_LINK__":
+                            token = await create_access_token(redis, phone)
+                            link = f"{str(request.base_url).rstrip('/')}/portal/acceso?token={token}"
+                            await send_text(
+                                phone,
+                                f"📊 Acá está el link a tu panel: {link}\n\n"
+                                "Es de un solo uso y vence en 30 minutos — si "
+                                "se vence, vuelve a pedirlo desde el menú.",
+                            )
 
                         elif result == "__AI_QUERY_WITH_REFORMULATE__":
                             last_message = await asyncio.to_thread(get_last_user_message, phone)

@@ -40,6 +40,7 @@ MENU_OPTIONS_NO_FORMALIZADO = [
     ("menu_fondo", "🎯 Postular a fondos"),
     ("menu_recordatorios_on", "🔔 Activar recordatorios"),
     ("menu_recordatorios_off", "🔕 Pausar recordatorios"),
+    ("menu_panel_web", "📊 Ver mi panel web"),
     ("menu_reiniciar", "🔄 Reiniciar"),
 ]
 
@@ -47,6 +48,7 @@ MENU_OPTIONS_FORMALIZADO = [
     ("menu_roadmap", "📈 Mi plan de crecimiento"),
     ("menu_fondo", "🎯 Postular a fondos"),
     ("menu_recordatorios_on", "🔔 Alertas SII (F29)"),
+    ("menu_panel_web", "📊 Ver mi panel web"),
     ("menu_reiniciar", "🔄 Reiniciar"),
 ]
 

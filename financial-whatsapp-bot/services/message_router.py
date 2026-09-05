@@ -217,6 +217,10 @@ def route_message(
         else:
             return get_menu_widget(user)
 
+    # ── Panel web (login sin contraseña vía link de un solo uso) ──
+    if msg_lower == "menu_panel_web":
+        return "__WEB_PANEL_LINK__"
+
     # ── Menu FinancIAl ──
     menu_triggers = [
         "ayuda", "help", "menu", "menú", "opciones",
