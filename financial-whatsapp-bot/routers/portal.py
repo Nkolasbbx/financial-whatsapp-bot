@@ -13,9 +13,11 @@ mensajes nuevos desde la web queda para una siguiente iteración.
 """
 import html
 import logging
+from datetime import date
 
 from fastapi import APIRouter, Cookie, Request, Response
 
+from core.alertas_tributarias import get_calendario_sii
 from core.roadmaps import get_pending_milestone
 from db.users import get_messages, get_user
 from services.portal_auth import create_session, get_session_phone, redeem_access_token
@@ -80,6 +82,32 @@ def _pagina_base(titulo: str, contenido: str) -> str:
     }}
     .fecha {{ font-size: 11px; color: #98a2b3; margin: 2px 4px 12px; }}
     .aviso {{ text-align: center; margin-top: 60px; }}
+    .hito {{
+        display: flex;
+        gap: 10px;
+        padding: 10px 0;
+        border-top: 1px solid #eef0f2;
+    }}
+    .hito:first-of-type {{ border-top: none; }}
+    .hito.completado {{ opacity: 0.55; }}
+    .hito.completado strong {{ text-decoration: line-through; }}
+    .check {{ font-size: 18px; line-height: 1.3; }}
+    .hito-desc {{ font-size: 13px; color: #667085; margin-top: 2px; }}
+    .evento {{
+        display: flex;
+        gap: 12px;
+        padding: 10px 0;
+        border-top: 1px solid #eef0f2;
+    }}
+    .evento:first-of-type {{ border-top: none; }}
+    .evento-fecha {{
+        min-width: 78px;
+        font-weight: 600;
+        font-size: 13px;
+        color: #344054;
+    }}
+    .evento.proximo .evento-fecha {{ color: #b42318; }}
+    .evento.proximo {{ background: #fef3f2; margin: 0 -20px; padding: 10px 20px; }}
 </style>
 </head>
 <body>
@@ -125,6 +153,72 @@ async def acceso(token: str, request: Request):
         samesite="lax",
     )
     return response
+
+
+def _tarjeta_roadmap(roadmap: list[dict]) -> str:
+    """Lista completa de hitos (✅/⬜), no solo el pendiente."""
+    if not roadmap:
+        return ""
+
+    filas = "\n".join(
+        f'<div class="hito {"completado" if hito.get("done") else "pendiente"}">'
+        f'<span class="check">{"✅" if hito.get("done") else "⬜"}</span>'
+        f'<div><strong>{html.escape(hito.get("title") or "")}</strong>'
+        f'<div class="hito-desc">{html.escape(hito.get("desc") or "")}</div></div>'
+        f'</div>'
+        for hito in roadmap
+    )
+    return f"""
+    <div class="tarjeta">
+        <h1>📋 Tu ruta de formalización</h1>
+        {filas}
+    </div>
+    """
+
+
+def _tarjeta_calendario(user: dict) -> str:
+    """Calendario tributario personalizado (HdU07): próximos vencimientos
+    del SII según la comuna del usuario. Solo aplica a formalizados — un
+    no formalizado no tiene obligaciones tributarias todavía (mismo
+    criterio que HdU07 CA2)."""
+    if user.get("inicio_sii") != "si":
+        return """
+        <div class="tarjeta">
+            <h1>📅 Calendario tributario</h1>
+            <p class="subtitulo">Vas a ver acá tus fechas del SII (F29, F22, patente)
+            una vez que completes tu formalización.</p>
+        </div>
+        """
+
+    hoy = date.today()
+    comuna = user.get("comuna")
+    eventos = [
+        evento for evento in get_calendario_sii(hoy.year, comuna)
+        if evento["fecha_vencimiento"] >= hoy
+    ]
+    if hoy.month >= 11:
+        eventos += [
+            evento for evento in get_calendario_sii(hoy.year + 1, comuna)
+            if evento["fecha_vencimiento"] >= hoy
+        ]
+    eventos.sort(key=lambda evento: evento["fecha_vencimiento"])
+
+    filas = "\n".join(
+        f'<div class="evento{" proximo" if (evento["fecha_vencimiento"] - hoy).days <= 5 else ""}">'
+        f'<div class="evento-fecha">{evento["fecha_vencimiento"].strftime("%d/%m/%Y")}</div>'
+        f'<div><strong>{html.escape(evento["nombre"])}</strong>'
+        f'<div class="hito-desc">{html.escape(evento["descripcion"])}</div></div>'
+        f'</div>'
+        for evento in eventos[:12]
+    )
+    return f"""
+    <div class="tarjeta">
+        <h1>📅 Calendario tributario</h1>
+        <p class="subtitulo">Tus próximas fechas clave del SII — en rojo, las que
+        vencen en 5 días o menos.</p>
+        {filas}
+    </div>
+    """
 
 
 @router.get("")
@@ -184,7 +278,14 @@ async def panel(
     </div>
     """
 
+    contenido = (
+        tarjeta_estado
+        + _tarjeta_roadmap(roadmap)
+        + _tarjeta_calendario(user)
+        + tarjeta_historial
+    )
+
     return Response(
-        content=_pagina_base("Mi panel", tarjeta_estado + tarjeta_historial),
+        content=_pagina_base("Mi panel", contenido),
         media_type="text/html",
     )
