@@ -8,24 +8,14 @@ from routers import reminders
 
 class ReminderRouterTests(unittest.IsolatedAsyncioTestCase):
     @patch.object(reminders, "CRON_SECRET", "secret-for-tests")
-    @patch.object(reminders, "send_due_calendar_reminders", new_callable=AsyncMock)
-    @patch.object(reminders, "send_tax_alerts", new_callable=AsyncMock)
     @patch.object(reminders, "send_due_reminders", new_callable=AsyncMock)
-    async def test_valid_bearer_executes_all_reminders(
-        self, send_mock, alerts_mock, calendar_mock
-    ):
+    async def test_valid_bearer_executes_reminders(self, send_mock):
         send_mock.return_value = {"status": "completed", "sent": 1}
-        alerts_mock.return_value = {"tax_alerts_sent": 2}
-        calendar_mock.return_value = {"calendar_sent": 1}
 
         result = await reminders.run_reminders("Bearer secret-for-tests")
 
         self.assertEqual(result["sent"], 1)
-        self.assertEqual(result["tax_alerts_sent"], 2)
-        self.assertEqual(result["calendar_sent"], 1)
         send_mock.assert_awaited_once_with()
-        alerts_mock.assert_awaited_once_with()
-        calendar_mock.assert_awaited_once_with()
 
     @patch.object(reminders, "CRON_SECRET", "secret-for-tests")
     async def test_invalid_bearer_is_rejected(self):

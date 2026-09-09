@@ -7,7 +7,6 @@ from core.ia import process_ai_and_send
 from phone_lock import release_phone_lock
 from redis_settings import get_redis_settings
 from services.alertas_tributarias import send_tax_alerts
-from services.calendar_reminders import send_due_calendar_reminders
 from services.reminders import send_due_reminders
 
 logger = logging.getLogger("financial.worker")
@@ -67,20 +66,16 @@ async def run_reminders_job(ctx):
     cualquier excepción para que un fallo acá no tumbe el worker ni afecte
     el procesamiento de mensajes de WhatsApp.
     """
-    results = {}
-    services = (
-        ("roadmap", send_due_reminders),
-        ("alerts", send_tax_alerts),
-        ("calendar", send_due_calendar_reminders),
-    )
-    for name, service in services:
-        try:
-            results[name] = await service()
-        except Exception:
-            logger.exception("Fallo ejecutando el servicio de %s", name)
-            results[name] = {"status": "failed"}
-
-    logger.info("Cron de recordatorios ejecutado: %s", results)
+    try:
+        reminders_result = await send_due_reminders()
+        alerts_result = await send_tax_alerts()
+        logger.info(
+            "Cron de recordatorios/alertas ejecutado: %s %s",
+            reminders_result,
+            alerts_result,
+        )
+    except Exception:
+        logger.exception("Fallo ejecutando el cron de recordatorios/alertas")
 
 
 class WorkerSettings:

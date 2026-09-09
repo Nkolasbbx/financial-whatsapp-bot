@@ -26,7 +26,7 @@ export default defineRailway(() => {
       restartPolicyType: "ON_FAILURE",
       restartPolicyMaxRetries: 10,
     },
-    env: { CALENDAR_BATCH_SIZE: preserve(), CALENDAR_DEFAULT_HOUR: preserve(), CALENDAR_REMINDERS_ENABLED: preserve(), CALENDAR_TEMPLATE_LANGUAGE: preserve(), CALENDAR_TEMPLATE_NAME: preserve(), CRON_SECRET: preserve(), DB_DSN: preserve(), DEBUG: preserve(), EMBEDDING_MODEL_NAME: preserve(), HF_TOKEN: preserve(), IA_API_KEY: preserve(), META_APP_SECRET: preserve(), META_GRAPH_API_VERSION: preserve(), META_PHONE_NUMBER_ID: preserve(), META_WABA_ID: preserve(), META_WEBHOOK_VERIFY_TOKEN: preserve(), META_WHATSAPP_TOKEN: preserve(), OLLAMA_MODEL: preserve(), OLLAMA_URL: preserve(), RATE_LIMIT_BLOCK_SECONDS: preserve(), RATE_LIMIT_ENABLED: preserve(), RATE_LIMIT_MAX_MESSAGES: preserve(), RATE_LIMIT_WINDOW_SECONDS: preserve(), REDIS_URL: preserve(), REMINDERS_ENABLED: preserve(), REMINDER_BATCH_SIZE: preserve(), REMINDER_DAYS: preserve(), REMINDER_FINAL_TEMPLATE_NAME: preserve(), REMINDER_RECIPIENT_LABEL: preserve(), REMINDER_TEMPLATE_LANGUAGE: preserve(), REMINDER_TEMPLATE_NAME: preserve(), REMINDER_TIMEZONE: preserve(), RES_KEY: preserve(), RES_MODEL: preserve(), RES_URL: preserve(), SUPABASE_KEY: preserve(), SUPABASE_SERVICE_ROLE_KEY: preserve(), SUPABASE_URL: preserve(), TWILIO_ACCOUNT_SID: preserve(), TWILIO_AUTH_TOKEN: preserve(), TWILIO_WHATSAPP_NUMBER: preserve(), WHATSAPP_PROVIDER: preserve() },
+    env: { CRON_SECRET: preserve(), DB_DSN: preserve(), DEBUG: preserve(), EMBEDDING_MODEL_NAME: preserve(), HF_TOKEN: preserve(), IA_API_KEY: preserve(), META_APP_SECRET: preserve(), META_GRAPH_API_VERSION: preserve(), META_PHONE_NUMBER_ID: preserve(), META_WABA_ID: preserve(), META_WEBHOOK_VERIFY_TOKEN: preserve(), META_WHATSAPP_TOKEN: preserve(), OLLAMA_MODEL: preserve(), OLLAMA_URL: preserve(), RATE_LIMIT_BLOCK_SECONDS: preserve(), RATE_LIMIT_ENABLED: preserve(), RATE_LIMIT_MAX_MESSAGES: preserve(), RATE_LIMIT_WINDOW_SECONDS: preserve(), REDIS_URL: preserve(), REMINDERS_ENABLED: preserve(), REMINDER_BATCH_SIZE: preserve(), REMINDER_DAYS: preserve(), REMINDER_FINAL_TEMPLATE_NAME: preserve(), REMINDER_RECIPIENT_LABEL: preserve(), REMINDER_TEMPLATE_LANGUAGE: preserve(), REMINDER_TEMPLATE_NAME: preserve(), REMINDER_TIMEZONE: preserve(), RES_KEY: preserve(), RES_MODEL: preserve(), RES_URL: preserve(), SUPABASE_KEY: preserve(), SUPABASE_SERVICE_ROLE_KEY: preserve(), SUPABASE_URL: preserve(), TWILIO_ACCOUNT_SID: preserve(), TWILIO_AUTH_TOKEN: preserve(), TWILIO_WHATSAPP_NUMBER: preserve(), WHATSAPP_PROVIDER: preserve() },
   });
 
   // El worker no tiene credenciales propias: dependencies.init_dependencies()
@@ -45,11 +45,6 @@ export default defineRailway(() => {
       restartPolicyMaxRetries: 10,
     },
     env: {
-      CALENDAR_BATCH_SIZE: financialWhatsappBot.env.CALENDAR_BATCH_SIZE,
-      CALENDAR_DEFAULT_HOUR: financialWhatsappBot.env.CALENDAR_DEFAULT_HOUR,
-      CALENDAR_REMINDERS_ENABLED: financialWhatsappBot.env.CALENDAR_REMINDERS_ENABLED,
-      CALENDAR_TEMPLATE_LANGUAGE: financialWhatsappBot.env.CALENDAR_TEMPLATE_LANGUAGE,
-      CALENDAR_TEMPLATE_NAME: financialWhatsappBot.env.CALENDAR_TEMPLATE_NAME,
       CRON_SECRET: financialWhatsappBot.env.CRON_SECRET,
       DB_DSN: financialWhatsappBot.env.DB_DSN,
       DEBUG: financialWhatsappBot.env.DEBUG,
