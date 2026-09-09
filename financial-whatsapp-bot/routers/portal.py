@@ -13,12 +13,15 @@ mensajes nuevos desde la web queda para una siguiente iteración.
 """
 import html
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Cookie, Request, Response
 
 from core.alertas_tributarias import get_calendario_sii
 from core.roadmaps import get_pending_milestone
+from config import REMINDER_TIMEZONE
+from db.calendar import get_active_calendar_events
 from db.users import get_messages, get_user
 from services.portal_auth import create_session, get_session_phone, redeem_access_token
 
@@ -221,6 +224,54 @@ def _tarjeta_calendario(user: dict) -> str:
     """
 
 
+def _tarjeta_fechas_personales(user: dict) -> str:
+    """Próximos compromisos creados por el usuario desde WhatsApp (HdU08)."""
+    user_id = user.get("id")
+    if not user_id:
+        return ""
+
+    try:
+        eventos = get_active_calendar_events(user_id, limit=12)
+    except Exception as error:
+        logger.error("No se pudo cargar el calendario personal del panel: %s", error)
+        return ""
+
+    if not eventos:
+        return """
+        <div class="tarjeta">
+            <h1>🗓️ Tus fechas importantes</h1>
+            <p class="subtitulo">Aún no tienes compromisos guardados. Puedes
+            crear uno escribiendo "crear fecha importante" por WhatsApp.</p>
+        </div>
+        """
+
+    try:
+        local_tz = ZoneInfo(REMINDER_TIMEZONE)
+    except Exception:
+        local_tz = ZoneInfo("UTC")
+
+    def format_event_at(value: str) -> str:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(local_tz).strftime("%d/%m/%Y %H:%M")
+
+    filas = "\n".join(
+        '<div class="evento">'
+        f'<div class="evento-fecha">{format_event_at(evento["event_at"])}</div>'
+        f'<div><strong>{html.escape(evento.get("description") or "Evento")}</strong></div>'
+        '</div>'
+        for evento in eventos
+    )
+    return f"""
+    <div class="tarjeta">
+        <h1>🗓️ Tus fechas importantes</h1>
+        <p class="subtitulo">Compromisos personales relacionados con tu negocio.</p>
+        {filas}
+    </div>
+    """
+
+
 @router.get("")
 async def panel(
     request: Request,
@@ -281,6 +332,7 @@ async def panel(
     contenido = (
         tarjeta_estado
         + _tarjeta_roadmap(roadmap)
+        + _tarjeta_fechas_personales(user)
         + _tarjeta_calendario(user)
         + tarjeta_historial
     )

@@ -1,6 +1,12 @@
 import logging
 
 from db.users import get_user, reset_user_profile, save_user
+from core.calendar_flow import (
+    handle_calendar_message,
+    is_calendar_entry_message,
+    should_exit_calendar_message,
+    should_handle_calendar_message,
+)
 from core.fund_flow import handle_fund_message, should_handle_fund_message
 from core.menu import MENU_BUTTON, get_menu_widget
 from core.roadmaps import (
@@ -14,6 +20,8 @@ from core.roadmaps import (
     MENU_FINANCIAL_ID,
 )
 from core.onboarding import process_onboarding
+from db.calendar import clear_calendar_session, get_calendar_session
+from db.fondos import cancel_fund_session
 from db.reminders import (
     clear_completed_roadmap_schedule_by_phone,
     disable_reminders,
@@ -66,6 +74,15 @@ def _clear_completed_roadmap_safely(phone: str) -> None:
         )
 
 
+def _clear_calendar_session_safely(user_id: str | None) -> None:
+    if not user_id:
+        return
+    try:
+        clear_calendar_session(user_id)
+    except Exception as error:
+        logger.error("No se pudo limpiar la sesión del calendario: %s", error)
+
+
 def route_message(
     phone: str,
     message: str,
@@ -89,6 +106,7 @@ def route_message(
 
     # ── Reset command ──
     if msg_lower in ["reiniciar", "reset", "empezar de nuevo", "menu_reiniciar"]:
+        _clear_calendar_session_safely(user.get("id"))
         new_user = reset_user_profile(phone, user)
         if not new_user:
             return (
@@ -166,6 +184,52 @@ def route_message(
             phone,
             reply_to_message_id,
         )
+
+    # ── Calendario personalizado (HdU08) ──
+    # La sesión se persiste en Supabase, por lo que el flujo sobrevive a un
+    # reinicio del servidor y funciona igual en local y en Railway.
+    calendar_session = None
+    calendar_entry = is_calendar_entry_message(message)
+    try:
+        if user.get("id"):
+            calendar_session = get_calendar_session(user["id"])
+    except Exception as error:
+        logger.error("No se pudo consultar la sesión del calendario: %s", error)
+        if calendar_entry:
+            return {
+                "type": "buttons",
+                "body": (
+                    "No pude abrir tu calendario en este momento. "
+                    "Inténtalo nuevamente más tarde."
+                ),
+                "options": MENU_BUTTON,
+            }
+
+    if calendar_session and should_exit_calendar_message(message):
+        _clear_calendar_session_safely(user.get("id"))
+        calendar_session = None
+
+    if should_handle_calendar_message(message, calendar_session):
+        try:
+            if calendar_entry:
+                try:
+                    cancel_fund_session(user["id"])
+                except Exception as error:
+                    logger.error(
+                        "No se pudo cerrar la sesión de fondos al abrir el calendario: %s",
+                        error,
+                    )
+            return handle_calendar_message(user, message, calendar_session)
+        except Exception as error:
+            logger.exception("No se pudo procesar el calendario personalizado: %s", error)
+            return {
+                "type": "buttons",
+                "body": (
+                    "No pude procesar tu calendario en este momento. "
+                    "Inténtalo nuevamente más tarde."
+                ),
+                "options": MENU_BUTTON,
+            }
 
     # ── Fund application flow ──
     # Se procesa antes del roadmap y de la IA para que respuestas breves como

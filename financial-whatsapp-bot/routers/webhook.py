@@ -13,6 +13,7 @@ from db.rate_limits import (
     check_message_rate_limit,
     is_rate_limit_exempt,
 )
+from db.calendar import update_calendar_delivery_status
 from db.reminders import update_reminder_delivery_status
 from db.users import get_last_user_message, get_user
 from phone_lock import acquire_phone_lock, release_phone_lock
@@ -168,6 +169,20 @@ async def whatsapp_webhook(request: Request):
                 except Exception as error:
                     logger.error(
                         "No se pudo actualizar el estado del recordatorio %s: %s",
+                        status.get("id", "unknown"),
+                        error,
+                    )
+                try:
+                    await asyncio.to_thread(
+                        update_calendar_delivery_status,
+                        status.get("id", ""),
+                        status.get("status", ""),
+                        status.get("timestamp"),
+                        failure_reason,
+                    )
+                except Exception as error:
+                    logger.error(
+                        "No se pudo actualizar el estado del calendario %s: %s",
                         status.get("id", "unknown"),
                         error,
                     )

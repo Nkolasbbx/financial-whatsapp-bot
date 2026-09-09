@@ -127,6 +127,8 @@ en Postgres.
 | `mi roadmap` | Muestra el progreso |
 | `listo` | Completa el hito actual |
 | `postular a fondo` | Simula una postulación |
+| `crear fecha importante` | Inicia la creación de un compromiso personal |
+| `ver mi calendario` | Lista fechas activas y permite cambiarlas o eliminarlas |
 | `ayuda` | Muestra el menú |
 | `reiniciar` | Reinicia el perfil |
 | `activar recordatorios` | Acepta recordatorios después de 3 días sin avance |
@@ -160,6 +162,30 @@ Authorization: Bearer CRON_SECRET
 
 El endpoint se encuentra fuera del esquema público de OpenAPI. Los intentos,
 estados de entrega y respuestas se guardan en `reminder_deliveries`.
+
+## Calendario personalizado (HdU08)
+
+El calendario usa las tablas `calendar_events`, `calendar_sessions` y
+`calendar_deliveries`. La sesión conversacional se guarda en Supabase, por lo
+que el usuario puede continuar el flujo aunque el backend se reinicie. Los
+avisos se ejecutan dentro del mismo cron de recordatorios, sin agregar otro
+webhook ni otro endpoint.
+
+La plantilla aprobada en Meta debe tener dos variables en el cuerpo: `{{1}}`
+para la descripción y `{{2}}` para la fecha y hora. Su configuración es:
+
+```env
+CALENDAR_REMINDERS_ENABLED=false
+CALENDAR_TEMPLATE_NAME=recordatorio_fecha_personalizada
+CALENDAR_TEMPLATE_LANGUAGE=es_CL
+CALENDAR_DEFAULT_HOUR=9
+CALENDAR_BATCH_SIZE=50
+```
+
+Antes de habilitar los envíos en producción, crea y aprueba la plantilla,
+configura su nombre exacto e idioma, y cambia
+`CALENDAR_REMINDERS_ENABLED=true`. Cada usuario además debe tener
+`users.reminders_enabled=true` para recibir sus avisos personales.
 
 ### Probar la rutina localmente
 

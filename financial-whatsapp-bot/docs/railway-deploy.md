@@ -227,7 +227,7 @@ npx -y @railway/cli@latest restart --service <nombre>                          #
 
 ---
 
-## Variables de entorno (las 32 que usa la app)
+## Variables de entorno
 
 Todas viven en `financial-whatsapp-bot`; el worker las referencia todas desde ahí (ver `.railway/railway.ts`). `config.py` tiene el detalle de cada una y sus defaults.
 
@@ -246,6 +246,12 @@ Todas viven en `financial-whatsapp-bot`; el worker las referencia todas desde ah
 | `DEBUG` | Habilita modo debug/Twilio local. |
 | `CRON_SECRET` | Autoriza el cron de recordatorios (`Authorization: Bearer ...`). |
 | `REMINDERS_ENABLED`, `REMINDER_DAYS`, `REMINDER_BATCH_SIZE`, `REMINDER_TEMPLATE_NAME`, `REMINDER_FINAL_TEMPLATE_NAME`, `REMINDER_TEMPLATE_LANGUAGE`, `REMINDER_RECIPIENT_LABEL`, `REMINDER_TIMEZONE` | Sistema de recordatorios automáticos. |
+| `CALENDAR_REMINDERS_ENABLED`, `CALENDAR_BATCH_SIZE`, `CALENDAR_DEFAULT_HOUR`, `CALENDAR_TEMPLATE_NAME`, `CALENDAR_TEMPLATE_LANGUAGE` | Calendario personalizado (HdU08). La plantilla recibe descripción en `{{1}}` y fecha/hora en `{{2}}`. |
+
+Las cinco variables `CALENDAR_*` deben configurarse en el servicio web. El
+archivo `.railway/railway.ts` las comparte automáticamente con el worker. Deja
+`CALENDAR_REMINDERS_ENABLED=false` hasta que la plantilla esté aprobada en Meta;
+después cambia el valor a `true` y redeploya ambos servicios.
 
 ---
 
