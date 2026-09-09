@@ -66,6 +66,22 @@ REMINDER_TIMEZONE = os.getenv(
     "America/Santiago",
 ).strip()
 REMINDER_BATCH_SIZE = int(os.getenv("REMINDER_BATCH_SIZE", "100"))
+
+# Calendario personalizado (HdU08). Usa el mismo consentimiento global de
+# reminders_enabled, pero su envío puede habilitarse de forma independiente.
+CALENDAR_REMINDERS_ENABLED = (
+    os.getenv("CALENDAR_REMINDERS_ENABLED", "false").strip().lower() == "true"
+)
+CALENDAR_TEMPLATE_NAME = os.getenv(
+    "CALENDAR_TEMPLATE_NAME",
+    "recordatorio_fecha_personalizada",
+).strip()
+CALENDAR_TEMPLATE_LANGUAGE = os.getenv(
+    "CALENDAR_TEMPLATE_LANGUAGE",
+    "es_CL",
+).strip()
+CALENDAR_DEFAULT_HOUR = int(os.getenv("CALENDAR_DEFAULT_HOUR", "9"))
+CALENDAR_BATCH_SIZE = int(os.getenv("CALENDAR_BATCH_SIZE", "100"))
 # Vercel envía CRON_SECRET como `Authorization: Bearer ...` al ejecutar el cron.
 # El nombre anterior se mantiene solo como respaldo para entornos locales ya creados.
 CRON_SECRET = (
@@ -107,6 +123,12 @@ if REMINDER_DAYS < 1:
 
 if REMINDER_BATCH_SIZE < 1:
     raise ValueError("REMINDER_BATCH_SIZE debe ser mayor que cero")
+
+if not 0 <= CALENDAR_DEFAULT_HOUR <= 23:
+    raise ValueError("CALENDAR_DEFAULT_HOUR debe estar entre 0 y 23")
+
+if CALENDAR_BATCH_SIZE < 1:
+    raise ValueError("CALENDAR_BATCH_SIZE debe ser mayor que cero")
 
 if RATE_LIMIT_MAX_MESSAGES < 1:
     raise ValueError("RATE_LIMIT_MAX_MESSAGES debe ser mayor que cero")

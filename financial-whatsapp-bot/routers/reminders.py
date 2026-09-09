@@ -1,12 +1,15 @@
+import logging
 import secrets
 
 from fastapi import APIRouter, Header, HTTPException
 
 from config import CRON_SECRET
+from services.calendar_reminders import send_due_calendar_reminders
 from services.reminders import send_due_reminders
 from services.alertas_tributarias import send_tax_alerts
 
 router = APIRouter(prefix="/internal/reminders")
+logger = logging.getLogger("financial")
 
 
 def validate_cron_authorization(authorization: str | None) -> None:
@@ -27,8 +30,23 @@ def validate_cron_authorization(authorization: str | None) -> None:
 async def run_reminders(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
-    """Ejecuta recordatorios y alertas tributarias."""
+    """Ejecuta todos los recordatorios desde un único endpoint protegido."""
     validate_cron_authorization(authorization)
-    reminders_result = await send_due_reminders()
-    alerts_result = await send_tax_alerts()
-    return {**reminders_result, **alerts_result}
+    result = {}
+    errors = {}
+    services = (
+        ("roadmap", send_due_reminders),
+        ("alerts", send_tax_alerts),
+        ("calendar", send_due_calendar_reminders),
+    )
+    for name, service in services:
+        try:
+            result.update(await service())
+        except Exception as error:
+            logger.exception("Falló el servicio de recordatorios %s", name)
+            errors[name] = str(error)
+
+    if errors:
+        result["errors"] = errors
+        result["status"] = "partial_failure"
+    return result
