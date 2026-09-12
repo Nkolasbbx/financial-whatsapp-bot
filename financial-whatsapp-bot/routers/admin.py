@@ -252,9 +252,8 @@ async def dashboard(
             f"""
             <tr>
                 <td>{html.escape(u.get("phone", ""))}</td>
-                <td>{html.escape(numero_hito)}</td>
                 <td>{html.escape(estado)}</td>
-                <td>{html.escape(hito_titulo)}</td>
+                <td>{html.escape("(" + numero_hito + ") - " + hito_titulo)}</td>
                 <td>{html.escape(rubro)}</td>
             </tr>
             """
@@ -290,7 +289,6 @@ async def dashboard(
             <thead>
                 <tr>
                     <th style="text-align:left;">Teléfono</th>
-                    <th style="text-align:left;">#</th>
                     <th style="text-align:left;">Estado</th>
                     <th style="text-align:left;">Hito</th>
                     <th style="text-align:left;">Rubro</th>

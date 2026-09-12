@@ -29,7 +29,7 @@ from db.reminders import (
     record_incoming_reminder_reply,
     record_roadmap_activity,
 )
-from db.assistant_feedback import record_roadmap_unsatisfaction
+from db.assistant_feedback import record_unsatisfaction
 
 logger = logging.getLogger("financial")
 
@@ -296,7 +296,7 @@ def route_message(
     
     # ── Manejo de insatisfacción ──
     if detect_unsatisfaction(message):
-        record_roadmap_unsatisfaction(user)
+        record_unsatisfaction(user, message)
         response = handle_unsatisfaction_response(user)
         _record_reply_safely(phone, reply_to_message_id)
         return response

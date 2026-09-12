@@ -3,6 +3,7 @@ from collections import Counter
 import dependencies
 from db.users import get_users_by_comuna
 
+
 TOPIC_KEYWORDS = {
     "Formalización": (
         "formalizar",
@@ -12,14 +13,12 @@ TOPIC_KEYWORDS = {
     ),
     "Patentes": (
         "patente",
-        "patente comercial",
         "municipalidad",
     ),
     "SII": (
         "sii",
         "iva",
         "boleta",
-        "inicio de actividades",
     ),
     "Permisos": (
         "seremi",
@@ -28,71 +27,89 @@ TOPIC_KEYWORDS = {
         "permiso",
     ),
 }
+TOPIC_ALIASES = {
+    "sii": "SII",
+    "formalizacion": "Formalización",
+    "patentes": "Patentes",
+    "permisos": "Permisos",
+    "otros": "Otros",
+}
 
+
+def normalize_topic(topic: str | None) -> str:
+    normalized_topic = (topic or "Otros").casefold()
+    return TOPIC_ALIASES.get(normalized_topic, topic or "Otros")
 
 def classify_topic(text: str) -> str:
-    normalized_text = (text or "").casefold()
+    text = (text or "").casefold()
 
     for topic, keywords in TOPIC_KEYWORDS.items():
-        if any(keyword in normalized_text for keyword in keywords):
+        if any(keyword in text for keyword in keywords):
             return topic
 
     return "Otros"
 
 
-def _empty_insights() -> dict:
-    return {
-        "no_useful": 0,
-        "topics": {},
-        "conflictivos": {},
-        "rag_gaps": {},
-    }
-
 def get_admin_insights(comuna: str) -> dict:
     supabase = dependencies.supabase_admin
 
     if supabase is None:
-        return _empty_insights()
+        return {
+            "no_useful": 0,
+            "topics": {},
+            "conflictivos": {},
+        }
 
-    feedback_result = (
+    # Insatisfacciones registradas explícitamente.
+    feedback = (
         supabase
         .table("assistant_feedback")
-        .select("hito_title, feedback_type")
+        .select("topic, hito_title")
         .eq("comuna", comuna)
         .eq("feedback_type", "unhelpful")
         .execute()
+        .data
+        or []
     )
 
-    conflictive_topics = Counter(
+    topics = Counter(
+    normalize_topic(item.get("topic"))
+    for item in feedback
+    )
+
+    conflictivos = Counter(
         item.get("hito_title") or "Hito desconocido"
-        for item in feedback_result.data or []
+        for item in feedback
     )
 
-    users = get_users_by_comuna(comuna)
+    # Temas de todas las consultas guardadas de la comuna.
+    usuarios = get_users_by_comuna(comuna)
     phones = [
-        user["phone"]
-        for user in users
-        if user.get("phone")
+        usuario["phone"]
+        for usuario in usuarios
+        if usuario.get("phone")
     ]
 
-    topics = Counter()
-
     if phones:
-        messages_result = (
+        messages = (
             supabase
             .table("messages")
             .select("content")
             .in_("phone", phones)
             .eq("role", "user")
             .execute()
+            .data
+            or []
         )
 
-        for item in messages_result.data or []:
-            topics[classify_topic(item.get("content") or "")] += 1
+        for message in messages:
+            topic = normalize_topic(
+                classify_topic(message.get("content", ""))
+            )
+            topics[topic] += 1
 
     return {
-        "no_useful": sum(conflictive_topics.values()),
+        "no_useful": len(feedback),
         "topics": dict(topics.most_common()),
-        "conflictivos": dict(conflictive_topics.most_common()),
-        "rag_gaps": {},
+        "conflictivos": dict(conflictivos.most_common()),
     }
