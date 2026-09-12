@@ -16,6 +16,7 @@ import logging
 from fastapi import APIRouter, Cookie, Form, Request, Response
 
 from core.roadmaps import get_pending_milestone
+from services.admin_insights import get_admin_insights
 from db.users import get_users_by_comuna
 from services.admin_auth import (
     authenticate_admin,
@@ -239,6 +240,28 @@ async def dashboard(
         for titulo, cuenta in sorted(conteo_hitos.items(), key=lambda kv: -kv[1])
     ) or '<p class="subtitulo">No hay emprendedores en progreso todavía.</p>'
 
+    filas_emprendedores = []
+    for u in usuarios:
+        hito = get_pending_milestone(u)
+        numero_hito = "✔" if u.get("roadmap_completed_at") else (str(hito["id"]) + "/" + str(len(u.get("roadmap"))) if hito else "0")
+        estado = "Formalizado" if u.get("roadmap_completed_at") else "En progreso"
+        hito_titulo = "Formalización completa" if u.get("roadmap_completed_at") else (hito["title"] if hito else "Sin roadmap asignado")
+        rubro = u.get("rubro") or "No definido"
+
+        filas_emprendedores.append(
+            f"""
+            <tr>
+                <td>{html.escape(u.get("phone", ""))}</td>
+                <td>{html.escape(numero_hito)}</td>
+                <td>{html.escape(estado)}</td>
+                <td>{html.escape(hito_titulo)}</td>
+                <td>{html.escape(rubro)}</td>
+            </tr>
+            """
+        )
+
+    insights = get_admin_insights(comuna)
+
     contenido = f"""
     <div class="tarjeta">
         <h1>Resumen — {html.escape(comuna)}</h1>
@@ -261,6 +284,39 @@ async def dashboard(
         <h1>En qué hito están (en progreso)</h1>
         {filas_hitos}
     </div>
+    <div class="tarjeta">
+        <h1>Emprendedores de {html.escape(comuna)}</h1>
+        <table style="width:100%; border-collapse:collapse;">
+            <thead>
+                <tr>
+                    <th style="text-align:left;">Teléfono</th>
+                    <th style="text-align:left;">#</th>
+                    <th style="text-align:left;">Estado</th>
+                    <th style="text-align:left;">Hito</th>
+                    <th style="text-align:left;">Rubro</th>
+                </tr>
+            </thead>
+            <tbody>
+                {''.join(filas_emprendedores) or '<tr><td colspan="4">No hay emprendedores</td></tr>'}
+            </tbody>
+        </table>
+    </div>
+    
+
+    <div class="tarjeta">
+        <h1>Insights del asistente</h1>
+        <p class="subtitulo">Respuestas no útiles reportadas: {insights["no_useful"]}</p>
+        <h3>Temas consultados</h3>
+        <ul>
+            {''.join(f"<li>{html.escape(k)}: {v}</li>" for k, v in insights['topics'].items()) or "<li>Sin datos</li>"}
+        </ul>
+
+        <h3>Temas más conflictivos</h3>
+        <ul>
+            {''.join(f"<li>{html.escape(k)}: {v}</li>" for k, v in insights['conflictivos'].items()) or "<li>No hay reportes</li>"}
+        </ul>
+    </div>
+
     <div class="cerrar-sesion"><a href="/admin/logout">Cerrar sesión</a></div>
     """
 
