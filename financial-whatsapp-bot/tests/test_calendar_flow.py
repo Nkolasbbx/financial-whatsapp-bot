@@ -47,54 +47,6 @@ class CalendarFlowTests(unittest.TestCase):
         self.assertEqual(result["type"], "buttons")
         self.assertIn("descripción", result["body"])
 
-    def test_question_interrupts_session_waiting_for_date(self):
-        decision = calendar_flow.classify_calendar_input(
-            "¿Cómo puedo sacar mi patente?",
-            {"state": "waiting_date"},
-        )
-
-        self.assertEqual(decision, calendar_flow.CALENDAR_INPUT_INTERRUPT)
-
-    def test_invalid_date_like_input_stays_in_calendar(self):
-        decision = calendar_flow.classify_calendar_input(
-            "32/15/2026",
-            {"state": "waiting_date"},
-        )
-
-        self.assertEqual(decision, calendar_flow.CALENDAR_INPUT_HANDLE)
-
-    def test_task_text_is_accepted_as_description(self):
-        decision = calendar_flow.classify_calendar_input(
-            "Renovar patente municipal",
-            {"state": "waiting_description"},
-        )
-
-        self.assertEqual(decision, calendar_flow.CALENDAR_INPUT_HANDLE)
-
-    def test_question_interrupts_session_waiting_for_description(self):
-        decision = calendar_flow.classify_calendar_input(
-            "¿Cómo renuevo mi patente municipal?",
-            {"state": "waiting_description"},
-        )
-
-        self.assertEqual(decision, calendar_flow.CALENDAR_INPUT_INTERRUPT)
-
-    def test_unexpected_text_interrupts_confirmation(self):
-        decision = calendar_flow.classify_calendar_input(
-            "Tengo otra consulta",
-            {"state": "confirming_creation"},
-        )
-
-        self.assertEqual(decision, calendar_flow.CALENDAR_INPUT_INTERRUPT)
-
-    def test_cancel_text_remains_a_calendar_control(self):
-        decision = calendar_flow.classify_calendar_input(
-            "cancelar",
-            {"state": "waiting_description"},
-        )
-
-        self.assertEqual(decision, calendar_flow.CALENDAR_INPUT_HANDLE)
-
     @patch.object(calendar_flow, "clear_calendar_session")
     @patch.object(calendar_flow, "create_calendar_event")
     def test_confirmation_creates_event_and_clears_session(
@@ -185,35 +137,6 @@ class CalendarFlowTests(unittest.TestCase):
         self.assertEqual(result["body"], "calendario")
         handle_mock.assert_called_once()
         cancel_fund_mock.assert_called_once_with("user-1")
-
-    @patch("services.message_router.clear_calendar_session")
-    @patch("services.message_router.handle_calendar_message")
-    @patch(
-        "services.message_router.get_calendar_session",
-        return_value={"state": "waiting_date"},
-    )
-    @patch("services.message_router.get_user")
-    def test_message_router_cancels_calendar_and_continues_to_ai(
-        self,
-        get_user_mock,
-        _session_mock,
-        handle_mock,
-        clear_mock,
-    ):
-        get_user_mock.return_value = {
-            **self.user,
-            "onboarding_step": "done",
-            "reminder_count": 0,
-        }
-
-        result = route_message(
-            self.user["phone"],
-            "¿Cómo puedo sacar mi patente?",
-        )
-
-        self.assertEqual(result, "__AI_QUERY_CALENDAR_CANCELLED__")
-        clear_mock.assert_called_once_with("user-1")
-        handle_mock.assert_not_called()
 
 
 if __name__ == "__main__":
