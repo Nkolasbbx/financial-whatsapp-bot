@@ -1,20 +1,27 @@
-import sys
+import logging
 import os
+import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from dependencies import lifespan
-
-import logging
 from fastapi import FastAPI
-from dependencies import lifespan
-from routers import admin, portal, reminders, test, webhook
-from db.users import get_messages
+from fastapi.staticfiles import StaticFiles
+
 from config import DEBUG
+from dependencies import lifespan
+from routers import admin, portal, portal_calendar, reminders, test
 
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="FinancIAl WhatsApp Bot", lifespan=lifespan)
+
+static_directory = Path(__file__).resolve().parent / "static"
+app.mount(
+    "/static",
+    StaticFiles(directory=static_directory),
+    name="static",
+)
 
 if DEBUG:
     from routers import webhook_twilio as webhook
@@ -27,6 +34,7 @@ app.include_router(webhook.router)
 app.include_router(test.router)
 app.include_router(reminders.router)
 app.include_router(portal.router)
+app.include_router(portal_calendar.router)
 app.include_router(admin.router)
 
 

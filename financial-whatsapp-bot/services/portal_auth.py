@@ -17,6 +17,7 @@ logger = logging.getLogger("financial")
 
 _TOKEN_PREFIX = "portal_token:"
 _SESSION_PREFIX = "portal_session:"
+_CSRF_PREFIX = "portal_csrf:"
 
 TOKEN_TTL_SECONDS = 30 * 60          # 30 minutos para hacer clic en el link
 SESSION_TTL_SECONDS = 7 * 24 * 3600  # 7 días de sesión después de entrar
@@ -63,3 +64,37 @@ async def get_session_phone(redis, session_id: str | None) -> str | None:
         return None
     phone = await redis.get(_SESSION_PREFIX + session_id)
     return _as_str(phone)
+
+
+async def get_or_create_csrf_token(redis, session_id: str) -> str:
+    """Obtiene el token CSRF asociado a una sesión o crea uno nuevo."""
+    if not session_id:
+        raise ValueError("Se necesita una sesión válida")
+
+    key = _CSRF_PREFIX + session_id
+    existing = await redis.get(key)
+    if existing:
+        return _as_str(existing)
+
+    token = secrets.token_urlsafe(32)
+    await redis.set(key, token, ex=SESSION_TTL_SECONDS)
+    return token
+
+
+async def validate_csrf_token(
+    redis,
+    session_id: str | None,
+    submitted_token: str | None,
+) -> bool:
+    """Compara de forma segura el token CSRF de una sesión del portal."""
+    if not session_id or not submitted_token:
+        return False
+
+    stored_token = await redis.get(_CSRF_PREFIX + session_id)
+    if not stored_token:
+        return False
+
+    return secrets.compare_digest(
+        _as_str(stored_token),
+        submitted_token,
+    )

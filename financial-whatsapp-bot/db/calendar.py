@@ -69,6 +69,15 @@ def _iso_utc(value: datetime) -> str:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat()
 
+def _datetime_utc(value: str | datetime) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
 def _timestamp_key(value:str | datetime | None) -> str:
     if value is None:
         return ""
@@ -190,34 +199,96 @@ def get_active_calendar_events(
     return result.data or []
 
 
-def update_calendar_event_date(
+def get_calendar_events_between(
     user_id: str,
-    event_id: str,
-    event_at: datetime,
-    reminder_at: datetime,
-) -> dict | None:
-    """Cambia la fecha de un evento activo.
+    start_at: datetime,
+    end_at: datetime,
+    statuses: tuple[str, ...] = ("active", "completed"),
+) -> list[dict]:
+    """Obtiene los eventos de un usuario dentro de un rango semiabierto.
 
-    Se mantiene el mismo ID para no crear registros duplicados. Los intentos
-    pendientes asociados a la fecha anterior se cancelan, pero el historial
-    de mensajes ya enviados se conserva.
+    El inicio se incluye y el final se excluye. Esto permite que una vista
+    mensual consulte meses consecutivos sin repetir los eventos del límite.
+    Los eventos cancelados no se muestran por defecto, pero pueden solicitarse
+    explícitamente para usos administrativos futuros.
     """
-    if reminder_at > event_at:
+    if not user_id:
+        raise ValueError("El usuario es obligatorio")
+
+    normalized_start = _datetime_utc(start_at)
+    normalized_end = _datetime_utc(end_at)
+    if normalized_end <= normalized_start:
+        raise ValueError("La fecha final debe ser posterior a la fecha inicial")
+
+    requested_statuses = tuple(dict.fromkeys(statuses))
+    if not requested_statuses:
+        raise ValueError("Debes indicar al menos un estado")
+
+    invalid_statuses = set(requested_statuses) - VALID_EVENT_STATUSES
+    if invalid_statuses:
         raise ValueError(
-            "La fecha del recordatorio no puede ser posterior al evento"
+            "Estados de evento inválidos: "
+            + ", ".join(sorted(invalid_statuses))
         )
 
+    result = (
+        _admin_client()
+        .table("calendar_events")
+        .select("*")
+        .eq("user_id", user_id)
+        .gte("event_at", _iso_utc(normalized_start))
+        .lt("event_at", _iso_utc(normalized_end))
+        .in_("status", list(requested_statuses))
+        .order("event_at", desc=False)
+        .execute()
+    )
+
+    return result.data or []
+
+
+def update_calendar_event(
+    user_id: str,
+    event_id: str,
+    *,
+    description: str | None = None,
+    event_at: datetime | None = None,
+    reminder_at: datetime | None = None,
+) -> dict | None:
+    """Actualiza en una sola operación los datos editables de un evento.
+
+    El evento debe pertenecer al usuario y seguir activo. Si cambia su fecha o
+    su recordatorio, se cancelan las entregas pendientes asociadas a la
+    programación anterior; el historial ya enviado se conserva.
+    """
     current_event = get_calendar_event(user_id, event_id)
-    if not current_event:
+    if not current_event or current_event.get("status") != "active":
         return None
 
-    if current_event.get("status") != "active":
-        return None
+    changes: dict[str, Any] = {}
 
-    changes = {
-        "event_at": _iso_utc(event_at),
-        "reminder_at": _iso_utc(reminder_at),
-    }
+    if description is not None:
+        changes["description"] = _normalize_description(description)
+
+    schedule_changed = event_at is not None or reminder_at is not None
+    if schedule_changed:
+        effective_event_at = event_at
+        if effective_event_at is None:
+            effective_event_at = _datetime_utc(current_event["event_at"])
+
+        effective_reminder_at = reminder_at
+        if effective_reminder_at is None:
+            effective_reminder_at = _datetime_utc(current_event["reminder_at"])
+
+        if effective_reminder_at > effective_event_at:
+            raise ValueError(
+                "La fecha del recordatorio no puede ser posterior al evento"
+            )
+
+        changes["event_at"] = _iso_utc(effective_event_at)
+        changes["reminder_at"] = _iso_utc(effective_reminder_at)
+
+    if not changes:
+        raise ValueError("Debes indicar al menos un campo para actualizar")
 
     result = (
         _admin_client()
@@ -232,8 +303,30 @@ def update_calendar_event_date(
     if not result.data:
         return None
 
-    cancel_pending_calendar_deliveries(event_id)
+    if schedule_changed:
+        cancel_pending_calendar_deliveries(event_id)
+
     return result.data[0]
+
+
+def update_calendar_event_date(
+    user_id: str,
+    event_id: str,
+    event_at: datetime,
+    reminder_at: datetime,
+) -> dict | None:
+    """Cambia la fecha de un evento activo.
+
+    Se mantiene el mismo ID para no crear registros duplicados. Los intentos
+    pendientes asociados a la fecha anterior se cancelan, pero el historial
+    de mensajes ya enviados se conserva.
+    """
+    return update_calendar_event(
+        user_id,
+        event_id,
+        event_at=event_at,
+        reminder_at=reminder_at,
+    )
 
 
 def update_calendar_event_description(
@@ -242,21 +335,11 @@ def update_calendar_event_description(
     description: str,
 ) -> dict | None:
     """Actualiza la descripción de un evento activo."""
-    normalized_description = _normalize_description(description)
-
-    result = (
-        _admin_client()
-        .table("calendar_events")
-        .update({
-            "description": normalized_description,
-        })
-        .eq("id", event_id)
-        .eq("user_id", user_id)
-        .eq("status", "active")
-        .execute()
+    return update_calendar_event(
+        user_id,
+        event_id,
+        description=description,
     )
-
-    return result.data[0] if result.data else None
 
 
 def cancel_calendar_event(

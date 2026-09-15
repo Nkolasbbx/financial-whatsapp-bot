@@ -7,23 +7,26 @@ web"), recibe un link de un solo uso, y ese link crea una sesión válida
 por 7 días (cookie). No se pide ni guarda ningún dato nuevo — la
 identidad sigue siendo el mismo teléfono que ya usa con el bot.
 
-Alcance de este primer paso: ver el estado actual (rubro, comuna, % de
-roadmap, hito pendiente) y el historial completo de mensajes. Escribir
-mensajes nuevos desde la web queda para una siguiente iteración.
+El panel muestra el estado actual (rubro, comuna, roadmap e historial) y
+permite administrar las fechas importantes del calendario personalizado.
+Escribir mensajes nuevos al asistente desde la web queda para otra iteración.
 """
 import html
 import logging
-from datetime import date, datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import date
 
 from fastapi import APIRouter, Cookie, Request, Response
 
 from core.alertas_tributarias import get_calendario_sii
 from core.roadmaps import get_pending_milestone
-from config import REMINDER_TIMEZONE
-from db.calendar import get_active_calendar_events
+from config import CALENDAR_DEFAULT_HOUR
 from db.users import get_messages, get_user
-from services.portal_auth import create_session, get_session_phone, redeem_access_token
+from services.portal_auth import (
+    create_session,
+    get_or_create_csrf_token,
+    get_session_phone,
+    redeem_access_token,
+)
 
 logger = logging.getLogger("financial")
 
@@ -32,13 +35,20 @@ router = APIRouter(prefix="/portal")
 _SESSION_COOKIE = "financial_session"
 
 
-def _pagina_base(titulo: str, contenido: str) -> str:
+def _pagina_base(
+    titulo: str,
+    contenido: str,
+    *,
+    head_extra: str = "",
+    scripts: str = "",
+) -> str:
     return f"""<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{titulo} · FinancIAl</title>
+{head_extra}
 <style>
     * {{ box-sizing: border-box; }}
     body {{
@@ -48,7 +58,7 @@ def _pagina_base(titulo: str, contenido: str) -> str:
         color: #1a1a1a;
     }}
     .contenedor {{
-        max-width: 640px;
+        max-width: 1050px;
         margin: 0 auto;
         padding: 24px 16px 60px;
     }}
@@ -117,6 +127,7 @@ def _pagina_base(titulo: str, contenido: str) -> str:
 <div class="contenedor">
 {contenido}
 </div>
+{scripts}
 </body>
 </html>"""
 
@@ -224,50 +235,108 @@ def _tarjeta_calendario(user: dict) -> str:
     """
 
 
-def _tarjeta_fechas_personales(user: dict) -> str:
-    """Próximos compromisos creados por el usuario desde WhatsApp (HdU08)."""
-    user_id = user.get("id")
-    if not user_id:
-        return ""
-
-    try:
-        eventos = get_active_calendar_events(user_id, limit=12)
-    except Exception as error:
-        logger.error("No se pudo cargar el calendario personal del panel: %s", error)
-        return ""
-
-    if not eventos:
-        return """
-        <div class="tarjeta">
-            <h1>🗓️ Tus fechas importantes</h1>
-            <p class="subtitulo">Aún no tienes compromisos guardados. Puedes
-            crear uno escribiendo "crear fecha importante" por WhatsApp.</p>
-        </div>
-        """
-
-    try:
-        local_tz = ZoneInfo(REMINDER_TIMEZONE)
-    except Exception:
-        local_tz = ZoneInfo("UTC")
-
-    def format_event_at(value: str) -> str:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(local_tz).strftime("%d/%m/%Y %H:%M")
-
-    filas = "\n".join(
-        '<div class="evento">'
-        f'<div class="evento-fecha">{format_event_at(evento["event_at"])}</div>'
-        f'<div><strong>{html.escape(evento.get("description") or "Evento")}</strong></div>'
-        '</div>'
-        for evento in eventos
-    )
+def _tarjeta_fechas_personales() -> str:
+    """Contenedor del calendario interactivo de compromisos personales."""
     return f"""
-    <div class="tarjeta">
-        <h1>🗓️ Tus fechas importantes</h1>
-        <p class="subtitulo">Compromisos personales relacionados con tu negocio.</p>
-        {filas}
+    <div class="tarjeta calendario-tarjeta">
+        <div class="calendar-header">
+            <div>
+                <h1>🗓️ Tus fechas importantes</h1>
+                <p class="subtitulo">Agenda y administra compromisos relacionados
+                con tu negocio. También podrás recibir el aviso por WhatsApp.</p>
+            </div>
+            <button
+                type="button"
+                id="calendar-create-button"
+                class="calendar-primary-button"
+            >+ Nueva fecha</button>
+        </div>
+
+        <div id="calendar-message" role="status" aria-live="polite"></div>
+        <div
+            id="business-calendar"
+            data-default-hour="{CALENDAR_DEFAULT_HOUR:02d}:00"
+        ></div>
+        <noscript>
+            <p class="calendar-message error">
+                Activa JavaScript para administrar tus fechas desde el panel.
+            </p>
+        </noscript>
+    </div>
+
+    <div
+        id="calendar-modal-backdrop"
+        class="calendar-modal-backdrop"
+        aria-hidden="true"
+    >
+        <section
+            class="calendar-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="calendar-modal-title"
+        >
+            <button
+                type="button"
+                id="calendar-modal-close"
+                class="calendar-close-button"
+                aria-label="Cerrar"
+            >×</button>
+
+            <h2 id="calendar-modal-title">Nueva fecha</h2>
+            <form id="calendar-event-form">
+                <input type="hidden" id="calendar-event-id">
+
+                <label class="calendar-field">
+                    <span>Descripción</span>
+                    <input
+                        type="text"
+                        id="calendar-description"
+                        maxlength="500"
+                        placeholder="Ejemplo: renovar patente municipal"
+                        required
+                    >
+                </label>
+
+                <label class="calendar-field">
+                    <span>Fecha y hora</span>
+                    <input
+                        type="datetime-local"
+                        id="calendar-event-at"
+                        required
+                    >
+                </label>
+
+                <label class="calendar-field">
+                    <span>Recordarme</span>
+                    <select id="calendar-reminder-days">
+                        <option value="0">El mismo día</option>
+                        <option value="1">1 día antes</option>
+                        <option value="3">3 días antes</option>
+                        <option value="7">7 días antes</option>
+                    </select>
+                </label>
+
+                <div id="calendar-form-error" class="calendar-form-error"></div>
+
+                <div class="calendar-modal-actions">
+                    <button
+                        type="button"
+                        id="calendar-delete-button"
+                        class="calendar-danger-button"
+                    >Eliminar</button>
+                    <button
+                        type="button"
+                        id="calendar-complete-button"
+                        class="calendar-secondary-button"
+                    >Marcar como completado</button>
+                    <button
+                        type="submit"
+                        id="calendar-save-button"
+                        class="calendar-primary-button"
+                    >Guardar</button>
+                </div>
+            </form>
+        </section>
     </div>
     """
 
@@ -287,6 +356,8 @@ async def panel(
     user = get_user(phone)
     if not user:
         return _pagina_no_autorizado("No encontramos tu perfil")
+
+    csrf_token = await get_or_create_csrf_token(redis, financial_session)
 
     roadmap = user.get("roadmap") or []
     completados = sum(1 for hito in roadmap if hito.get("done"))
@@ -332,12 +403,30 @@ async def panel(
     contenido = (
         tarjeta_estado
         + _tarjeta_roadmap(roadmap)
-        + _tarjeta_fechas_personales(user)
+        + _tarjeta_fechas_personales()
         + _tarjeta_calendario(user)
         + tarjeta_historial
     )
 
+    head_extra = f"""
+    <meta
+        name="financial-csrf-token"
+        content="{html.escape(csrf_token, quote=True)}"
+    >
+    <link rel="stylesheet" href="/static/portal_calendar.css">
+    """
+    scripts = """
+    <script defer src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.15/locales-all.global.min.js"></script>
+    <script defer src="/static/portal_calendar.js"></script>
+    """
+
     return Response(
-        content=_pagina_base("Mi panel", contenido),
+        content=_pagina_base(
+            "Mi panel",
+            contenido,
+            head_extra=head_extra,
+            scripts=scripts,
+        ),
         media_type="text/html",
     )

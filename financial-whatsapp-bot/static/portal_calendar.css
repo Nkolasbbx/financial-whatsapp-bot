@@ -1,0 +1,221 @@
+.calendario-tarjeta {
+    overflow: visible;
+}
+
+.calendar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 18px;
+    margin-bottom: 18px;
+}
+
+.calendar-header .subtitulo {
+    margin-bottom: 0;
+}
+
+.calendar-primary-button,
+.calendar-secondary-button,
+.calendar-danger-button {
+    border: 0;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.calendar-primary-button {
+    background: #2563eb;
+    color: #fff;
+}
+
+.calendar-secondary-button {
+    background: #eef2ff;
+    color: #3730a3;
+}
+
+.calendar-danger-button {
+    background: #fef3f2;
+    color: #b42318;
+    margin-right: auto;
+}
+
+.calendar-primary-button:disabled,
+.calendar-secondary-button:disabled,
+.calendar-danger-button:disabled {
+    cursor: wait;
+    opacity: 0.6;
+}
+
+.calendar-message {
+    border-radius: 9px;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    font-size: 14px;
+}
+
+.calendar-message.success {
+    background: #ecfdf3;
+    color: #027a48;
+}
+
+.calendar-message.error {
+    background: #fef3f2;
+    color: #b42318;
+}
+
+.calendar-modal-open {
+    overflow: hidden;
+}
+
+.calendar-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(16, 24, 40, 0.58);
+    z-index: 1000;
+}
+
+.calendar-modal-backdrop.visible {
+    display: flex;
+}
+
+.calendar-modal {
+    position: relative;
+    width: min(100%, 520px);
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+    background: #fff;
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 20px 50px rgba(16, 24, 40, 0.24);
+}
+
+.calendar-modal h2 {
+    margin: 0 32px 20px 0;
+    font-size: 20px;
+}
+
+.calendar-close-button {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 34px;
+    height: 34px;
+    border: 0;
+    border-radius: 50%;
+    background: #f2f4f7;
+    color: #344054;
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.calendar-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 15px;
+    color: #344054;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.calendar-field input,
+.calendar-field select {
+    width: 100%;
+    padding: 11px 12px;
+    border: 1px solid #d0d5dd;
+    border-radius: 9px;
+    background: #fff;
+    color: #101828;
+    font: inherit;
+    font-weight: 400;
+}
+
+.calendar-field input:focus,
+.calendar-field select:focus {
+    outline: 2px solid #bfdbfe;
+    border-color: #2563eb;
+}
+
+.calendar-field input:disabled,
+.calendar-field select:disabled {
+    background: #f2f4f7;
+    color: #667085;
+}
+
+.calendar-form-error {
+    min-height: 20px;
+    margin-bottom: 8px;
+    color: #b42318;
+    font-size: 13px;
+}
+
+.calendar-modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+#business-calendar .fc-toolbar-title {
+    font-size: 18px;
+}
+
+#business-calendar .fc-button-primary {
+    border-color: #2563eb;
+    background: #2563eb;
+}
+
+#business-calendar .fc-button-primary:not(:disabled):hover,
+#business-calendar .fc-button-primary:not(:disabled):active {
+    border-color: #1d4ed8;
+    background: #1d4ed8;
+}
+
+#business-calendar .calendar-event-active {
+    border-color: #2563eb;
+    background: #2563eb;
+}
+
+#business-calendar .calendar-event-completed {
+    border-color: #16a34a;
+    background: #16a34a;
+    opacity: 0.72;
+}
+
+#business-calendar .calendar-event-overdue {
+    border-color: #b42318;
+    background: #b42318;
+}
+
+@media (max-width: 640px) {
+    .calendar-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .calendar-header .calendar-primary-button {
+        width: 100%;
+    }
+
+    .calendar-modal-actions {
+        flex-direction: column-reverse;
+    }
+
+    .calendar-modal-actions button {
+        width: 100%;
+        margin-right: 0;
+    }
+
+    #business-calendar .fc-header-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+        gap: 10px;
+    }
+}
