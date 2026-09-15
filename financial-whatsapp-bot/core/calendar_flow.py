@@ -38,6 +38,10 @@ CALENDAR_PAGE_PREFIX = "calendar_page:"
 
 CALENDAR_PAGE_SIZE = 8
 
+CALENDAR_INPUT_HANDLE = "handle"
+CALENDAR_INPUT_INTERRUPT = "interrupt"
+CALENDAR_INPUT_CONTINUE = "continue"
+
 _MENU_COMMANDS = {"calendario", "menu calendario"}
 _CREATE_COMMANDS = {
     "crear fecha",
@@ -332,9 +336,12 @@ def should_exit_calendar_message(message: str) -> bool:
     ) or normalized in _EXTERNAL_COMMANDS
 
 
-def should_handle_calendar_message(message: str, session: dict | None = None) -> bool:
+def _is_explicit_calendar_control(message: str) -> bool:
     raw = (message or "").strip().lower()
+    normalized = normalize_calendar_text(message)
     if is_calendar_entry_message(message):
+        return True
+    if normalized in _CANCEL_COMMANDS:
         return True
     if raw in {
         CALENDAR_CANCEL_ID,
@@ -344,16 +351,131 @@ def should_handle_calendar_message(message: str, session: dict | None = None) ->
         CALENDAR_CONFIRM_DELETE_ID,
     }:
         return True
-    if raw.startswith(
+    return raw.startswith(
         (
             CALENDAR_EVENT_PREFIX,
             CALENDAR_CHANGE_PREFIX,
             CALENDAR_DELETE_PREFIX,
             CALENDAR_PAGE_PREFIX,
         )
-    ):
+    )
+
+
+def _looks_like_date_input(message: str) -> bool:
+    """Detecta intentos de fecha, incluso si todavía tienen errores."""
+    normalized = normalize_calendar_text(message)
+    if re.match(r"^\d{1,2}\s*[/\-]", normalized):
         return True
-    return session is not None
+
+    date_words = {
+        "hoy",
+        "mañana",
+        "manana",
+        "enero",
+        "febrero",
+        "marzo",
+        "abril",
+        "mayo",
+        "junio",
+        "julio",
+        "agosto",
+        "septiembre",
+        "octubre",
+        "noviembre",
+        "diciembre",
+    }
+    words = set(normalized.split())
+    if words & {"hoy", "mañana", "manana"}:
+        return True
+    return bool(words & date_words) and any(character.isdigit() for character in normalized)
+
+
+def _looks_like_question(message: str) -> bool:
+    """Reconoce preguntas claras sin recurrir a una llamada al modelo de IA."""
+    raw = (message or "").strip()
+    if not raw:
+        return False
+    if "?" in raw or "¿" in raw:
+        return True
+
+    normalized = normalize_calendar_text(raw)
+    if normalized in {
+        "hola",
+        "holi",
+        "buenas",
+        "buenos dias",
+        "buenas tardes",
+        "buenas noches",
+    }:
+        return True
+    question_starts = (
+        "como ",
+        "que ",
+        "cuando ",
+        "donde ",
+        "por que ",
+        "cuanto ",
+        "cuanta ",
+        "cuantos ",
+        "cuantas ",
+        "cual ",
+        "cuales ",
+        "puedo ",
+        "podria ",
+        "me puedes ",
+        "me podrias ",
+        "quiero saber ",
+        "tengo una duda",
+        "tengo una pregunta",
+        "ayudame ",
+    )
+    return normalized.startswith(question_starts)
+
+
+def classify_calendar_input(
+    message: str,
+    session: dict | None = None,
+) -> str:
+    """Decide si un mensaje pertenece al calendario o interrumpe el flujo.
+
+    Una pregunta ajena al dato que se está solicitando cancela el borrador y
+    continúa por el enrutamiento normal. Un dato que parece fecha, aunque esté
+    mal escrito, permanece en el calendario para mostrar una corrección útil.
+    """
+    if _is_explicit_calendar_control(message):
+        return CALENDAR_INPUT_HANDLE
+    if not session:
+        return CALENDAR_INPUT_CONTINUE
+    if should_exit_calendar_message(message):
+        return CALENDAR_INPUT_INTERRUPT
+
+    state = session.get("state")
+    if state in {"waiting_date", "waiting_new_date"}:
+        return (
+            CALENDAR_INPUT_HANDLE
+            if _looks_like_date_input(message)
+            else CALENDAR_INPUT_INTERRUPT
+        )
+
+    if state == "waiting_description":
+        return (
+            CALENDAR_INPUT_INTERRUPT
+            if _looks_like_question(message)
+            else CALENDAR_INPUT_HANDLE
+        )
+
+    if state in {
+        "confirming_creation",
+        "confirming_update",
+        "confirming_delete",
+    }:
+        return CALENDAR_INPUT_INTERRUPT
+
+    return CALENDAR_INPUT_INTERRUPT
+
+
+def should_handle_calendar_message(message: str, session: dict | None = None) -> bool:
+    return classify_calendar_input(message, session) == CALENDAR_INPUT_HANDLE
 
 
 def handle_calendar_message(

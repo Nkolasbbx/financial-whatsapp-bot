@@ -2,10 +2,11 @@ import logging
 
 from db.users import get_user, reset_user_profile, save_user
 from core.calendar_flow import (
+    CALENDAR_INPUT_HANDLE,
+    CALENDAR_INPUT_INTERRUPT,
+    classify_calendar_input,
     handle_calendar_message,
     is_calendar_entry_message,
-    should_exit_calendar_message,
-    should_handle_calendar_message,
 )
 from core.fund_flow import handle_fund_message, should_handle_fund_message
 from core.menu import MENU_BUTTON, get_menu_widget
@@ -191,6 +192,7 @@ def route_message(
     # reinicio del servidor y funciona igual en local y en Railway.
     calendar_session = None
     calendar_entry = is_calendar_entry_message(message)
+    calendar_was_interrupted = False
     try:
         if user.get("id"):
             calendar_session = get_calendar_session(user["id"])
@@ -206,11 +208,13 @@ def route_message(
                 "options": MENU_BUTTON,
             }
 
-    if calendar_session and should_exit_calendar_message(message):
+    calendar_decision = classify_calendar_input(message, calendar_session)
+    if calendar_decision == CALENDAR_INPUT_INTERRUPT:
         _clear_calendar_session_safely(user.get("id"))
         calendar_session = None
+        calendar_was_interrupted = True
 
-    if should_handle_calendar_message(message, calendar_session):
+    if calendar_decision == CALENDAR_INPUT_HANDLE:
         try:
             if calendar_entry:
                 try:
@@ -344,6 +348,8 @@ def route_message(
         return get_roadmap_text(user)
 
     # ── AI Chat (default) ──
+    if calendar_was_interrupted:
+        return "__AI_QUERY_CALENDAR_CANCELLED__"
     return "__AI_QUERY__"
 
 

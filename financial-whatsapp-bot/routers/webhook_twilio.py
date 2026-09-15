@@ -50,7 +50,15 @@ async def whatsapp_webhook_twilio(request: Request, background_tasks: Background
     
     try:
         # ── CASO 1: Consulta normal ──
-        if response_text == "__AI_QUERY__":
+        if response_text in {
+            "__AI_QUERY__",
+            "__AI_QUERY_CALENDAR_CANCELLED__",
+        }:
+            if response_text == "__AI_QUERY_CALENDAR_CANCELLED__":
+                twiml.message(
+                    "🗓️ Cancelé la operación pendiente del calendario "
+                    "para responder tu consulta."
+                )
             twiml.message("🤔 Déjame pensar tu respuesta...")
             background_tasks.add_task(
                 process_ai_and_send_Twillio,

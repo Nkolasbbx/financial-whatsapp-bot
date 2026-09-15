@@ -273,7 +273,16 @@ async def whatsapp_webhook(request: Request):
                     )
 
                     try:
-                        if result == "__AI_QUERY__":
+                        if result in {
+                            "__AI_QUERY__",
+                            "__AI_QUERY_CALENDAR_CANCELLED__",
+                        }:
+                            if result == "__AI_QUERY_CALENDAR_CANCELLED__":
+                                await send_text(
+                                    phone,
+                                    "🗓️ Cancelé la operación pendiente del "
+                                    "calendario para responder tu consulta.",
+                                )
                             await send_text(phone, "🤔 Déjame pensar tu respuesta...")
                             await redis.enqueue_job(
                                 "process_ai_task",
