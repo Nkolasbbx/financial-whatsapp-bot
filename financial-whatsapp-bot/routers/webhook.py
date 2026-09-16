@@ -17,9 +17,15 @@ from db.calendar import update_calendar_delivery_status
 from db.reminders import update_reminder_delivery_status
 from db.users import get_last_user_message, get_user
 from phone_lock import acquire_phone_lock, release_phone_lock
-from services.message_router import route_message, split_message
+from services.message_router import RESET_COMMANDS, route_message, split_message
+from services.pending_confirmation import (
+    clear_pending_confirmation,
+    get_pending_confirmation,
+    is_affirmative,
+    set_pending_confirmation,
+)
 from services.portal_auth import create_access_token
-from services.transcription import transcribe_audio
+from services.transcription import is_ambiguous_transcription, transcribe_audio
 from services.whatsapp import (
     WhatsAppAPIError,
     download_media,
@@ -207,18 +213,57 @@ async def whatsapp_webhook(request: Request):
                 lock_token = await acquire_phone_lock(redis, phone)
                 hand_off_to_worker = False
                 try:
+                    is_audio_message = incoming.get("type") == "audio"
                     message = _extract_message_text(incoming)
 
-                    if message is None and incoming.get("type") == "audio":
+                    if message is None and is_audio_message:
                         message = await _transcribe_incoming_audio(incoming)
 
-                    if message is None:
+                    # ── Audio transcrito pero de confianza dudosa (HdU11, AC4) ──
+                    # Se distingue de "message is None" (AC5): acá Whisper sí
+                    # devolvió texto, pero muy corto o una frase de relleno
+                    # típica de ruido/silencio — se le muestra al usuario lo
+                    # que se entendió y se le pide repetir, sin tocar su perfil.
+                    if (
+                        message is not None
+                        and is_audio_message
+                        and is_ambiguous_transcription(message)
+                    ):
                         try:
                             await send_text(
                                 phone,
-                                "Por ahora solo puedo procesar mensajes de texto o "
-                                "botones. Escríbeme tu consulta y te ayudo 😊",
+                                f'🎤 Escuché: "{message}"\n\n'
+                                "No estoy seguro de haber entendido bien. ¿Puedes "
+                                "repetir el audio más claro, o escribirme tu "
+                                "consulta por texto?",
                             )
+                        except WhatsAppAPIError as error:
+                            logger.error("No se pudo responder al audio ambiguo: %s", error)
+                        processed_messages += 1
+                        continue
+
+                    if message is None:
+                        try:
+                            if is_audio_message:
+                                # La nota de voz llegó, pero falló la descarga o la
+                                # transcripción (vacía, sin voz comprensible, error
+                                # de red) — HdU11, AC5: se informa el problema
+                                # puntual, sin avanzar el flujo ni tocar datos.
+                                await send_text(
+                                    phone,
+                                    "🎤 No pude entender tu nota de voz — puede que "
+                                    "esté vacía, tenga mucho ruido o no se escuche "
+                                    "bien. ¿Puedes intentar grabarla de nuevo en un "
+                                    "lugar más silencioso, o escribirme tu consulta "
+                                    "por texto?",
+                                )
+                            else:
+                                await send_text(
+                                    phone,
+                                    "Por ahora solo puedo procesar mensajes de texto, "
+                                    "notas de voz o botones. Escríbeme tu consulta y "
+                                    "te ayudo 😊",
+                                )
                             # Si el usuario todavía está en onboarding, no basta con
                             # avisar: hay que repetir la pregunta del paso actual sin
                             # perder el progreso (HdU01). route_message con mensaje
@@ -233,6 +278,51 @@ async def whatsapp_webhook(request: Request):
                                 await _send_response(phone, onboarding_prompt)
                         except WhatsAppAPIError as error:
                             logger.error("No se pudo responder al mensaje no textual: %s", error)
+                        processed_messages += 1
+                        continue
+
+                    # ── Confirmación pendiente de un comando destructivo (HdU11, AC3) ──
+                    # Solo existe pending_confirm si un audio anterior pidió
+                    # reiniciar el perfil (ver más abajo); un "sí"/"no" acá
+                    # resuelve esa confirmación antes de seguir el flujo normal.
+                    pending_action = await get_pending_confirmation(redis, phone)
+                    if pending_action:
+                        await clear_pending_confirmation(redis, phone)
+                        try:
+                            if is_affirmative(message):
+                                result = await asyncio.to_thread(
+                                    route_message, phone, pending_action, None
+                                )
+                                await _send_response(phone, result)
+                            else:
+                                await send_text(
+                                    phone,
+                                    "Entendido, no hice ningún cambio. Si quieres "
+                                    "reiniciar más adelante, solo dímelo. 🙂",
+                                )
+                        except WhatsAppAPIError as error:
+                            logger.error("No se pudo resolver la confirmación pendiente: %s", error)
+                        processed_messages += 1
+                        continue
+
+                    # ── Comando destructivo llegado por audio (HdU11, AC3) ──
+                    # Un "reiniciar" escrito o tocado como botón sigue siendo una
+                    # acción explícita del usuario y se ejecuta directo (ver
+                    # services/message_router.py). Por audio, en cambio, se
+                    # confirma primero: se le muestra lo entendido y se espera
+                    # un sí/no antes de tocar sus datos.
+                    if is_audio_message and message.strip().lower() in RESET_COMMANDS:
+                        try:
+                            await set_pending_confirmation(redis, phone, "reiniciar")
+                            await send_text(
+                                phone,
+                                f'🎤 Escuché: "{message}"\n\n'
+                                "¿Confirmas que quieres *reiniciar tu perfil*? Vas a "
+                                "perder tu progreso actual.\n\nResponde *sí* para "
+                                "confirmar o *no* para cancelar.",
+                            )
+                        except WhatsAppAPIError as error:
+                            logger.error("No se pudo pedir confirmación de reinicio: %s", error)
                         processed_messages += 1
                         continue
 

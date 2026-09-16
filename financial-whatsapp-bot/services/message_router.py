@@ -49,6 +49,11 @@ YA_LO_REALICE_TRIGGERS = [
     "ya lo realice",
 ]
 
+# Comandos que reinician el perfil del usuario — se reutiliza este set en
+# routers/webhook.py para pedir confirmación cuando el comando llega
+# transcrito desde un audio (HdU11, AC3).
+RESET_COMMANDS = {"reiniciar", "reset", "empezar de nuevo", "menu_reiniciar"}
+
 
 def _record_reply_safely(phone: str, reply_to_message_id: str | None) -> bool:
     try:
@@ -106,7 +111,7 @@ def route_message(
             return response
 
     # ── Reset command ──
-    if msg_lower in ["reiniciar", "reset", "empezar de nuevo", "menu_reiniciar"]:
+    if msg_lower in RESET_COMMANDS:
         _clear_calendar_session_safely(user.get("id"))
         new_user = reset_user_profile(phone, user)
         if not new_user:
