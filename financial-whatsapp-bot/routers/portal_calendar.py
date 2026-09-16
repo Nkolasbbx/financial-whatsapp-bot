@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -16,6 +16,8 @@ from core.calendar_service import (
     parse_stored_datetime,
     prepare_event_schedule,
 )
+from core.alertas_tributarias import get_calendario_sii
+from core.fondos import fund_applies_to_user
 from db.calendar import (
     cancel_calendar_event,
     clear_calendar_session,
@@ -26,6 +28,7 @@ from db.calendar import (
     update_calendar_event,
 )
 from db.users import get_user
+from db.fondos import list_active_funds_between
 from schemas.calendar import (
     CalendarEventCreateRequest,
     CalendarEventResponse,
@@ -104,7 +107,121 @@ def _serialize_event(event: dict) -> CalendarEventResponse:
         ),
         reminder_days_before=_reminder_days_before(event),
         status=event.get("status") or "active",
+        source="personal",
+        editable=event.get("status") == "active",
     )
+
+
+def _serialize_tax_event(event: dict) -> CalendarEventResponse:
+    """Convierte una obligación tributaria en un evento informativo.
+
+    Estos eventos no se persisten en ``calendar_events`` ni pueden editarse:
+    se calculan desde el calendario tributario ya utilizado por HdU07.
+    """
+    local_timezone = get_calendar_timezone()
+    due_date: date = event["fecha_vencimiento"]
+    event_at = datetime.combine(
+        due_date,
+        time.min,
+        tzinfo=local_timezone,
+    )
+    event_type = event.get("tipo") or "tributaria"
+
+    return CalendarEventResponse(
+        id=f"tax:{event_type}:{due_date.isoformat()}",
+        description=event.get("nombre") or "Fecha tributaria",
+        event_at=event_at,
+        reminder_at=event_at,
+        reminder_days_before=0,
+        status="informational",
+        source="tributaria",
+        editable=False,
+        all_day=True,
+        details=event.get("descripcion"),
+        link=event.get("link"),
+    )
+
+
+def _tax_events_between(
+    user: dict,
+    start_at: datetime,
+    end_at: datetime,
+) -> list[CalendarEventResponse]:
+    """Retorna fechas tributarias del rango para usuarios formalizados."""
+    if user.get("inicio_sii") != "si":
+        return []
+
+    local_timezone = get_calendar_timezone()
+    start_date = start_at.astimezone(local_timezone).date()
+    end_date = end_at.astimezone(local_timezone).date()
+    comuna = user.get("comuna")
+
+    # El F29 de diciembre vence en enero del año siguiente. Por eso también
+    # se genera el calendario del año anterior al comienzo del rango.
+    events_by_id: dict[str, CalendarEventResponse] = {}
+    for year in range(start_date.year - 1, end_date.year + 1):
+        for event in get_calendario_sii(year, comuna):
+            due_date = event["fecha_vencimiento"]
+            if start_date <= due_date < end_date:
+                serialized = _serialize_tax_event(event)
+                events_by_id[serialized.id] = serialized
+
+    return sorted(events_by_id.values(), key=lambda event: event.event_at)
+
+
+def _serialize_fund_event(fund: dict) -> CalendarEventResponse:
+    """Convierte el cierre de un fondo en un evento informativo."""
+    local_timezone = get_calendar_timezone()
+    raw_closing_date = fund.get("fecha_cierre")
+    closing_date = (
+        raw_closing_date
+        if isinstance(raw_closing_date, date)
+        else date.fromisoformat(str(raw_closing_date))
+    )
+    event_at = datetime.combine(
+        closing_date,
+        time.min,
+        tzinfo=local_timezone,
+    )
+    fund_name = fund.get("nombre") or "Fondo concursable"
+    emoji = fund.get("emoji") or "💰"
+    entity = fund.get("entidad") or "apoyo al emprendimiento"
+    details = [f"Convocatoria de {entity}."]
+    amount = fund.get("monto_max")
+    if amount:
+        details.append(f"Financiamiento máximo: ${int(amount):,} CLP.".replace(",", "."))
+    details.append("Revisa las bases y requisitos antes de postular.")
+    stable_id = fund.get("id") or fund.get("slug") or fund_name
+
+    return CalendarEventResponse(
+        id=f"fund:{stable_id}:{closing_date.isoformat()}",
+        description=f"{emoji} Cierre: {fund_name}",
+        event_at=event_at,
+        reminder_at=event_at,
+        reminder_days_before=0,
+        status="informational",
+        source="fondo",
+        editable=False,
+        all_day=True,
+        details=" ".join(details),
+        link=fund.get("link"),
+    )
+
+
+def _fund_events_for_user(
+    user: dict,
+    funds: list[dict],
+) -> list[CalendarEventResponse]:
+    """Filtra fondos relevantes para un usuario no formalizado."""
+    if user.get("inicio_sii") != "no":
+        return []
+
+    events = [
+        _serialize_fund_event(fund)
+        for fund in funds
+        if fund_applies_to_user(fund, user)
+    ]
+    return sorted(events, key=lambda event: event.event_at)
 
 
 async def _clear_conversation_draft(user_id: str) -> None:
@@ -147,7 +264,21 @@ async def list_events(
         start_utc,
         end_utc,
     )
-    return [_serialize_event(event) for event in events]
+    calendar_events = [_serialize_event(event) for event in events]
+    calendar_events.extend(_tax_events_between(user, start_utc, end_utc))
+
+    if user.get("inicio_sii") == "no":
+        local_timezone = get_calendar_timezone()
+        range_start = start_utc.astimezone(local_timezone).date()
+        range_end = end_utc.astimezone(local_timezone).date()
+        funds = await run_in_threadpool(
+            list_active_funds_between,
+            range_start,
+            range_end,
+        )
+        calendar_events.extend(_fund_events_for_user(user, funds))
+
+    return sorted(calendar_events, key=lambda event: event.event_at)
 
 
 @router.post(

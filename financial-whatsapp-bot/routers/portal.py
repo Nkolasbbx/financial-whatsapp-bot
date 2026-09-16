@@ -241,9 +241,9 @@ def _tarjeta_fechas_personales() -> str:
     <div class="tarjeta calendario-tarjeta">
         <div class="calendar-header">
             <div>
-                <h1>🗓️ Tus fechas importantes</h1>
-                <p class="subtitulo">Agenda y administra compromisos relacionados
-                con tu negocio. También podrás recibir el aviso por WhatsApp.</p>
+                <h1>🗓️ Tu calendario del negocio</h1>
+                <p class="subtitulo">Consulta tus fechas personales y obligaciones
+                tributarias. También puedes agendar nuevos compromisos.</p>
             </div>
             <button
                 type="button"
@@ -253,6 +253,12 @@ def _tarjeta_fechas_personales() -> str:
         </div>
 
         <div id="calendar-message" role="status" aria-live="polite"></div>
+        <div class="calendar-legend" aria-label="Tipos de fechas">
+            <span><i class="calendar-legend-dot personal"></i> Fecha personal</span>
+            <span><i class="calendar-legend-dot tax"></i> Fecha tributaria</span>
+            <span><i class="calendar-legend-dot fund"></i> Fondo concursable</span>
+            <span><i class="calendar-legend-dot completed"></i> Completada</span>
+        </div>
         <div
             id="business-calendar"
             data-default-hour="{CALENDAR_DEFAULT_HOUR:02d}:00"
@@ -315,6 +321,21 @@ def _tarjeta_fechas_personales() -> str:
                         <option value="7">7 días antes</option>
                     </select>
                 </label>
+
+                <div
+                    id="calendar-readonly-information"
+                    class="calendar-readonly-information"
+                    hidden
+                >
+                    <strong id="calendar-readonly-heading">Información</strong>
+                    <p id="calendar-readonly-description"></p>
+                    <a
+                        id="calendar-readonly-link"
+                        href="#"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >Abrir sitio oficial</a>
+                </div>
 
                 <div id="calendar-form-error" class="calendar-form-error"></div>
 

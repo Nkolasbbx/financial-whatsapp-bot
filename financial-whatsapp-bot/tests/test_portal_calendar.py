@@ -123,6 +123,163 @@ class PortalCalendarTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, [])
         self.assertEqual(query_mock.call_args.args[0], "session-user")
 
+    async def test_formalized_user_sees_personal_and_tax_events(self):
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(redis=object()),
+            )
+        )
+        personal_event = {
+            "id": "event-1",
+            "description": "Renovar contrato",
+            "event_at": "2027-04-20T15:00:00+00:00",
+            "reminder_at": "2027-04-19T15:00:00+00:00",
+            "status": "active",
+        }
+
+        with (
+            patch.object(
+                portal_calendar,
+                "_authenticated_user",
+                new=AsyncMock(return_value={
+                    "id": "session-user",
+                    "inicio_sii": "si",
+                    "comuna": "Recoleta",
+                }),
+            ),
+            patch.object(
+                portal_calendar,
+                "get_calendar_events_between",
+                return_value=[personal_event],
+            ),
+            patch.object(
+                portal_calendar,
+                "run_in_threadpool",
+                new=_run_immediately,
+            ),
+        ):
+            result = await portal_calendar.list_events(
+                request,
+                start=datetime(2027, 4, 1, 3, tzinfo=timezone.utc),
+                end=datetime(2027, 5, 1, 3, tzinfo=timezone.utc),
+                financial_session="session-id",
+            )
+
+        self.assertTrue(any(event.source == "personal" for event in result))
+        tax_events = [event for event in result if event.source == "tributaria"]
+        self.assertTrue(tax_events)
+        self.assertTrue(any("F22" in event.description for event in tax_events))
+        self.assertTrue(all(not event.editable for event in tax_events))
+        self.assertTrue(all(event.all_day for event in tax_events))
+
+    async def test_non_formalized_user_does_not_see_tax_events(self):
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(redis=object()),
+            )
+        )
+
+        with (
+            patch.object(
+                portal_calendar,
+                "_authenticated_user",
+                new=AsyncMock(return_value={
+                    "id": "session-user",
+                    "inicio_sii": "no",
+                    "comuna": "Recoleta",
+                }),
+            ),
+            patch.object(
+                portal_calendar,
+                "get_calendar_events_between",
+                return_value=[],
+            ),
+            patch.object(
+                portal_calendar,
+                "list_active_funds_between",
+                return_value=[],
+            ),
+            patch.object(
+                portal_calendar,
+                "run_in_threadpool",
+                new=_run_immediately,
+            ),
+        ):
+            result = await portal_calendar.list_events(
+                request,
+                start=datetime(2027, 4, 1, tzinfo=timezone.utc),
+                end=datetime(2027, 5, 1, tzinfo=timezone.utc),
+                financial_session="session-id",
+            )
+
+        self.assertEqual(result, [])
+
+    async def test_non_formalized_user_sees_relevant_fund_deadlines(self):
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(redis=object()),
+            )
+        )
+        funds = [
+            {
+                "id": "fund-semilla",
+                "nombre": "Capital Semilla Emprende",
+                "emoji": "🌱",
+                "entidad": "SERCOTEC",
+                "link": "https://example.com/semilla",
+                "monto_max": 3500000,
+                "fecha_cierre": "2027-04-30",
+                "activo": True,
+                "requisitos": [{"clave": "sin_inicio_sii"}],
+            },
+            {
+                "id": "fund-crece",
+                "nombre": "Crece",
+                "fecha_cierre": "2027-04-25",
+                "activo": True,
+                "requisitos": [{"clave": "inicio_sii"}],
+            },
+        ]
+
+        with (
+            patch.object(
+                portal_calendar,
+                "_authenticated_user",
+                new=AsyncMock(return_value={
+                    "id": "session-user",
+                    "inicio_sii": "no",
+                    "comuna": "Recoleta",
+                }),
+            ),
+            patch.object(
+                portal_calendar,
+                "get_calendar_events_between",
+                return_value=[],
+            ),
+            patch.object(
+                portal_calendar,
+                "list_active_funds_between",
+                return_value=funds,
+            ),
+            patch.object(
+                portal_calendar,
+                "run_in_threadpool",
+                new=_run_immediately,
+            ),
+        ):
+            result = await portal_calendar.list_events(
+                request,
+                start=datetime(2027, 4, 1, 3, tzinfo=timezone.utc),
+                end=datetime(2027, 5, 1, 3, tzinfo=timezone.utc),
+                financial_session="session-id",
+            )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].source, "fondo")
+        self.assertIn("Capital Semilla", result[0].description)
+        self.assertFalse(result[0].editable)
+        self.assertTrue(result[0].all_day)
+
 
 if __name__ == "__main__":
     unittest.main()
