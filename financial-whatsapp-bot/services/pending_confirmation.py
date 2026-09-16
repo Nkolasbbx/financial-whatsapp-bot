@@ -41,9 +41,18 @@ async def clear_pending_confirmation(redis, phone: str) -> None:
     await redis.delete(_PREFIX + phone)
 
 
+_TRAILING_PUNCTUATION = " .,!?¡¿;:\"'"
+
+
+def _normalize(message: str) -> str:
+    # Una transcripción de audio real ("Sí." en vez de "sí") suele traer
+    # puntuación/mayúsculas de más que un mensaje escrito no tendría.
+    return (message or "").strip().lower().strip(_TRAILING_PUNCTUATION)
+
+
 def is_affirmative(message: str) -> bool:
-    return (message or "").strip().lower() in _AFFIRMATIVE
+    return _normalize(message) in _AFFIRMATIVE
 
 
 def is_negative(message: str) -> bool:
-    return (message or "").strip().lower() in _NEGATIVE
+    return _normalize(message) in _NEGATIVE

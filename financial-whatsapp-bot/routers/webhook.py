@@ -55,6 +55,20 @@ async def _remember_message(redis, message_id: str) -> bool:
     return bool(was_set)
 
 
+_TRAILING_PUNCTUATION = " .,!?¡¿;:\"'"
+
+
+def _normalize_audio_command(text: str) -> str:
+    """Normaliza texto transcrito para comparar contra comandos exactos.
+
+    Whisper suele agregar puntuación/mayúsculas de más al transcribir
+    habla real (ej. "Reiniciar." en vez de "reiniciar") — a diferencia de
+    un mensaje escrito, donde el usuario ya lo tipea limpio. Sin esto, un
+    "reiniciar" dicho en voz alta rara vez calza exacto con RESET_COMMANDS.
+    """
+    return text.strip().lower().strip(_TRAILING_PUNCTUATION)
+
+
 def _extract_message_text(incoming: dict) -> str | None:
     message_type = incoming.get("type")
     if message_type == "text":
@@ -311,7 +325,7 @@ async def whatsapp_webhook(request: Request):
                     # services/message_router.py). Por audio, en cambio, se
                     # confirma primero: se le muestra lo entendido y se espera
                     # un sí/no antes de tocar sus datos.
-                    if is_audio_message and message.strip().lower() in RESET_COMMANDS:
+                    if is_audio_message and _normalize_audio_command(message) in RESET_COMMANDS:
                         try:
                             await set_pending_confirmation(redis, phone, "reiniciar")
                             await send_text(
