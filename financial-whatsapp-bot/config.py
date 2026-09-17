@@ -36,6 +36,12 @@ RES_KEY=os.getenv("RES_KEY")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+# Registro conversacional de ingresos y gastos (HdU13). No requiere un
+# proveedor distinto: la extracción reutiliza OLLAMA_URL/MODEL/IA_API_KEY.
+FINANCIAL_MOVEMENTS_ENABLED = (
+    os.getenv("FINANCIAL_MOVEMENTS_ENABLED", "true").strip().lower() == "true"
+)
+
 
 HF_TOKEN= os.getenv("HF_TOKEN")
 MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "intfloat/multilingual-e5-base")

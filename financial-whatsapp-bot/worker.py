@@ -8,6 +8,7 @@ from phone_lock import release_phone_lock
 from redis_settings import get_redis_settings
 from services.alertas_tributarias import send_tax_alerts
 from services.calendar_reminders import send_due_calendar_reminders
+from services.financial_movements import process_financial_movement_and_send
 from services.reminders import send_due_reminders
 
 logger = logging.getLogger("financial.worker")
@@ -58,6 +59,24 @@ async def process_ai_task(
             await release_phone_lock(ctx["redis"], phone, lock_token)
 
 
+async def process_financial_movement_task(
+    ctx,
+    phone: str,
+    message: str,
+    lock_token: str | None = None,
+):
+    """Interpreta un movimiento sin bloquear el webhook de WhatsApp."""
+    logger.info("Procesando movimiento financiero para %s", phone)
+    try:
+        await process_financial_movement_and_send(phone, message)
+    except Exception:
+        logger.exception("Fallo procesando movimiento financiero para %s", phone)
+        raise
+    finally:
+        if lock_token is not None:
+            await release_phone_lock(ctx["redis"], phone, lock_token)
+
+
 async def run_reminders_job(ctx):
     """Cron de arq: dispara recordatorios y alertas tributarias/de fondos.
 
@@ -84,7 +103,7 @@ async def run_reminders_job(ctx):
 
 
 class WorkerSettings:
-    functions = [process_ai_task]
+    functions = [process_ai_task, process_financial_movement_task]
     cron_jobs = [
         cron(run_reminders_job, hour=set(range(24)), minute=0, run_at_startup=False),
     ]

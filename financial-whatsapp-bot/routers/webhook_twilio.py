@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request, Response, BackgroundTasks
 from twilio.twiml.messaging_response import MessagingResponse
 from services.message_router import route_message, split_message
 from core.ia import process_ai_and_send_Twillio
+from services.financial_movements import process_financial_movement_and_send_twilio
 from db.rate_limits import (
     RATE_LIMIT_WARNING,
     check_message_rate_limit,
@@ -61,6 +62,16 @@ async def whatsapp_webhook_twilio(request: Request, background_tasks: Background
                 lambda p, d: save_user(p, d),
                 dependencies.twilio_client,
                 dependencies.ollama_available,
+            )
+
+        elif response_text == "__FINANCIAL_PARSE__":
+            twiml.message("🧾 Estoy revisando el movimiento...")
+            background_tasks.add_task(
+                process_financial_movement_and_send_twilio,
+                phone,
+                phone_clean,
+                message,
+                dependencies.twilio_client,
             )
         
         # ── CASO 2: NUEVO - Con contexto del hito ──

@@ -38,6 +38,7 @@ MENU_OPTIONS_NO_FORMALIZADO = [
     ("menu_roadmap", "📋 Mi ruta de formalización"),
     ("menu_listo", "✅ Marcar paso listo"),
     ("menu_fondo", "🎯 Postular a fondos"),
+    ("menu_finances", "💰 Ingresos y gastos"),
     ("menu_calendar", "📅 Mi calendario"),
     ("menu_recordatorios_on", "🔔 Activar recordatorios"),
     ("menu_recordatorios_off", "🔕 Pausar recordatorios"),
@@ -48,6 +49,7 @@ MENU_OPTIONS_NO_FORMALIZADO = [
 MENU_OPTIONS_FORMALIZADO = [
     ("menu_roadmap", "📈 Mi plan de crecimiento"),
     ("menu_fondo", "🎯 Postular a fondos"),
+    ("menu_finances", "💰 Ingresos y gastos"),
     ("menu_calendar", "📅 Mi calendario"),
     ("menu_recordatorios_on", "🔔 Alertas SII (F29)"),
     ("menu_panel_web", "📊 Ver mi panel web"),

@@ -5,6 +5,42 @@ import worker
 
 
 class ReminderCronJobTests(unittest.IsolatedAsyncioTestCase):
+    @patch.object(worker, "release_phone_lock", new_callable=AsyncMock)
+    @patch.object(
+        worker,
+        "process_financial_movement_and_send",
+        new_callable=AsyncMock,
+    )
+    async def test_financial_job_processes_and_releases_phone_lock(
+        self,
+        process_mock,
+        release_mock,
+    ):
+        redis = object()
+
+        await worker.process_financial_movement_task(
+            {"redis": redis},
+            "+56911111111",
+            "vendí 40.000 en empanadas",
+            lock_token="lock-1",
+        )
+
+        process_mock.assert_awaited_once_with(
+            "+56911111111",
+            "vendí 40.000 en empanadas",
+        )
+        release_mock.assert_awaited_once_with(
+            redis,
+            "+56911111111",
+            "lock-1",
+        )
+
+    def test_financial_job_is_registered(self):
+        self.assertIn(
+            worker.process_financial_movement_task,
+            worker.WorkerSettings.functions,
+        )
+
     @patch.object(worker, "send_due_calendar_reminders", new_callable=AsyncMock)
     @patch.object(worker, "send_due_reminders", new_callable=AsyncMock)
     @patch.object(worker, "send_tax_alerts", new_callable=AsyncMock)

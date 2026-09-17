@@ -36,7 +36,11 @@ def _allow_request() -> dict:
 def is_rate_limit_exempt(message: str) -> bool:
     """Indica si el mensaje debe poder procesarse aun durante un bloqueo."""
     normalized = (message or "").strip().lower().rstrip(".")
-    return normalized in RATE_LIMIT_EXEMPT_COMMANDS
+    return (
+        normalized in RATE_LIMIT_EXEMPT_COMMANDS
+        or normalized == "menu_finances"
+        or normalized.startswith("finance_")
+    )
 
 
 def check_message_rate_limit(phone: str) -> dict:

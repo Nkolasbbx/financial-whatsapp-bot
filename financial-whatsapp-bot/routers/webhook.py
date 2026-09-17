@@ -387,6 +387,19 @@ async def whatsapp_webhook(request: Request):
                             )
                             hand_off_to_worker = True
 
+                        elif result == "__FINANCIAL_PARSE__":
+                            await send_text(
+                                phone,
+                                "🧾 Estoy revisando el movimiento...",
+                            )
+                            await redis.enqueue_job(
+                                "process_financial_movement_task",
+                                phone,
+                                message,
+                                lock_token=lock_token,
+                            )
+                            hand_off_to_worker = True
+
                         elif result == "__AI_QUERY_WITH_CONTEXT__":
                             await send_text(phone, "🤔 Te ayudo con este hito...")
                             user = await asyncio.to_thread(get_user, phone)

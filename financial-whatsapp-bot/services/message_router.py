@@ -1,5 +1,6 @@
 import logging
 
+from config import FINANCIAL_MOVEMENTS_ENABLED
 from db.users import get_user, reset_user_profile, save_user
 from core.calendar_flow import (
     handle_calendar_message,
@@ -8,6 +9,12 @@ from core.calendar_flow import (
     should_handle_calendar_message,
 )
 from core.fund_flow import handle_fund_message, should_handle_fund_message
+from core.financial_flow import (
+    handle_financial_message,
+    is_financial_entry_message,
+    should_exit_financial_message,
+    should_handle_financial_message,
+)
 from core.menu import MENU_BUTTON, get_menu_widget
 from core.roadmaps import (
     get_roadmap_text,
@@ -22,6 +29,10 @@ from core.roadmaps import (
 from core.onboarding import process_onboarding
 from db.calendar import clear_calendar_session, get_calendar_session
 from db.fondos import cancel_fund_session
+from db.financial_movements import (
+    clear_financial_session,
+    get_financial_session,
+)
 from db.reminders import (
     clear_completed_roadmap_schedule_by_phone,
     disable_reminders,
@@ -107,6 +118,15 @@ def _clear_calendar_session_safely(user_id: str | None) -> None:
         logger.error("No se pudo limpiar la sesión del calendario: %s", error)
 
 
+def _clear_financial_session_safely(user_id: str | None) -> None:
+    if not user_id:
+        return
+    try:
+        clear_financial_session(user_id)
+    except Exception as error:
+        logger.error("No se pudo limpiar la sesión financiera: %s", error)
+
+
 def route_message(
     phone: str,
     message: str,
@@ -131,6 +151,7 @@ def route_message(
     # ── Reset command ──
     if msg_lower in RESET_COMMANDS:
         _clear_calendar_session_safely(user.get("id"))
+        _clear_financial_session_safely(user.get("id"))
         new_user = reset_user_profile(phone, user)
         if not new_user:
             return (
@@ -208,6 +229,63 @@ def route_message(
             phone,
             reply_to_message_id,
         )
+
+    # ── Ingresos y gastos en lenguaje natural (HdU13) ──
+    # Se evalúa antes de calendario/fondos para que un movimiento explícito
+    # pueda cambiar de módulo. Los botones usan el namespace finance_* y una
+    # sesión solo captura las respuestas que realmente le corresponden.
+    if FINANCIAL_MOVEMENTS_ENABLED:
+        financial_session = None
+        financial_entry = is_financial_entry_message(message)
+        try:
+            if user.get("id"):
+                financial_session = get_financial_session(user["id"])
+        except Exception as error:
+            logger.error("No se pudo consultar la sesión financiera: %s", error)
+            if financial_entry:
+                return {
+                    "type": "buttons",
+                    "body": (
+                        "No pude abrir tus movimientos en este momento. "
+                        "Inténtalo nuevamente más tarde."
+                    ),
+                    "options": MENU_BUTTON,
+                }
+
+        if financial_session and should_exit_financial_message(message):
+            _clear_financial_session_safely(user.get("id"))
+            financial_session = None
+
+        if should_handle_financial_message(message, financial_session):
+            try:
+                if financial_entry:
+                    _clear_calendar_session_safely(user.get("id"))
+                    try:
+                        cancel_fund_session(user["id"])
+                    except Exception as error:
+                        logger.error(
+                            "No se pudo cerrar la sesión de fondos al abrir "
+                            "movimientos: %s",
+                            error,
+                        )
+                return handle_financial_message(
+                    user,
+                    message,
+                    financial_session,
+                )
+            except Exception as error:
+                logger.exception(
+                    "No se pudo procesar el flujo financiero: %s",
+                    error,
+                )
+                return {
+                    "type": "buttons",
+                    "body": (
+                        "No pude procesar tus movimientos en este momento. "
+                        "Inténtalo nuevamente más tarde."
+                    ),
+                    "options": MENU_BUTTON,
+                }
 
     # ── Calendario personalizado (HdU08) ──
     # La sesión se persiste en Supabase, por lo que el flujo sobrevive a un

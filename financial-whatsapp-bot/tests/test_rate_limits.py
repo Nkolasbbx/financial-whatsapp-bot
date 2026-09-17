@@ -105,6 +105,12 @@ class RateLimitTests(unittest.TestCase):
         self.assertTrue(is_rate_limit_exempt("menu_recordatorios_off"))
         self.assertFalse(is_rate_limit_exempt("mi roadmap"))
 
+    def test_financial_action_buttons_are_exempt(self):
+        self.assertTrue(is_rate_limit_exempt("finance_confirm"))
+        self.assertTrue(is_rate_limit_exempt("finance_delete_confirm"))
+        self.assertTrue(is_rate_limit_exempt("menu_finances"))
+        self.assertFalse(is_rate_limit_exempt("vendí 40.000 en empanadas"))
+
 
 if __name__ == "__main__":
     unittest.main()
