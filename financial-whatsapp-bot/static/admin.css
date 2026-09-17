@@ -1,0 +1,291 @@
+/* FinancIAl — estilos del panel municipal (/admin)
+   Mismos tokens que portal_calendar.css: azul #2563eb, tarjetas blancas
+   redondeadas con sombra suave, tipografía del sistema. */
+
+body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #f4f6f8;
+    margin: 0;
+    color: #1a1a1a;
+}
+
+.admin-container {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 24px 16px 60px;
+}
+
+.admin-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    background: linear-gradient(120deg, #4338ca 0%, #2563eb 100%);
+    color: #fff;
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin-bottom: 16px;
+}
+
+.admin-header .admin-eyebrow {
+    font-size: 13px;
+    opacity: 0.85;
+}
+
+.admin-header h1 {
+    margin: 2px 0 0;
+    font-size: 22px;
+}
+
+.admin-account {
+    text-align: right;
+    font-size: 13px;
+    opacity: 0.9;
+}
+
+.admin-account a {
+    color: #fff;
+}
+
+.admin-card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.admin-card h2 {
+    font-size: 16px;
+    margin: 0 0 14px;
+}
+
+.admin-card .subtitulo {
+    color: #667085;
+    font-size: 14px;
+    margin: -8px 0 14px;
+}
+
+/* Resumen */
+.admin-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 14px;
+}
+
+.admin-stat {
+    background: #f8f9fb;
+    border-radius: 10px;
+    padding: 16px;
+    text-align: center;
+}
+
+.admin-stat-number {
+    font-size: 28px;
+    font-weight: 700;
+    color: #2563eb;
+}
+
+.admin-stat-number.success {
+    color: #16a34a;
+}
+
+.admin-stat-number.warning {
+    color: #b8802a;
+}
+
+.admin-stat-label {
+    font-size: 13px;
+    color: #667085;
+    margin-top: 4px;
+}
+
+/* Distribución por rubro */
+.admin-rubro-row {
+    display: grid;
+    grid-template-columns: 130px 1fr 36px;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 0;
+    font-size: 14px;
+}
+
+.admin-rubro-bar-track {
+    height: 8px;
+    background: #e4e7ec;
+    border-radius: 999px;
+}
+
+.admin-rubro-bar-fill {
+    height: 100%;
+    background: #2563eb;
+    border-radius: 999px;
+}
+
+.admin-rubro-row .cuenta {
+    text-align: right;
+    color: #667085;
+}
+
+/* En qué hito están */
+.admin-milestone-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-top: 1px solid #eef0f2;
+    font-size: 14px;
+}
+
+.admin-milestone-row:first-of-type {
+    border-top: none;
+}
+
+.admin-milestone-count {
+    background: #eef2ff;
+    color: #3730a3;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+/* Tabla de emprendedores */
+.admin-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.admin-table thead th {
+    text-align: left;
+    font-weight: 600;
+    color: #667085;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eef0f2;
+}
+
+.admin-table tbody td {
+    padding: 11px 8px 11px 0;
+    border-top: 1px solid #eef0f2;
+}
+
+.admin-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.admin-badge.completo {
+    background: #ecfdf3;
+    color: #027a48;
+}
+
+.admin-badge.progreso {
+    background: #eef2ff;
+    color: #3730a3;
+}
+
+/* Insights */
+.admin-insights-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+}
+
+.admin-insights-columns h3 {
+    font-size: 13px;
+    color: #667085;
+    margin: 0 0 8px;
+}
+
+.admin-insights-columns ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.admin-insights-columns li {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-top: 1px solid #eef0f2;
+    font-size: 14px;
+}
+
+.admin-insights-columns li:first-child {
+    border-top: none;
+}
+
+/* Login */
+.admin-login-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.admin-login-form input {
+    padding: 12px 14px;
+    border: 1px solid #d0d5dd;
+    border-radius: 9px;
+    font-size: 15px;
+    font-family: inherit;
+}
+
+.admin-login-form button {
+    background: linear-gradient(120deg, #4338ca, #2563eb);
+    color: #fff;
+    border: 0;
+    padding: 12px;
+    border-radius: 9px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.admin-error {
+    color: #b42318;
+    font-size: 14px;
+    margin: -4px 0 0;
+}
+
+.admin-logout {
+    text-align: center;
+    margin-top: 8px;
+}
+
+.admin-logout a {
+    color: #667085;
+    font-size: 13px;
+    text-decoration: none;
+}
+
+@media (max-width: 640px) {
+    .admin-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .admin-account {
+        text-align: left;
+    }
+
+    .admin-insights-columns {
+        grid-template-columns: 1fr;
+    }
+
+    .admin-rubro-row {
+        grid-template-columns: 96px 1fr 30px;
+        font-size: 13px;
+    }
+
+    .admin-table {
+        display: block;
+        overflow-x: auto;
+    }
+}
