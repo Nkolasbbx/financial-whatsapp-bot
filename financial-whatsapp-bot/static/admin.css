@@ -46,6 +46,8 @@ body {
 
 .admin-account a {
     color: #fff;
+    margin-left: 14px;
+    text-decoration: none;
 }
 
 .admin-card {
@@ -191,6 +193,22 @@ body {
     color: #3730a3;
 }
 
+.admin-badge.eliminado {
+    background: #f2f4f7;
+    color: #667085;
+}
+
+.admin-delete-button {
+    background: #fff;
+    color: #b42318;
+    border: 1px solid #fda29b;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
 /* Insights */
 .admin-insights-columns {
     display: grid;
@@ -252,6 +270,66 @@ body {
     color: #b42318;
     font-size: 14px;
     margin: -4px 0 0;
+}
+
+/* Ingesta de documentos (HdU15) */
+.admin-upload-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.admin-upload-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #344054;
+}
+
+.admin-upload-form input[type="file"],
+.admin-upload-form input[type="date"] {
+    padding: 10px 12px;
+    border: 1px solid #d0d5dd;
+    border-radius: 9px;
+    font-size: 14px;
+    font-family: inherit;
+    font-weight: 400;
+}
+
+.admin-upload-form fieldset {
+    border: 1px solid #d0d5dd;
+    border-radius: 9px;
+    padding: 10px 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+}
+
+.admin-upload-form legend {
+    font-size: 13px;
+    color: #667085;
+    padding: 0 4px;
+}
+
+.admin-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    font-weight: 400;
+}
+
+.admin-upload-form button {
+    background: linear-gradient(120deg, #4338ca, #2563eb);
+    color: #fff;
+    border: 0;
+    padding: 12px;
+    border-radius: 9px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
 }
 
 .admin-logout {
