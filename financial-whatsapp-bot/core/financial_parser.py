@@ -282,16 +282,31 @@ def extract_with_rules(
     detected_type = detect_movement_type(message)
     movement_type = existing.get("movement_type") or detected_type
     amount = existing.get("amount") or parse_chilean_amount(message)
-    description = existing.get("description") or _extract_description(
-        message,
-        movement_type,
-    )
+    previous_description = existing.get("description")
+    extracted_description = _extract_description(message, movement_type)
+    description = previous_description or extracted_description
     occurred_on = existing.get("occurred_on") or _extract_occurred_on(message, now)
-    category = existing.get("category") or classify_category(
-        message,
-        movement_type,
-        description,
+    previous_category = existing.get("category")
+    generic_category = (
+        "otros_ingresos" if movement_type == "income" else "otros_gastos"
     )
+
+    # Una categoría solo es confiable cuando existe un concepto. Además, si el
+    # primer mensaje quedó en una categoría genérica y el usuario ahora aporta
+    # el concepto faltante, se vuelve a clasificar usando ese nuevo dato.
+    if description is None:
+        category = None
+    elif (
+        previous_category
+        and not (
+            previous_category == generic_category
+            and previous_description is None
+            and extracted_description is not None
+        )
+    ):
+        category = previous_category
+    else:
+        category = classify_category(message, movement_type, description)
 
     previous_text = (existing.get("original_text") or "").strip()
     current_text = (message or "").strip()
@@ -444,13 +459,18 @@ def extract_financial_movement(
     except (TypeError, ValueError):
         llm_amount = None
 
-    category = rule_result.category or _normalize_llm_category(
-        llm_data.get("category"),
-        movement_type,
-    )
+    # El modelo no puede inventar el concepto faltante. La descripción solo se
+    # acepta cuando las palabras que la sustentan estaban realmente presentes
+    # en el mensaje del usuario. Sin concepto tampoco se confirma categoría.
     description = rule_result.description
-    if not description and llm_data.get("description"):
-        description = str(llm_data["description"]).strip()[:500] or None
+    category = rule_result.category
+    if description and category is None:
+        category = classify_category(message, movement_type, description)
+        if category is None:
+            category = _normalize_llm_category(
+                llm_data.get("category"),
+                movement_type,
+            )
 
     occurred_on = rule_result.occurred_on
     llm_date = llm_data.get("occurred_on")
