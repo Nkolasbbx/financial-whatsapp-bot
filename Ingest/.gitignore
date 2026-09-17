@@ -1,1 +1,3 @@
 .env
+.venv-linux/
+docs/extracted_media
