@@ -49,6 +49,29 @@ YA_LO_REALICE_TRIGGERS = [
     "ya lo realice",
 ]
 
+# Comandos que reinician el perfil del usuario — se reutiliza este set en
+# routers/webhook.py para pedir confirmación cuando el comando llega
+# transcrito desde un audio (HdU11, AC3).
+RESET_COMMANDS = {"reiniciar", "reset", "empezar de nuevo", "menu_reiniciar"}
+
+# Frases de navegación al menú del bot. A propósito son frases completas y
+# no la palabra suelta "menú": muchos usuarios son emprendedores de comida
+# y "menú" en su mensaje suele referirse al menú de SU negocio (ej. "¿qué
+# necesito para mi menú de comida?"), no al menú del bot — esa pregunta
+# tiene que seguir cayendo a la IA, no interceptarse acá.
+MENU_PHRASES = (
+    "menu principal", "menú principal",
+    "ver el menu", "ver el menú", "ver menu", "ver menú",
+    "volver al menu", "volver al menú",
+    "mostrar el menu", "mostrar el menú", "mostrar menu", "mostrar menú",
+    "quiero el menu", "quiero el menú",
+    "quiero ver el menu", "quiero ver el menú",
+)
+
+
+def _mentions_menu(msg_lower: str) -> bool:
+    return any(phrase in msg_lower for phrase in MENU_PHRASES)
+
 
 def _record_reply_safely(phone: str, reply_to_message_id: str | None) -> bool:
     try:
@@ -106,7 +129,7 @@ def route_message(
             return response
 
     # ── Reset command ──
-    if msg_lower in ["reiniciar", "reset", "empezar de nuevo", "menu_reiniciar"]:
+    if msg_lower in RESET_COMMANDS:
         _clear_calendar_session_safely(user.get("id"))
         new_user = reset_user_profile(phone, user)
         if not new_user:
@@ -291,7 +314,7 @@ def route_message(
         "ayuda", "help", "menu", "menú", "opciones",
         "menu_financial", MENU_FINANCIAL_ID
     ]
-    if any(trigger == msg_lower for trigger in menu_triggers):
+    if any(trigger == msg_lower for trigger in menu_triggers) or _mentions_menu(msg_lower):
         return get_menu_widget(user)
     
     # ── Manejo de insatisfacción ──

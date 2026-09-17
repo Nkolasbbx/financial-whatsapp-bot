@@ -22,6 +22,37 @@ logger = logging.getLogger("financial")
 
 TRANSCRIPTION_MODEL = "openai/whisper-large-v3-turbo"
 
+# Whisper a veces "alucina" texto de relleno cuando el audio es puro ruido o
+# silencio, en vez de devolver una transcripción vacía — frases típicas de
+# este comportamiento conocido del modelo.
+_HALLUCINATION_PATTERNS = (
+    "subtítulos realizados por la comunidad de amara.org",
+    "subtitulado por la comunidad de amara.org",
+    "gracias por ver el video",
+    "suscríbete al canal",
+    "suscribete al canal",
+    "www.mooji.org",
+)
+
+
+def is_ambiguous_transcription(text: str) -> bool:
+    """Detecta una transcripción de baja confianza (HdU11, AC4).
+
+    No hay forma de medir la confianza real de Whisper con este endpoint,
+    así que se usa una heurística simple basada solo en longitud: texto
+    demasiado corto para tener sentido (una muletilla tipo "eh", "a"), o
+    alguna de las frases de relleno que el modelo suele devolver ante
+    ruido/silencio en vez de una transcripción vacía.
+
+    A propósito NO se usa la cantidad de palabras: un comando real de una
+    sola palabra ("reiniciar", "fondos", "roadmap") es perfectamente válido
+    y no debe marcarse como ambiguo solo por ser corto.
+    """
+    normalized = (text or "").strip().lower()
+    if len(normalized) < 4:
+        return True
+    return any(pattern in normalized for pattern in _HALLUCINATION_PATTERNS)
+
 
 def _transcription_endpoint() -> str:
     return f"{OLLAMA_URL.rstrip('/')}/audio/transcriptions"

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 
@@ -56,6 +56,34 @@ def list_active_funds() -> list[dict]:
         .table("fondos")
         .select("*")
         .eq("activo", True)
+        .order("fecha_cierre", desc=False)
+        .execute()
+    )
+    return result.data or []
+
+
+def list_active_funds_between(
+    start_date: date,
+    end_date: date,
+) -> list[dict]:
+    """Retorna fondos activos cuyo cierre está dentro del rango.
+
+    El rango es semiabierto: incluye ``start_date`` y excluye ``end_date``,
+    igual que el rango que FullCalendar envía al backend.
+    """
+    if end_date <= start_date:
+        raise ValueError("La fecha final debe ser posterior a la inicial")
+
+    result = (
+        _admin_client()
+        .table("fondos")
+        .select(
+            "id,nombre,emoji,entidad,link,monto_max,fecha_cierre,"
+            "activo,requisitos,slug"
+        )
+        .eq("activo", True)
+        .gte("fecha_cierre", start_date.isoformat())
+        .lt("fecha_cierre", end_date.isoformat())
         .order("fecha_cierre", desc=False)
         .execute()
     )

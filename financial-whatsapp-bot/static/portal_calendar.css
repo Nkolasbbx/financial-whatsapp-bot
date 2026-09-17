@@ -65,6 +65,40 @@
     color: #b42318;
 }
 
+.calendar-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    margin: 0 0 14px;
+    color: #475467;
+    font-size: 13px;
+}
+
+.calendar-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.calendar-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #2563eb;
+}
+
+.calendar-legend-dot.tax {
+    background: #d97706;
+}
+
+.calendar-legend-dot.fund {
+    background: #7c3aed;
+}
+
+.calendar-legend-dot.completed {
+    background: #16a34a;
+}
+
 .calendar-modal-open {
     overflow: hidden;
 }
@@ -156,6 +190,26 @@
     font-size: 13px;
 }
 
+.calendar-readonly-information {
+    margin-bottom: 16px;
+    border: 1px solid #fed7aa;
+    border-radius: 10px;
+    padding: 12px;
+    background: #fff7ed;
+    color: #7c2d12;
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.calendar-readonly-information p {
+    margin: 7px 0;
+}
+
+.calendar-readonly-information a {
+    color: #9a3412;
+    font-weight: 700;
+}
+
 .calendar-modal-actions {
     display: flex;
     flex-wrap: wrap;
@@ -192,6 +246,16 @@
 #business-calendar .calendar-event-overdue {
     border-color: #b42318;
     background: #b42318;
+}
+
+#business-calendar .calendar-event-tax {
+    border-color: #d97706;
+    background: #d97706;
+}
+
+#business-calendar .calendar-event-fund {
+    border-color: #7c3aed;
+    background: #7c3aed;
 }
 
 @media (max-width: 640px) {

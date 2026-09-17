@@ -7,11 +7,13 @@ concepto con el cliente pagador, sin construir un sistema de usuarios
 todavía.
 
 Muestra, para la comuna de la cuenta logueada: cuántos emprendedores
-activos hay, cuántos completaron la formalización, y en qué hito están
-los que siguen en curso.
+activos hay, cuántos completaron la formalización, en qué hito están
+los que siguen en curso, la distribución por rubro, y los insights del
+asistente (respuestas no útiles, temas consultados y conflictivos).
 """
 import html
 import logging
+from collections import Counter
 
 from fastapi import APIRouter, Cookie, Form, Request, Response
 
@@ -32,114 +34,33 @@ router = APIRouter(prefix="/admin")
 _SESSION_COOKIE = "financial_admin_session"
 
 
-def _pagina_base(titulo: str, contenido: str) -> str:
+def _pagina_base(titulo: str, contenido: str, cuenta: dict | None = None) -> str:
+    cuenta_html = ""
+    if cuenta:
+        cuenta_html = f"""
+        <div class="admin-account">
+            <div>{html.escape(cuenta.get("nombre", ""))}</div>
+            <a href="/admin/logout">Cerrar sesión</a>
+        </div>
+        """
+
     return f"""<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{titulo} · FinancIAl</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<style>
-    * {{ box-sizing: border-box; }}
-    body {{
-        font-family: "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
-        background: #eef2f6;
-        margin: 0;
-        color: #1a1a1a;
-    }}
-    .encabezado {{
-        background: linear-gradient(120deg, #4338ca 0%, #2563eb 100%);
-        color: white;
-        padding: 28px 16px 56px;
-        text-align: center;
-    }}
-    .encabezado .logo {{
-        font-size: 15px;
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        opacity: 0.85;
-        margin-bottom: 4px;
-    }}
-    .encabezado h2 {{ margin: 0; font-size: 24px; font-weight: 800; }}
-    .contenedor {{
-        max-width: 720px;
-        margin: -36px auto 0;
-        padding: 0 16px 60px;
-    }}
-    .tarjeta {{
-        background: white;
-        border-radius: 16px;
-        padding: 22px;
-        margin-bottom: 18px;
-        box-shadow: 0 4px 16px rgba(16, 24, 40, 0.08);
-    }}
-    h1 {{ font-size: 18px; margin: 0 0 14px; font-weight: 700; }}
-    .subtitulo {{ color: #667085; font-size: 14px; }}
-    .stats {{
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-        gap: 14px;
-    }}
-    .stat {{
-        background: #f8f9fb;
-        border-radius: 12px;
-        padding: 16px;
-        text-align: center;
-    }}
-    .stat-numero {{ font-size: 30px; font-weight: 800; color: #2563eb; }}
-    .stat-label {{ font-size: 13px; color: #667085; margin-top: 4px; }}
-    .hito-fila {{
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 12px;
-        padding: 10px 0;
-        border-top: 1px solid #eef0f2;
-        font-size: 14px;
-    }}
-    .hito-fila:first-of-type {{ border-top: none; }}
-    .hito-fila .cuenta {{
-        background: #eef2ff;
-        color: #4338ca;
-        font-weight: 700;
-        padding: 2px 10px;
-        border-radius: 999px;
-        font-size: 13px;
-        white-space: nowrap;
-    }}
-    form.login {{ display: flex; flex-direction: column; gap: 12px; }}
-    form.login input {{
-        padding: 12px 14px;
-        border: 1px solid #d0d5dd;
-        border-radius: 10px;
-        font-size: 15px;
-        font-family: inherit;
-    }}
-    form.login button {{
-        background: linear-gradient(120deg, #4338ca, #2563eb);
-        color: white;
-        border: none;
-        padding: 12px;
-        border-radius: 10px;
-        font-size: 15px;
-        font-weight: 700;
-        cursor: pointer;
-    }}
-    .error {{ color: #b42318; font-size: 14px; margin: -4px 0 0; }}
-    .cerrar-sesion {{ text-align: center; margin-top: 8px; }}
-    .cerrar-sesion a {{ color: #667085; font-size: 13px; text-decoration: none; }}
-</style>
+<title>{html.escape(titulo)} · FinancIAl</title>
+<link rel="stylesheet" href="/static/admin.css">
 </head>
 <body>
-<div class="encabezado">
-    <div class="logo">FinancIAl · Panel municipal</div>
-    <h2>{titulo}</h2>
-</div>
-<div class="contenedor">
+<div class="admin-container">
+    <div class="admin-header">
+        <div>
+            <div class="admin-eyebrow">FinancIAl · Panel municipal</div>
+            <h1>{html.escape(titulo)}</h1>
+        </div>
+        {cuenta_html}
+    </div>
 {contenido}
 </div>
 </body>
@@ -147,11 +68,11 @@ def _pagina_base(titulo: str, contenido: str) -> str:
 
 
 def _pagina_login(error: str | None = None) -> str:
-    aviso = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    aviso = f'<p class="admin-error">{html.escape(error)}</p>' if error else ""
     contenido = f"""
-    <div class="tarjeta">
-        <h1>Iniciar sesión</h1>
-        <form class="login" method="post" action="/admin/login">
+    <div class="admin-card">
+        <h2>Iniciar sesión</h2>
+        <form class="admin-login-form" method="post" action="/admin/login">
             <input type="text" name="username" placeholder="Usuario" required autofocus>
             <input type="password" name="password" placeholder="Contraseña" required>
             {aviso}
@@ -226,6 +147,21 @@ async def dashboard(
     completados = sum(1 for u in usuarios if u.get("roadmap_completed_at"))
     en_progreso = total - completados
 
+    # --- Distribución por rubro (CA2) ---
+    conteo_rubros = Counter(u.get("rubro") or "No definido" for u in usuarios)
+    rubros_ordenados = conteo_rubros.most_common()
+    max_rubro = rubros_ordenados[0][1] if rubros_ordenados else 1
+
+    filas_rubros = "\n".join(
+        f'''<div class="admin-rubro-row">
+            <span>{html.escape(nombre)}</span>
+            <div class="admin-rubro-bar-track"><div class="admin-rubro-bar-fill" style="width:{max(6, round(cuenta / max_rubro * 100))}%"></div></div>
+            <span class="cuenta">{cuenta}</span>
+        </div>'''
+        for nombre, cuenta in rubros_ordenados
+    ) or '<p class="subtitulo">No hay emprendedores registrados todavía.</p>'
+
+    # --- En qué hito están (en progreso) ---
     conteo_hitos: dict[str, int] = {}
     for u in usuarios:
         if u.get("roadmap_completed_at"):
@@ -235,90 +171,99 @@ async def dashboard(
         conteo_hitos[titulo] = conteo_hitos.get(titulo, 0) + 1
 
     filas_hitos = "\n".join(
-        f'<div class="hito-fila"><span>{html.escape(titulo)}</span>'
-        f'<span class="cuenta">{cuenta}</span></div>'
+        f'<div class="admin-milestone-row"><span>{html.escape(titulo)}</span>'
+        f'<span class="admin-milestone-count">{cuenta}</span></div>'
         for titulo, cuenta in sorted(conteo_hitos.items(), key=lambda kv: -kv[1])
     ) or '<p class="subtitulo">No hay emprendedores en progreso todavía.</p>'
 
+    # --- Tabla de emprendedores ---
     filas_emprendedores = []
     for u in usuarios:
         hito = get_pending_milestone(u)
-        numero_hito = "✔" if u.get("roadmap_completed_at") else (str(hito["id"]) + "/" + str(len(u.get("roadmap"))) if hito else "0")
-        estado = "Formalizado" if u.get("roadmap_completed_at") else "En progreso"
-        hito_titulo = "Formalización completa" if u.get("roadmap_completed_at") else (hito["title"] if hito else "Sin roadmap asignado")
+        completo = bool(u.get("roadmap_completed_at"))
+        numero_hito = "✔" if completo else (str(hito["id"]) + "/" + str(len(u.get("roadmap"))) if hito else "0")
+        estado = "Formalizado" if completo else "En progreso"
+        estado_clase = "completo" if completo else "progreso"
+        hito_titulo = "Formalización completa" if completo else (hito["title"] if hito else "Sin roadmap asignado")
         rubro = u.get("rubro") or "No definido"
 
         filas_emprendedores.append(
-            f"""
-            <tr>
+            f"""<tr>
                 <td>{html.escape(u.get("phone", ""))}</td>
-                <td>{html.escape(estado)}</td>
+                <td><span class="admin-badge {estado_clase}">{estado}</span></td>
                 <td>{html.escape("(" + numero_hito + ") - " + hito_titulo)}</td>
                 <td>{html.escape(rubro)}</td>
-            </tr>
-            """
+            </tr>"""
         )
 
     insights = get_admin_insights(comuna)
 
     contenido = f"""
-    <div class="tarjeta">
-        <h1>Resumen — {html.escape(comuna)}</h1>
-        <div class="stats">
-            <div class="stat">
-                <div class="stat-numero">{total}</div>
-                <div class="stat-label">Emprendedores activos</div>
+    <div class="admin-card">
+        <h2>Resumen</h2>
+        <div class="admin-stats">
+            <div class="admin-stat">
+                <div class="admin-stat-number">{total}</div>
+                <div class="admin-stat-label">Emprendedores activos</div>
             </div>
-            <div class="stat">
-                <div class="stat-numero">{completados}</div>
-                <div class="stat-label">Formalización completa</div>
+            <div class="admin-stat">
+                <div class="admin-stat-number success">{completados}</div>
+                <div class="admin-stat-label">Formalización completa</div>
             </div>
-            <div class="stat">
-                <div class="stat-numero">{en_progreso}</div>
-                <div class="stat-label">En progreso</div>
+            <div class="admin-stat">
+                <div class="admin-stat-number warning">{en_progreso}</div>
+                <div class="admin-stat-label">En progreso</div>
             </div>
         </div>
     </div>
-    <div class="tarjeta">
-        <h1>En qué hito están (en progreso)</h1>
+
+    <div class="admin-card">
+        <h2>Distribución por rubro</h2>
+        <p class="subtitulo">De los {total} emprendedores activos en la comuna.</p>
+        {filas_rubros}
+    </div>
+
+    <div class="admin-card">
+        <h2>En qué hito están</h2>
+        <p class="subtitulo">Los {en_progreso} emprendedores que aún no completan la formalización.</p>
         {filas_hitos}
     </div>
-    <div class="tarjeta">
-        <h1>Emprendedores de {html.escape(comuna)}</h1>
-        <table style="width:100%; border-collapse:collapse;">
+
+    <div class="admin-card">
+        <h2>Emprendedores de {html.escape(comuna)}</h2>
+        <table class="admin-table">
             <thead>
-                <tr>
-                    <th style="text-align:left;">Teléfono</th>
-                    <th style="text-align:left;">Estado</th>
-                    <th style="text-align:left;">Hito</th>
-                    <th style="text-align:left;">Rubro</th>
-                </tr>
+                <tr><th>Teléfono</th><th>Estado</th><th>Hito</th><th>Rubro</th></tr>
             </thead>
             <tbody>
                 {''.join(filas_emprendedores) or '<tr><td colspan="4">No hay emprendedores</td></tr>'}
             </tbody>
         </table>
     </div>
-    
 
-    <div class="tarjeta">
-        <h1>Insights del asistente</h1>
+    <div class="admin-card">
+        <h2>Insights del asistente</h2>
         <p class="subtitulo">Respuestas no útiles reportadas: {insights["no_useful"]}</p>
-        <h3>Temas consultados</h3>
-        <ul>
-            {''.join(f"<li>{html.escape(k)}: {v}</li>" for k, v in insights['topics'].items()) or "<li>Sin datos</li>"}
-        </ul>
-
-        <h3>Temas más conflictivos</h3>
-        <ul>
-            {''.join(f"<li>{html.escape(k)}: {v}</li>" for k, v in insights['conflictivos'].items()) or "<li>No hay reportes</li>"}
-        </ul>
+        <div class="admin-insights-columns">
+            <div>
+                <h3>Temas consultados</h3>
+                <ul>
+                    {''.join(f'<li><span>{html.escape(k)}</span><span>{v}</span></li>' for k, v in insights['topics'].items()) or '<li>Sin datos</li>'}
+                </ul>
+            </div>
+            <div>
+                <h3>Temas más conflictivos</h3>
+                <ul>
+                    {''.join(f'<li><span>{html.escape(k)}</span><span>{v}</span></li>' for k, v in insights['conflictivos'].items()) or '<li>No hay reportes</li>'}
+                </ul>
+            </div>
+        </div>
     </div>
 
-    <div class="cerrar-sesion"><a href="/admin/logout">Cerrar sesión</a></div>
+    <div class="admin-logout"><a href="/admin/logout">Cerrar sesión</a></div>
     """
 
     return Response(
-        content=_pagina_base(account.get("nombre", comuna), contenido),
+        content=_pagina_base(account.get("nombre", comuna), contenido, account),
         media_type="text/html",
     )

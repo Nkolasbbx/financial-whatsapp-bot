@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 ReminderDays = Literal[0, 1, 3, 7]
+CalendarEventSource = Literal["personal", "tributaria", "fondo"]
 
 
 class CalendarEventCreateRequest(BaseModel):
@@ -36,3 +37,8 @@ class CalendarEventResponse(BaseModel):
     reminder_at: datetime
     reminder_days_before: ReminderDays
     status: str
+    source: CalendarEventSource = "personal"
+    editable: bool = True
+    all_day: bool = False
+    details: str | None = None
+    link: str | None = None

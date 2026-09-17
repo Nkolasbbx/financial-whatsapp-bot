@@ -33,6 +33,10 @@
         const completeButton = document.getElementById("calendar-complete-button");
         const createButton = document.getElementById("calendar-create-button");
         const closeButton = document.getElementById("calendar-modal-close");
+        const readonlyInformation = document.getElementById("calendar-readonly-information");
+        const readonlyHeading = document.getElementById("calendar-readonly-heading");
+        const readonlyDescription = document.getElementById("calendar-readonly-description");
+        const readonlyLink = document.getElementById("calendar-readonly-link");
 
         let calendar;
 
@@ -140,6 +144,7 @@
             modalTitle.textContent = "Nueva fecha importante";
             deleteButton.hidden = true;
             completeButton.hidden = true;
+            readonlyInformation.hidden = true;
             setEditable(true);
             setFormError("");
             openModal();
@@ -149,18 +154,44 @@
             const event = info.event;
             const properties = event.extendedProps;
             const isActive = properties.status === "active";
+            const isTaxEvent = properties.source === "tributaria";
+            const isFundEvent = properties.source === "fondo";
+            const isReadOnlyEvent = isTaxEvent || isFundEvent;
 
             form.reset();
             eventIdInput.value = event.id;
             descriptionInput.value = properties.description || event.title;
             eventAtInput.value = chileInputValue(properties.event_at || event.start);
             reminderInput.value = String(properties.reminder_days_before || 0);
-            modalTitle.textContent = isActive
-                ? "Editar fecha importante"
-                : "Fecha completada";
-            deleteButton.hidden = !isActive;
-            completeButton.hidden = !isActive;
-            setEditable(isActive);
+            if (isTaxEvent) {
+                modalTitle.textContent = "Fecha tributaria importante";
+            } else if (isFundEvent) {
+                modalTitle.textContent = "Cierre de fondo concursable";
+            } else {
+                modalTitle.textContent = isActive
+                    ? "Editar fecha importante"
+                    : "Fecha completada";
+            }
+            deleteButton.hidden = isReadOnlyEvent || !isActive;
+            completeButton.hidden = isReadOnlyEvent || !isActive;
+            setEditable(!isReadOnlyEvent && isActive);
+            readonlyInformation.hidden = !isReadOnlyEvent;
+            readonlyHeading.textContent = isFundEvent
+                ? "Información de la convocatoria"
+                : "Información del trámite";
+            readonlyDescription.textContent = isReadOnlyEvent
+                ? properties.details || "Consulta el sitio oficial para conocer más información."
+                : "";
+            if (isReadOnlyEvent && properties.link) {
+                readonlyLink.href = properties.link;
+                readonlyLink.textContent = isFundEvent
+                    ? "Revisar convocatoria"
+                    : "Abrir sitio oficial";
+                readonlyLink.hidden = false;
+            } else {
+                readonlyLink.removeAttribute("href");
+                readonlyLink.hidden = true;
+            }
             setFormError("");
             openModal();
         }
@@ -182,19 +213,26 @@
         }
 
         function toCalendarEvent(event) {
+            const isTaxEvent = event.source === "tributaria";
+            const isFundEvent = event.source === "fondo";
             const overdue =
                 event.status === "active" && new Date(event.event_at) < new Date();
+            let className = "calendar-event-active";
+            if (isTaxEvent) {
+                className = "calendar-event-tax";
+            } else if (isFundEvent) {
+                className = "calendar-event-fund";
+            } else if (event.status === "completed") {
+                className = "calendar-event-completed";
+            } else if (overdue) {
+                className = "calendar-event-overdue";
+            }
             return {
                 id: event.id,
                 title: event.description,
                 start: event.event_at,
-                classNames: [
-                    event.status === "completed"
-                        ? "calendar-event-completed"
-                        : overdue
-                            ? "calendar-event-overdue"
-                            : "calendar-event-active",
-                ],
+                allDay: Boolean(event.all_day),
+                classNames: [className],
                 extendedProps: event,
             };
         }
