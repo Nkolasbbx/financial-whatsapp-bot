@@ -22,6 +22,7 @@ from redis_settings import get_redis_settings
 from config import (
     EMBEDDING_MODEL_NAME,
     IA_API_KEY,
+    INGESTION_STORAGE_BUCKET,
     META_GRAPH_API_VERSION,
     META_PHONE_NUMBER_ID,
     META_WHATSAPP_TOKEN,
@@ -184,6 +185,21 @@ async def init_dependencies() -> None:
                 "No se pudo inicializar Supabase administrativo: %s",
                 error,
             )
+
+        if supabase_admin is not None:
+            try:
+                supabase_admin.storage.create_bucket(
+                    INGESTION_STORAGE_BUCKET, options={"public": False}
+                )
+                logger.info("Bucket de Storage '%s' creado", INGESTION_STORAGE_BUCKET)
+            except Exception:
+                # Ya existe (caso normal tras el primer deploy) u otro error
+                # no crítico: la ingesta de documentos falla más adelante si
+                # el bucket realmente no está disponible.
+                logger.debug(
+                    "Bucket de Storage '%s' no se creó (probablemente ya existe)",
+                    INGESTION_STORAGE_BUCKET,
+                )
     else:
         logger.warning(
             "SUPABASE_SERVICE_ROLE_KEY no configurada; "

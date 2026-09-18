@@ -72,9 +72,9 @@ class ReminderCronJobTests(unittest.IsolatedAsyncioTestCase):
         calendar_mock.assert_awaited_once_with()
 
     def test_cron_job_is_registered_hourly(self):
-        [job] = worker.WorkerSettings.cron_jobs
+        jobs_by_coroutine = {job.coroutine: job for job in worker.WorkerSettings.cron_jobs}
+        job = jobs_by_coroutine[worker.run_reminders_job]
 
-        self.assertEqual(job.coroutine, worker.run_reminders_job)
         self.assertEqual(job.minute, 0)
         self.assertEqual(job.hour, set(range(24)))
         self.assertFalse(job.run_at_startup)

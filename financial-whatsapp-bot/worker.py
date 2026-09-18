@@ -1,14 +1,21 @@
+import asyncio
 import logging
+import os
 
 from arq import cron
 
 import dependencies
+from config import INGESTION_JOB_TIMEOUT_SECONDS
 from core.ia import process_ai_and_send
+from core.ingestion import embed_batch_remoto, extract_pdf_to_markdown, process_document_to_rows
+from db.documents import get_stale_ingestion_jobs, update_ingestion_job, upsert_document
 from phone_lock import release_phone_lock
 from redis_settings import get_redis_settings
 from services.alertas_tributarias import send_tax_alerts
 from services.calendar_reminders import send_due_calendar_reminders
 from services.financial_movements import process_financial_movement_and_send
+
+from services.ingestion_jobs import STORAGE_BUCKET
 from services.reminders import send_due_reminders
 
 logger = logging.getLogger("financial.worker")
@@ -102,15 +109,137 @@ async def run_reminders_job(ctx):
     logger.info("Cron de recordatorios ejecutado: %s", results)
 
 
+async def process_document_ingestion_task(
+    ctx,
+    job_id: str,
+    storage_path: str,
+    file_name: str,
+    content_type: str,
+    comuna: str,
+    rubros: list[str],
+    vigencia_desde: str | None,
+    vigencia_hasta: str | None,
+    content_hash: str,
+    uploaded_by: str,
+):
+    """Job de arq (HdU15): descarga el documento subido desde el panel admin,
+    lo convierte a filas parent-child con embeddings, y las inserta de forma
+    incremental en `documents`. Corre en background para que el endpoint de
+    subida (routers/admin.py) no bloquee esperando el procesamiento (AC1).
+
+    La extracción (PDF->markdown) y el chunking son CPU-bound y síncronos:
+    se corren en un hilo aparte (asyncio.to_thread) para no bloquear el
+    event loop del worker mientras se procesan otros jobs (ej. mensajes de
+    WhatsApp en process_ai_task).
+    """
+    from datetime import datetime, timezone
+
+    logger.info("Procesando ingesta de documento %s (job %s)", file_name, job_id)
+    update_ingestion_job(job_id, status="processing")
+
+    try:
+        raw_bytes = dependencies.supabase_admin.storage.from_(STORAGE_BUCKET).download(storage_path)
+
+        flagged_pages: list[dict] = []
+        if file_name.lower().endswith(".pdf"):
+            tmp_path = f"/tmp/ingestion_{job_id}.pdf"
+            with open(tmp_path, "wb") as f:
+                f.write(raw_bytes)
+            try:
+                text, flagged_pages = await asyncio.to_thread(extract_pdf_to_markdown, tmp_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            file_type = "pdf"
+        else:
+            text = raw_bytes.decode("utf-8")
+            file_type = "markdown"
+
+        extra_meta = {
+            "comuna": comuna,
+            "rubros": rubros,
+            "vigencia_desde": vigencia_desde,
+            "vigencia_hasta": vigencia_hasta,
+            "content_hash": content_hash,
+            "uploaded_by": uploaded_by,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "source": f"Panel admin — {uploaded_by}",
+            "source_url": "",
+            "source_date": datetime.now(timezone.utc).date().isoformat(),
+            "review_flag": bool(flagged_pages),
+        }
+
+        rows = await asyncio.to_thread(process_document_to_rows, file_name, text, file_type, extra_meta)
+
+        if rows:
+            embed_texts = [row["embed_text"] for row in rows]
+            vectors = await embed_batch_remoto(embed_texts, prefix="passage")
+            for row, vector in zip(rows, vectors):
+                row["embedding"] = vector
+
+        chunks_written = upsert_document(file_name, rows)
+
+        update_ingestion_job(
+            job_id,
+            status="done",
+            chunks_written=chunks_written,
+            review_flag=bool(flagged_pages),
+            review_details={"flagged_pages": flagged_pages} if flagged_pages else None,
+        )
+        logger.info("Ingesta completada: %s -> %d chunks (job %s)", file_name, chunks_written, job_id)
+    except Exception as exc:
+        logger.exception("Fallo la ingesta de %s (job %s)", file_name, job_id)
+        update_ingestion_job(job_id, status="failed", error_message=str(exc)[:2000])
+        raise  # re-lanzar: arq marca el job como fallido y lo reintenta (max_tries)
+    finally:
+        try:
+            dependencies.supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
+        except Exception:
+            logger.warning("No se pudo limpiar el objeto temporal de Storage: %s", storage_path)
+
+
+STALE_INGESTION_JOB_MINUTES = 60
+
+
+async def cleanup_orphaned_uploads_job(ctx):
+    """Cron de arq (HdU15, parte 2): red de seguridad para el free tier de
+    Supabase Storage (1GB total, ver docs/ingestion.md). Si el worker muere a
+    mitad de process_document_ingestion_task (kill forzado, OOM, o una
+    cancelación por timeout de arq que no pasa por el `except Exception` del
+    job), ese job queda atascado en 'queued'/'processing' para siempre y su
+    archivo temporal puede quedar huérfano en el bucket. Acá se detectan esos
+    jobs (más de STALE_INGESTION_JOB_MINUTES sin actualizarse), se reintenta
+    borrar su archivo de Storage (no-op si ya no existe) y se marcan como
+    'failed' para que dejen de verse "Procesando" para siempre en el panel.
+    """
+    stale_jobs = get_stale_ingestion_jobs(STALE_INGESTION_JOB_MINUTES)
+    for job in stale_jobs:
+        storage_path = f"{job['content_hash']}/{job['file_name']}"
+        try:
+            dependencies.supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
+        except Exception:
+            logger.warning("No se pudo limpiar el objeto huérfano de Storage: %s", storage_path)
+        update_ingestion_job(
+            job["id"],
+            status="failed",
+            error_message="Job huérfano: el worker no terminó de procesarlo (posible caída o reinicio).",
+        )
+
+    if stale_jobs:
+        logger.info("Limpieza de ingesta huérfana: %d job(s) marcados como fallidos", len(stale_jobs))
+
+
 class WorkerSettings:
-    functions = [process_ai_task, process_financial_movement_task]
+
+    functions = [process_ai_task, process_document_ingestion_task, process_financial_movement_task]
     cron_jobs = [
         cron(run_reminders_job, hour=set(range(24)), minute=0, run_at_startup=False),
+        cron(cleanup_orphaned_uploads_job, hour=set(range(24)), minute=30, run_at_startup=False),
     ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = REDIS_SETTINGS
     max_jobs = 10
-    job_timeout = 120
+    job_timeout = INGESTION_JOB_TIMEOUT_SECONDS
     max_tries = 3
     retry_jobs = True

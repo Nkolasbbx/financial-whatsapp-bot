@@ -12,13 +12,17 @@ los que siguen en curso, la distribución por rubro, y los insights del
 asistente (respuestas no útiles, temas consultados y conflictivos).
 """
 import html
+import json
 import logging
 from collections import Counter
+from datetime import datetime
 
-from fastapi import APIRouter, Cookie, Form, Request, Response
+from fastapi import APIRouter, Cookie, File, Form, Request, Response, UploadFile
 
+from core.onboarding import RUBRO_DISPLAY, RUBROS_ACTIVOS
 from core.roadmaps import get_pending_milestone
 from services.admin_insights import get_admin_insights
+from db.documents import delete_ingested_document, get_ingestion_job, list_recent_jobs
 from db.users import get_users_by_comuna
 from services.admin_auth import (
     authenticate_admin,
@@ -26,6 +30,7 @@ from services.admin_auth import (
     destroy_admin_session,
     get_admin_session_account,
 )
+from services.ingestion_jobs import enqueue_document_ingestion, validate_upload
 
 logger = logging.getLogger("financial")
 
@@ -40,6 +45,8 @@ def _pagina_base(titulo: str, contenido: str, cuenta: dict | None = None) -> str
         cuenta_html = f"""
         <div class="admin-account">
             <div>{html.escape(cuenta.get("nombre", ""))}</div>
+            <a href="/admin">Panel</a>
+            <a href="/admin/documentos">Documentos</a>
             <a href="/admin/logout">Cerrar sesión</a>
         </div>
         """
@@ -267,3 +274,231 @@ async def dashboard(
         content=_pagina_base(account.get("nombre", comuna), contenido, account),
         media_type="text/html",
     )
+
+
+# --- HdU15: ingesta automática de documentos ---
+
+_ESTADO_LABELS = {
+    "queued": ("En cola", "progreso"),
+    "processing": ("Procesando", "progreso"),
+    "done": ("Listo", "completo"),
+    "failed": ("Error", "progreso"),
+}
+
+
+def _fila_ingestion_job(job: dict) -> str:
+    label, badge_clase = _ESTADO_LABELS.get(job["status"], (job["status"], "progreso"))
+    rubros = ", ".join(RUBRO_DISPLAY.get(r, r) for r in (job.get("rubros") or [])) or "—"
+    vigencia = job.get("vigencia_hasta")
+    vigencia_txt = f"hasta {vigencia}" if vigencia else "sin vencimiento"
+    detalle = ""
+    acciones = "—"
+
+    if job.get("deleted_at"):
+        label, badge_clase = "Eliminado", "eliminado"
+        fecha = str(job["deleted_at"])[:16].replace("T", " ")
+        detalle = f'<div class="subtitulo">Eliminado por {html.escape(job.get("deleted_by") or "—")} el {html.escape(fecha)}</div>'
+    elif job["status"] == "failed" and job.get("error_message"):
+        detalle = f'<div class="subtitulo">{html.escape(job["error_message"][:200])}</div>'
+    elif job.get("review_flag"):
+        detalle = '<div class="subtitulo">⚠️ Revisar: puede haber contenido no legible (tablas/imágenes).</div>'
+
+    if job["status"] == "done" and not job.get("deleted_at"):
+        acciones = f'''<form method="post" action="/admin/documentos/{job["id"]}/eliminar"
+                onsubmit="return confirm('¿Eliminar este documento? El asistente dejará de citarlo.')">
+            <button type="submit" class="admin-delete-button">Eliminar</button>
+        </form>'''
+
+    return f"""<tr>
+        <td>{html.escape(job["file_name"])}{detalle}</td>
+        <td>{html.escape(rubros)}</td>
+        <td>{html.escape(vigencia_txt)}</td>
+        <td><span class="admin-badge {badge_clase}">{html.escape(label)}</span></td>
+        <td>{job.get("chunks_written") if job.get("chunks_written") is not None else "—"}</td>
+        <td>{acciones}</td>
+    </tr>"""
+
+
+def _pagina_documentos(account: dict, error: str | None = None) -> str:
+    checkboxes = "\n".join(
+        f'''<label class="admin-checkbox">
+            <input type="checkbox" name="rubros" value="{html.escape(rubro)}"> {html.escape(RUBRO_DISPLAY.get(rubro, rubro))}
+        </label>'''
+        for rubro in RUBROS_ACTIVOS
+    )
+    jobs = list_recent_jobs(account["comuna"], limit=20)
+    filas = "\n".join(_fila_ingestion_job(job) for job in jobs) or (
+        '<tr><td colspan="6">Todavía no se han subido documentos.</td></tr>'
+    )
+    aviso = f'<p class="admin-error">{html.escape(error)}</p>' if error else ""
+
+    contenido = f"""
+    <div class="admin-card">
+        <h2>Subir documento</h2>
+        <p class="subtitulo">
+            Se etiqueta automáticamente con la comuna de tu cuenta
+            ({html.escape(account["comuna"])}). El procesamiento ocurre en
+            segundo plano: la nueva información queda disponible para el
+            asistente en unos minutos.
+        </p>
+        {aviso}
+        <form class="admin-upload-form" method="post" action="/admin/documentos/subir" enctype="multipart/form-data">
+            <label>
+                Archivo (PDF o Markdown)
+                <input type="file" name="archivo" accept=".pdf,.md" required>
+            </label>
+            <fieldset>
+                <legend>Rubros aplicables</legend>
+                <label class="admin-checkbox">
+                    <input type="checkbox" name="rubros" value="general" checked> General (todos los rubros)
+                </label>
+                {checkboxes}
+            </fieldset>
+            <label>
+                Vigente desde (opcional)
+                <input type="date" name="vigencia_desde">
+            </label>
+            <label>
+                Vigente hasta (opcional — sin fecha significa que no vence)
+                <input type="date" name="vigencia_hasta">
+            </label>
+            <button type="submit">Subir e iniciar ingesta</button>
+        </form>
+    </div>
+
+    <div class="admin-card">
+        <h2>Últimas subidas de {html.escape(account["comuna"])}</h2>
+        <table class="admin-table">
+            <thead>
+                <tr><th>Documento</th><th>Rubros</th><th>Vigencia</th><th>Estado</th><th>Chunks</th><th>Acciones</th></tr>
+            </thead>
+            <tbody>
+                {filas}
+            </tbody>
+        </table>
+    </div>
+    """
+    return _pagina_base("Documentos", contenido, account)
+
+
+@router.get("/documentos")
+async def documentos_form(
+    request: Request,
+    financial_admin_session: str | None = Cookie(default=None),
+):
+    redis = request.app.state.redis
+    account = await get_admin_session_account(redis, financial_admin_session)
+    if not account:
+        return Response(status_code=303, headers={"Location": "/admin/login"})
+
+    return Response(content=_pagina_documentos(account), media_type="text/html")
+
+
+def _parse_vigencia(valor: str | None) -> str | None:
+    """Valida que una fecha de vigencia venga en formato yyyy-mm-dd (o vacía)."""
+    if not valor or not valor.strip():
+        return None
+    datetime.strptime(valor.strip(), "%Y-%m-%d")  # lanza ValueError si es inválida
+    return valor.strip()
+
+
+@router.post("/documentos/subir")
+async def subir_documento(
+    request: Request,
+    financial_admin_session: str | None = Cookie(default=None),
+    archivo: UploadFile = File(...),
+    rubros: list[str] = Form(default_factory=list),
+    vigencia_desde: str | None = Form(default=None),
+    vigencia_hasta: str | None = Form(default=None),
+):
+    redis = request.app.state.redis
+    account = await get_admin_session_account(redis, financial_admin_session)
+    if not account:
+        return Response(status_code=303, headers={"Location": "/admin/login"})
+
+    raw_bytes = await archivo.read()
+
+    error = validate_upload(archivo.filename or "", archivo.content_type, len(raw_bytes))
+    if error is None:
+        try:
+            vigencia_desde = _parse_vigencia(vigencia_desde)
+            vigencia_hasta = _parse_vigencia(vigencia_hasta)
+        except ValueError:
+            error = "Las fechas de vigencia deben tener el formato AAAA-MM-DD."
+
+    if error:
+        return Response(
+            content=_pagina_documentos(account, error=error),
+            media_type="text/html",
+            status_code=400,
+        )
+
+    job_id = await enqueue_document_ingestion(
+        redis=redis,
+        raw_bytes=raw_bytes,
+        file_name=archivo.filename,
+        content_type=archivo.content_type,
+        comuna=account["comuna"],  # nunca desde el form: evita etiquetar documentos de otra comuna
+        uploaded_by=account.get("nombre", account["comuna"]),
+        rubros=rubros or ["general"],
+        vigencia_desde=vigencia_desde,
+        vigencia_hasta=vigencia_hasta,
+    )
+
+    return Response(
+        status_code=202,
+        content=json.dumps({"job_id": job_id, "status": "queued"}),
+        media_type="application/json",
+    )
+
+
+@router.get("/documentos/estado/{job_id}")
+async def estado_ingesta(
+    job_id: str,
+    request: Request,
+    financial_admin_session: str | None = Cookie(default=None),
+):
+    redis = request.app.state.redis
+    account = await get_admin_session_account(redis, financial_admin_session)
+    if not account:
+        return Response(status_code=401)
+
+    job = get_ingestion_job(job_id)
+    if not job or job["comuna"] != account["comuna"]:
+        return Response(status_code=404)
+
+    return Response(content=json.dumps(job, default=str), media_type="application/json")
+
+
+@router.post("/documentos/{job_id}/eliminar")
+async def eliminar_documento(
+    job_id: str,
+    request: Request,
+    financial_admin_session: str | None = Cookie(default=None),
+):
+    """Quita un documento ya ingerido del índice del asistente (borra sus
+    filas de `documents`); el registro de auditoría en `ingestion_jobs`
+    queda marcado con deleted_at/deleted_by, no se borra."""
+    redis = request.app.state.redis
+    account = await get_admin_session_account(redis, financial_admin_session)
+    if not account:
+        return Response(status_code=303, headers={"Location": "/admin/login"})
+
+    job = get_ingestion_job(job_id)
+    if not job or job["comuna"] != account["comuna"]:
+        return Response(status_code=404)
+
+    if job["status"] != "done" or job.get("deleted_at"):
+        return Response(
+            content=_pagina_documentos(
+                account, error="Solo se pueden eliminar documentos ya procesados y no eliminados previamente."
+            ),
+            media_type="text/html",
+            status_code=400,
+        )
+
+    delete_ingested_document(
+        job["file_name"], job_id, account.get("nombre", account["comuna"])
+    )
+
+    return Response(status_code=303, headers={"Location": "/admin/documentos"})

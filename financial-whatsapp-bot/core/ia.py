@@ -154,8 +154,16 @@ def llamar_llm(
         return ""
 
 
-async def obtener_embedding_remoto(texto: str, prefix: str = "query") -> list[float]:
-    """Genera el embedding usando la API de Inference Providers de Hugging Face."""
+async def obtener_embeddings_remotos_batch(
+    textos: list[str], prefix: str = "query", timeout: float = 15.0
+) -> list[list[float]]:
+    """Genera embeddings para un lote de textos vía la API de Inference
+    Providers de Hugging Face, en una sola petición HTTP.
+
+    Reutilizada tanto por obtener_embedding_remoto (un solo texto, consultas
+    del bot) como por core/ingestion.py::embed_batch_remoto (muchos textos,
+    ingesta de documentos) para no duplicar la llamada HTTP en dos lugares.
+    """
     hf_token = HF_TOKEN
     model_name = MODEL_NAME
 
@@ -167,23 +175,27 @@ async def obtener_embedding_remoto(texto: str, prefix: str = "query") -> list[fl
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
 
-    texto_con_prefijo = f"{prefix}: {texto}"
+    textos_con_prefijo = [f"{prefix}: {texto}" for texto in textos]
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             url,
             headers=headers,
-            json={"inputs": texto_con_prefijo, "options": {"wait_for_model": True}},
+            json={"inputs": textos_con_prefijo, "options": {"wait_for_model": True}},
         )
         response.raise_for_status()
         data = response.json()
 
-        if isinstance(data, list) and len(data) > 0:
-            if isinstance(data[0], list):
-                return [float(x) for x in data[0]]
-            return [float(x) for x in data]
-
+    if not isinstance(data, list) or len(data) != len(textos):
         raise ValueError("Formato de respuesta inesperado desde Hugging Face Inference API")
+
+    return [[float(x) for x in vector] for vector in data]
+
+
+async def obtener_embedding_remoto(texto: str, prefix: str = "query") -> list[float]:
+    """Genera el embedding de un solo texto usando la API de Hugging Face."""
+    vectores = await obtener_embeddings_remotos_batch([texto], prefix=prefix)
+    return vectores[0]
 
 
 def actualizar_resumen_conversacion(phone: str) -> str | None:
@@ -336,7 +348,12 @@ async def obtener_contexto_rag(
                     """
                     SELECT content, metadata, embedding <=> %s::vector AS distance
                     FROM documents
-                    WHERE metadata->>'comuna' ILIKE %s OR metadata->>'comuna' ILIKE '%%general%%'
+                    WHERE (metadata->>'comuna' ILIKE %s OR metadata->>'comuna' ILIKE '%%general%%')
+                      AND (
+                          metadata->>'vigencia_hasta' IS NULL
+                          OR metadata->>'vigencia_hasta' = ''
+                          OR (metadata->>'vigencia_hasta')::date >= CURRENT_DATE
+                      )
                     ORDER BY distance
                     LIMIT 4;
                 """,

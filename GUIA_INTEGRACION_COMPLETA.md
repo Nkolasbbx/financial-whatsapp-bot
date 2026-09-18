@@ -2,7 +2,7 @@
 
 ## 📊 Resumen de Cambios
 
-Hay **3 archivos principales** que modificar y **4 funciones nuevas** que agregar.
+Hay **3 archivos >principales** que modificar y **4 funciones nuevas** que agregar.
 
 ```
 Modificaciones Necesarias:

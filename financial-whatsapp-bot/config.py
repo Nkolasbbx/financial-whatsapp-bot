@@ -107,6 +107,19 @@ RATE_LIMIT_BLOCK_SECONDS = int(os.getenv("RATE_LIMIT_BLOCK_SECONDS", "60"))
 # se considere lo bastante relevante como para llegar al prompt del LLM.
 RAG_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.6"))
 
+# HdU15 — Ingesta automática de documentos desde el panel admin.
+INGESTION_MAX_UPLOAD_MB = int(os.getenv("INGESTION_MAX_UPLOAD_MB", "20"))
+INGESTION_STORAGE_BUCKET = os.getenv("INGESTION_STORAGE_BUCKET", "ingestion-uploads")
+INGESTION_EMBEDDING_BATCH_SIZE = int(os.getenv("INGESTION_EMBEDDING_BATCH_SIZE", "16"))
+INGESTION_JOB_TIMEOUT_SECONDS = int(os.getenv("INGESTION_JOB_TIMEOUT_SECONDS", "300"))
+# Contextual retrieval (frase de contexto por chunk generada con Groq, ver
+# RES_URL/RES_MODEL/RES_KEY): apagado por defecto, agrega latencia/costo por
+# documento sin ser necesario para cumplir la HdU. Queda listo para activar
+# con este flag si se quiere mejorar la calidad del retrieval más adelante.
+INGESTION_ENABLE_CONTEXTUAL = (
+    os.getenv("INGESTION_ENABLE_CONTEXTUAL", "false").strip().lower() == "true"
+)
+
 # Cuentas del panel municipal (InnovaRecoleta, El Bosque). Hardcodeadas a
 # propósito: solo hay 2 municipalidades clientes por ahora, no se justifica
 # un sistema de registro/roles todavía. Las contraseñas viven acá solo como
@@ -147,3 +160,12 @@ if RATE_LIMIT_BLOCK_SECONDS < 1:
 
 if not 0.0 <= RAG_SIMILARITY_THRESHOLD <= 1.0:
     raise ValueError("RAG_SIMILARITY_THRESHOLD debe estar entre 0.0 y 1.0")
+
+if INGESTION_MAX_UPLOAD_MB < 1:
+    raise ValueError("INGESTION_MAX_UPLOAD_MB debe ser mayor que cero")
+
+if INGESTION_EMBEDDING_BATCH_SIZE < 1:
+    raise ValueError("INGESTION_EMBEDDING_BATCH_SIZE debe ser mayor que cero")
+
+if INGESTION_JOB_TIMEOUT_SECONDS < 1:
+    raise ValueError("INGESTION_JOB_TIMEOUT_SECONDS debe ser mayor que cero")
