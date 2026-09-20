@@ -43,12 +43,14 @@ def _pagina_base(titulo: str, contenido: str, cuenta: dict | None = None) -> str
     cuenta_html = ""
     if cuenta:
         cuenta_html = f"""
-        <div class="admin-account">
-            <div>{html.escape(cuenta.get("nombre", ""))}</div>
+        <nav class="admin-nav" aria-label="Cuenta">
             <a href="/admin">Panel</a>
             <a href="/admin/documentos">Documentos</a>
-            <a href="/admin/logout">Cerrar sesión</a>
-        </div>
+            <span class="admin-nav-session">
+                <span class="admin-nav-account">{html.escape(cuenta.get("nombre", ""))}</span>
+                <a href="/admin/logout" class="admin-nav-logout">Cerrar sesión</a>
+            </span>
+        </nav>
         """
 
     return f"""<!doctype html>
@@ -57,19 +59,35 @@ def _pagina_base(titulo: str, contenido: str, cuenta: dict | None = None) -> str
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(titulo)} · FinancIAl</title>
+<link rel="icon" type="image/svg+xml" href="/static/assets/Financial isotipo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/admin.css">
 </head>
 <body>
-<div class="admin-container">
-    <div class="admin-header">
-        <div>
-            <div class="admin-eyebrow">FinancIAl · Panel municipal</div>
-            <h1>{html.escape(titulo)}</h1>
-        </div>
+<a class="skip-link" href="#main">Saltar al contenido principal</a>
+<header class="admin-topbar">
+    <div class="admin-topbar-inner">
+        <a href="/admin" class="admin-brand">
+            <img src="/static/assets/Financial isotipo.svg" alt="" class="admin-brand-logo">
+            <span class="admin-brand-text">
+                <span class="admin-brand-name">Financial</span>
+                <span class="admin-brand-sub">Panel municipal</span>
+            </span>
+        </a>
         {cuenta_html}
     </div>
+</header>
+<div class="admin-glow" aria-hidden="true"></div>
+<main class="admin-container" id="main" tabindex="-1">
+    <div class="admin-page-heading">
+        <span class="admin-kicker">FinancIAl · Panel municipal</span>
+        <h1>{html.escape(titulo)}</h1>
+    </div>
 {contenido}
-</div>
+</main>
+<script src="/static/admin.js"></script>
 </body>
 </html>"""
 
@@ -77,7 +95,7 @@ def _pagina_base(titulo: str, contenido: str, cuenta: dict | None = None) -> str
 def _pagina_login(error: str | None = None) -> str:
     aviso = f'<p class="admin-error">{html.escape(error)}</p>' if error else ""
     contenido = f"""
-    <div class="admin-card">
+    <div class="admin-card admin-card-narrow">
         <h2>Iniciar sesión</h2>
         <form class="admin-login-form" method="post" action="/admin/login">
             <input type="text" name="username" placeholder="Usuario" required autofocus>
@@ -279,15 +297,15 @@ async def dashboard(
 # --- HdU15: ingesta automática de documentos ---
 
 _ESTADO_LABELS = {
-    "queued": ("En cola", "progreso"),
-    "processing": ("Procesando", "progreso"),
+    "queued": ("En cola", "en-cola"),
+    "processing": ("Procesando", "procesando"),
     "done": ("Listo", "completo"),
-    "failed": ("Error", "progreso"),
+    "failed": ("Error", "error"),
 }
 
 
 def _fila_ingestion_job(job: dict) -> str:
-    label, badge_clase = _ESTADO_LABELS.get(job["status"], (job["status"], "progreso"))
+    label, badge_clase = _ESTADO_LABELS.get(job["status"], (job["status"], "en-cola"))
     rubros = ", ".join(RUBRO_DISPLAY.get(r, r) for r in (job.get("rubros") or [])) or "—"
     vigencia = job.get("vigencia_hasta")
     vigencia_txt = f"hasta {vigencia}" if vigencia else "sin vencimiento"
@@ -333,7 +351,7 @@ def _pagina_documentos(account: dict, error: str | None = None) -> str:
     aviso = f'<p class="admin-error">{html.escape(error)}</p>' if error else ""
 
     contenido = f"""
-    <div class="admin-card">
+    <div class="admin-card admin-card-feature">
         <h2>Subir documento</h2>
         <p class="subtitulo">
             Se etiqueta automáticamente con la comuna de tu cuenta

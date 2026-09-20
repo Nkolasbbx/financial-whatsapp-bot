@@ -48,83 +48,178 @@ def _pagina_base(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{titulo} · FinancIAl</title>
+<link rel="icon" type="image/svg+xml" href="/static/assets/Financial isotipo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 {head_extra}
 <style>
+    :root {{
+        --petrol: #024655;
+        --emerald: #50c887;
+        --teal: #139381;
+        --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+    }}
     * {{ box-sizing: border-box; }}
     body {{
-        font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-        background: #f4f6f8;
+        font-family: var(--font-sans);
+        background: color-mix(in srgb, var(--petrol) 5%, white);
         margin: 0;
-        color: #1a1a1a;
+        color: var(--petrol);
+    }}
+    .portal-topbar {{
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        border-bottom: 1px solid color-mix(in srgb, var(--petrol) 20%, transparent);
+        background: color-mix(in srgb, white 80%, transparent);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+    }}
+    .portal-topbar-inner {{
+        max-width: 1280px;
+        margin: 0 auto;
+        min-height: 68px;
+        display: flex;
+        align-items: center;
+        padding: 16px 24px;
+    }}
+    .portal-brand {{
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        text-decoration: none;
+        color: var(--petrol);
+    }}
+    .portal-brand-logo {{ width: 36px; height: 36px; }}
+    .portal-brand-text {{ display: flex; flex-direction: column; line-height: 1.2; }}
+    .portal-brand-name {{ font-size: 16px; font-weight: 800; color: var(--petrol); }}
+    .portal-brand-sub {{
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--petrol);
     }}
     .contenedor {{
-        max-width: 1050px;
+        max-width: 1280px;
         margin: 0 auto;
-        padding: 24px 16px 60px;
+        padding: 40px 24px 60px;
+    }}
+    @media (min-width: 1024px) {{
+        .contenedor {{
+            padding-left: 32px;
+            padding-right: 32px;
+        }}
+        .portal-topbar-inner {{
+            padding-left: 32px;
+            padding-right: 32px;
+        }}
     }}
     .tarjeta {{
-        background: white;
-        border-radius: 12px;
-        padding: 20px;
+        background: color-mix(in srgb, white 92%, var(--petrol));
+        border: 1px solid color-mix(in srgb, var(--petrol) 20%, transparent);
+        border-radius: 16px;
+        padding: 24px;
         margin-bottom: 16px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
     }}
-    h1 {{ font-size: 20px; margin: 0 0 4px; }}
-    .subtitulo {{ color: #667085; font-size: 14px; margin-bottom: 20px; }}
-    .barra-fondo {{ background: #e4e7ec; border-radius: 999px; height: 10px; overflow: hidden; }}
-    .barra-progreso {{ background: #16a34a; height: 100%; }}
+    h1 {{ font-size: 20px; font-weight: 800; letter-spacing: -0.025em; margin: 0 0 4px; color: var(--petrol); }}
+    .subtitulo {{ color: color-mix(in srgb, var(--petrol) 90%, transparent); font-size: 14px; margin-bottom: 20px; }}
+    .barra-fondo {{ background: color-mix(in srgb, var(--petrol) 12%, white); border-radius: 999px; height: 10px; overflow: hidden; }}
+    .barra-progreso {{ background: var(--emerald); height: 100%; }}
+    .chat-body {{
+        background: color-mix(in srgb, var(--petrol) 5%, white);
+        border-radius: 16px;
+        padding: 16px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-height: 420px;
+        overflow-y: auto;
+    }}
     .mensaje {{
         max-width: 80%;
         padding: 10px 14px;
-        border-radius: 14px;
-        margin-bottom: 8px;
-        font-size: 14px;
-        line-height: 1.4;
+        font-size: 13px;
+        line-height: 1.375;
         white-space: pre-wrap;
         word-wrap: break-word;
     }}
     .mensaje.usuario {{
-        background: #dcf8c6;
+        background: color-mix(in srgb, var(--emerald) 55%, white);
+        color: var(--petrol);
         margin-left: auto;
-        border-bottom-right-radius: 2px;
+        border-radius: 16px 16px 4px 16px;
     }}
     .mensaje.asistente {{
-        background: #f0f1f3;
+        background: color-mix(in srgb, var(--petrol) 8%, white);
+        color: var(--petrol);
         margin-right: auto;
-        border-bottom-left-radius: 2px;
+        border-radius: 16px 16px 16px 4px;
     }}
-    .fecha {{ font-size: 11px; color: #98a2b3; margin: 2px 4px 12px; }}
+    .fecha {{ font-size: 11px; color: color-mix(in srgb, var(--petrol) 90%, transparent); margin: 2px 4px 12px; }}
     .aviso {{ text-align: center; margin-top: 60px; }}
     .hito {{
         display: flex;
         gap: 10px;
         padding: 10px 0;
-        border-top: 1px solid #eef0f2;
+        border-top: 1px solid color-mix(in srgb, var(--petrol) 20%, transparent);
     }}
     .hito:first-of-type {{ border-top: none; }}
     .hito.completado {{ opacity: 0.55; }}
     .hito.completado strong {{ text-decoration: line-through; }}
     .check {{ font-size: 18px; line-height: 1.3; }}
-    .hito-desc {{ font-size: 13px; color: #667085; margin-top: 2px; }}
+    .hito-desc {{ font-size: 13px; color: color-mix(in srgb, var(--petrol) 90%, transparent); margin-top: 2px; }}
     .evento {{
         display: flex;
         gap: 12px;
         padding: 10px 0;
-        border-top: 1px solid #eef0f2;
+        border-top: 1px solid color-mix(in srgb, var(--petrol) 20%, transparent);
     }}
     .evento:first-of-type {{ border-top: none; }}
     .evento-fecha {{
         min-width: 78px;
-        font-weight: 600;
+        font-weight: 700;
         font-size: 13px;
-        color: #344054;
+        color: var(--petrol);
     }}
-    .evento.proximo .evento-fecha {{ color: #b42318; }}
-    .evento.proximo {{ background: #fef3f2; margin: 0 -20px; padding: 10px 20px; }}
+    .evento.proximo .evento-fecha {{ color: #b91c1c; }}
+    .evento.proximo {{ background: #fee2e2; margin: 0 -24px; padding: 10px 24px; }}
+    .skip-link {{
+        position: absolute;
+        top: -100%;
+        left: 16px;
+        background: var(--emerald);
+        color: var(--petrol);
+        font-size: 14px;
+        font-weight: 700;
+        padding: 12px 20px;
+        border-radius: 12px;
+        text-decoration: none;
+        z-index: 100;
+    }}
+    .skip-link:focus {{ top: 16px; }}
+    a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {{
+        outline: 2px solid var(--petrol);
+        outline-offset: 2px;
+        border-radius: 4px;
+    }}
 </style>
 </head>
 <body>
-<div class="contenedor">
+<a class="skip-link" href="#main">Saltar al contenido principal</a>
+<header class="portal-topbar">
+    <div class="portal-topbar-inner">
+        <a href="/portal" class="portal-brand">
+            <img src="/static/assets/Financial isotipo.svg" alt="" class="portal-brand-logo">
+            <span class="portal-brand-text">
+                <span class="portal-brand-name">Financial</span>
+                <span class="portal-brand-sub">Panel del emprendedor</span>
+            </span>
+        </a>
+    </div>
+</header>
+<div class="contenedor" id="main" tabindex="-1">
 {contenido}
 </div>
 {scripts}
@@ -249,7 +344,7 @@ def _tarjeta_fechas_personales() -> str:
                 type="button"
                 id="calendar-create-button"
                 class="calendar-primary-button"
-            >+ Nueva fecha</button>
+            ><span class="calendar-button-plus">+</span> Nueva fecha</button>
         </div>
 
         <div id="calendar-message" role="status" aria-live="polite"></div>
@@ -405,11 +500,11 @@ async def panel(
 
     mensajes = get_messages(phone, limit=200)
     if mensajes:
-        burbujas = "\n".join(
+        burbujas = '<div class="chat-body">' + "\n".join(
             f'<div class="mensaje {"usuario" if m.get("role") == "user" else "asistente"}">'
             f'{html.escape(m.get("content") or "")}</div>'
             for m in mensajes
-        )
+        ) + "</div>"
     else:
         burbujas = '<p class="subtitulo">Todavía no tienes mensajes con el asistente de IA.</p>'
 
