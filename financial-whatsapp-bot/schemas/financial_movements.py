@@ -254,3 +254,31 @@ class FinancialMonthSummary(BaseModel):
         default_factory=list
     )
 
+
+class PortalFinancialMovement(BaseModel):
+    """Movimiento seguro para mostrar en el panel del emprendedor.
+
+    Se omiten ``user_id`` y ``original_text`` porque la identidad se obtiene
+    desde la sesión y el mensaje crudo de WhatsApp no es necesario en la UI.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    movement_type: MovementType
+    amount: int = Field(gt=0)
+    currency: Literal["CLP"] = "CLP"
+    category: str
+    description: str
+    occurred_on: date
+
+    @model_validator(mode="after")
+    def validate_category_matches_type(self):
+        _validate_category_for_type(self.movement_type, self.category)
+        return self
+
+
+class PortalFinancialDashboardResponse(FinancialMonthSummary):
+    """Resumen mensual y movimientos recientes visibles desde el portal."""
+
+    movements: list[PortalFinancialMovement] = Field(default_factory=list)

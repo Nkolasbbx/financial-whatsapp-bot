@@ -10,7 +10,14 @@ from fastapi.staticfiles import StaticFiles
 
 from config import DEBUG
 from dependencies import lifespan
-from routers import admin, portal, portal_calendar, reminders, test
+from routers import (
+    admin,
+    portal,
+    portal_calendar,
+    portal_finances,
+    reminders,
+    test,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -35,6 +42,7 @@ app.include_router(test.router)
 app.include_router(reminders.router)
 app.include_router(portal.router)
 app.include_router(portal_calendar.router)
+app.include_router(portal_finances.router)
 app.include_router(admin.router)
 
 

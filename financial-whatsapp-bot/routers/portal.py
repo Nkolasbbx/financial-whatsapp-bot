@@ -7,19 +7,21 @@ web"), recibe un link de un solo uso, y ese link crea una sesión válida
 por 7 días (cookie). No se pide ni guarda ningún dato nuevo — la
 identidad sigue siendo el mismo teléfono que ya usa con el bot.
 
-El panel muestra el estado actual (rubro, comuna, roadmap e historial) y
-permite administrar las fechas importantes del calendario personalizado.
+El panel muestra el estado actual, roadmap, calendario, historial y resumen
+financiero mensual en secciones independientes.
 Escribir mensajes nuevos al asistente desde la web queda para otra iteración.
 """
 import html
 import logging
-from datetime import date
+import re
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Cookie, Request, Response
 
 from core.alertas_tributarias import get_calendario_sii
 from core.roadmaps import get_pending_milestone
-from config import CALENDAR_DEFAULT_HOUR
+from config import CALENDAR_DEFAULT_HOUR, REMINDER_TIMEZONE
 from db.users import get_messages, get_user
 from services.portal_auth import (
     create_session,
@@ -33,6 +35,37 @@ logger = logging.getLogger("financial")
 router = APIRouter(prefix="/portal")
 
 _SESSION_COOKIE = "financial_session"
+_PORTAL_TABS = (
+    ("resumen", "Resumen"),
+    ("calendario", "Calendario"),
+    ("finanzas", "Finanzas"),
+    ("chat", "Chat"),
+)
+_PORTAL_TAB_IDS = frozenset(tab_id for tab_id, _ in _PORTAL_TABS)
+_MONTH_PATTERN = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
+
+
+def _portal_navigation(active_tab: str) -> str:
+    links: list[str] = []
+    for tab_id, label in _PORTAL_TABS:
+        active_class = " active" if tab_id == active_tab else ""
+        current_attribute = ' aria-current="page"' if tab_id == active_tab else ""
+        links.append(
+            f'<a class="portal-tab{active_class}" href="/portal?tab={tab_id}"'
+            f'{current_attribute}>{html.escape(label)}</a>'
+        )
+    return (
+        '<nav class="portal-tabs" aria-label="Secciones del panel">'
+        + "".join(links)
+        + "</nav>"
+    )
+
+
+def _current_portal_month() -> str:
+    try:
+        return datetime.now(ZoneInfo(REMINDER_TIMEZONE)).strftime("%Y-%m")
+    except Exception:
+        return date.today().strftime("%Y-%m")
 
 
 def _pagina_base(
@@ -41,7 +74,9 @@ def _pagina_base(
     *,
     head_extra: str = "",
     scripts: str = "",
+    active_tab: str | None = None,
 ) -> str:
+    navigation = _portal_navigation(active_tab) if active_tab else ""
     return f"""<!doctype html>
 <html lang="es">
 <head>
@@ -105,6 +140,35 @@ def _pagina_base(
         max-width: 1280px;
         margin: 0 auto;
         padding: 40px 24px 60px;
+    }}
+    .portal-tabs {{
+        display: flex;
+        gap: 8px;
+        margin-bottom: 24px;
+        padding: 6px;
+        overflow-x: auto;
+        background: color-mix(in srgb, white 88%, var(--petrol));
+        border: 1px solid color-mix(in srgb, var(--petrol) 18%, transparent);
+        border-radius: 14px;
+    }}
+    .portal-tab {{
+        flex: 1 0 auto;
+        min-width: 110px;
+        padding: 10px 16px;
+        border-radius: 10px;
+        color: var(--petrol);
+        font-size: 14px;
+        font-weight: 700;
+        text-align: center;
+        text-decoration: none;
+    }}
+    .portal-tab:hover {{
+        background: color-mix(in srgb, var(--emerald) 18%, white);
+    }}
+    .portal-tab.active {{
+        background: var(--petrol);
+        color: #fff;
+        box-shadow: 0 6px 18px rgba(2, 70, 85, 0.16);
     }}
     @media (min-width: 1024px) {{
         .contenedor {{
@@ -220,6 +284,7 @@ def _pagina_base(
     </div>
 </header>
 <div class="contenedor" id="main" tabindex="-1">
+{navigation}
 {contenido}
 </div>
 {scripts}
@@ -457,12 +522,103 @@ def _tarjeta_fechas_personales() -> str:
     """
 
 
+def _tarjeta_finanzas(selected_month: str) -> str:
+    """Contenedor de consulta mensual; los datos se obtienen por API privada."""
+    safe_month = html.escape(selected_month, quote=True)
+    return f"""
+    <section
+        class="tarjeta finance-dashboard"
+        id="finance-dashboard"
+        data-month="{safe_month}"
+    >
+        <div class="finance-header">
+            <div>
+                <h1>💰 Resumen financiero</h1>
+                <p class="subtitulo">
+                    Revisa los ingresos y gastos que registraste por WhatsApp.
+                </p>
+            </div>
+            <label class="finance-month-field">
+                <span>Mes</span>
+                <input
+                    type="month"
+                    id="finance-month"
+                    value="{safe_month}"
+                >
+            </label>
+        </div>
+
+        <div
+            id="finance-status"
+            class="finance-status"
+            role="status"
+            aria-live="polite"
+        >Cargando movimientos…</div>
+
+        <div id="finance-content" hidden>
+            <div class="finance-summary-grid">
+                <article class="finance-summary-card income">
+                    <span>Ingresos</span>
+                    <strong id="finance-income-total">$0</strong>
+                </article>
+                <article class="finance-summary-card expense">
+                    <span>Gastos</span>
+                    <strong id="finance-expense-total">$0</strong>
+                </article>
+                <article class="finance-summary-card net">
+                    <span>Resultado neto</span>
+                    <strong id="finance-net-total">$0</strong>
+                </article>
+                <article class="finance-summary-card movements">
+                    <span>Movimientos</span>
+                    <strong id="finance-movement-count">0</strong>
+                </article>
+            </div>
+
+            <div id="finance-empty" class="finance-empty" hidden>
+                <h2>Aún no tienes movimientos este mes</h2>
+                <p>
+                    Puedes comenzar escribiendo por WhatsApp, por ejemplo:
+                    <em>“Hoy vendí $40.000 en empanadas”</em>.
+                </p>
+            </div>
+
+            <div id="finance-details">
+                <div class="finance-categories-grid">
+                    <section class="finance-section">
+                        <h2>Ingresos por categoría</h2>
+                        <div id="finance-income-categories"></div>
+                    </section>
+                    <section class="finance-section">
+                        <h2>Gastos por categoría</h2>
+                        <div id="finance-expense-categories"></div>
+                    </section>
+                </div>
+
+                <section class="finance-section finance-movements-section">
+                    <h2>Movimientos del mes</h2>
+                    <div class="finance-movement-list" id="finance-movement-list"></div>
+                </section>
+            </div>
+        </div>
+
+        <noscript>
+            <p class="finance-status error">
+                Activa JavaScript para consultar tu resumen financiero.
+            </p>
+        </noscript>
+    </section>
+    """
+
+
 @router.get("")
 async def panel(
     request: Request,
+    tab: str = "resumen",
+    month: str | None = None,
     financial_session: str | None = Cookie(default=None),
 ):
-    """Panel del emprendedor: estado actual + historial completo."""
+    """Panel del emprendedor organizado en secciones navegables."""
     redis = request.app.state.redis
     phone = await get_session_phone(redis, financial_session)
 
@@ -473,69 +629,86 @@ async def panel(
     if not user:
         return _pagina_no_autorizado("No encontramos tu perfil")
 
-    csrf_token = await get_or_create_csrf_token(redis, financial_session)
+    active_tab = tab if tab in _PORTAL_TAB_IDS else "resumen"
+    head_extra = ""
+    scripts = ""
 
-    roadmap = user.get("roadmap") or []
-    completados = sum(1 for hito in roadmap if hito.get("done"))
-    total = len(roadmap)
-    porcentaje = round((completados / total) * 100) if total else 0
-    hito_pendiente = get_pending_milestone(user)
+    if active_tab == "resumen":
+        roadmap = user.get("roadmap") or []
+        completados = sum(1 for hito in roadmap if hito.get("done"))
+        total = len(roadmap)
+        porcentaje = round((completados / total) * 100) if total else 0
+        hito_pendiente = get_pending_milestone(user)
 
-    rubro = html.escape((user.get("rubro") or user.get("rubro_raw") or "tu negocio").capitalize())
-    comuna = html.escape(user.get("comuna") or "tu comuna")
-    es_formalizado = user.get("inicio_sii") == "si"
-    estado_sii = "✅ Formalizado" if es_formalizado else "⚠️ No formalizado"
+        rubro = html.escape(
+            (user.get("rubro") or user.get("rubro_raw") or "tu negocio").capitalize()
+        )
+        comuna = html.escape(user.get("comuna") or "tu comuna")
+        es_formalizado = user.get("inicio_sii") == "si"
+        estado_sii = "✅ Formalizado" if es_formalizado else "⚠️ No formalizado"
 
-    tarjeta_estado = f"""
-    <div class="tarjeta">
-        <h1>👋 Hola de nuevo</h1>
-        <p class="subtitulo">{rubro} · {comuna} · {estado_sii}</p>
-        {"" if es_formalizado else f'''
-        <div class="barra-fondo"><div class="barra-progreso" style="width:{porcentaje}%"></div></div>
-        <p class="subtitulo">{completados} de {total} hitos completados ({porcentaje}%)</p>
-        '''}
-        {f'<p><strong>👉 Tu siguiente paso:</strong> {html.escape(hito_pendiente["title"])}</p>' if hito_pendiente else ''}
-    </div>
-    """
+        tarjeta_estado = f"""
+        <div class="tarjeta">
+            <h1>👋 Hola de nuevo</h1>
+            <p class="subtitulo">{rubro} · {comuna} · {estado_sii}</p>
+            {"" if es_formalizado else f'''
+            <div class="barra-fondo"><div class="barra-progreso" style="width:{porcentaje}%"></div></div>
+            <p class="subtitulo">{completados} de {total} hitos completados ({porcentaje}%)</p>
+            '''}
+            {f'<p><strong>👉 Tu siguiente paso:</strong> {html.escape(hito_pendiente["title"])}</p>' if hito_pendiente else ''}
+        </div>
+        """
+        contenido = tarjeta_estado + _tarjeta_roadmap(roadmap)
 
-    mensajes = get_messages(phone, limit=200)
-    if mensajes:
-        burbujas = '<div class="chat-body">' + "\n".join(
-            f'<div class="mensaje {"usuario" if m.get("role") == "user" else "asistente"}">'
-            f'{html.escape(m.get("content") or "")}</div>'
-            for m in mensajes
-        ) + "</div>"
+    elif active_tab == "calendario":
+        csrf_token = await get_or_create_csrf_token(redis, financial_session)
+        contenido = _tarjeta_fechas_personales() + _tarjeta_calendario(user)
+        head_extra = f"""
+        <meta
+            name="financial-csrf-token"
+            content="{html.escape(csrf_token, quote=True)}"
+        >
+        <link rel="stylesheet" href="/static/portal_calendar.css">
+        """
+        scripts = """
+        <script defer src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+        <script defer src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.15/locales-all.global.min.js"></script>
+        <script defer src="/static/portal_calendar.js"></script>
+        """
+
+    elif active_tab == "finanzas":
+        selected_month = (
+            month
+            if month and _MONTH_PATTERN.fullmatch(month)
+            else _current_portal_month()
+        )
+        contenido = _tarjeta_finanzas(selected_month)
+        head_extra = '<link rel="stylesheet" href="/static/portal_finances.css">'
+        scripts = '<script defer src="/static/portal_finances.js"></script>'
+
     else:
-        burbujas = '<p class="subtitulo">Todavía no tienes mensajes con el asistente de IA.</p>'
+        mensajes = get_messages(phone, limit=200)
+        if mensajes:
+            burbujas = '<div class="chat-body">' + "\n".join(
+                f'<div class="mensaje {"usuario" if m.get("role") == "user" else "asistente"}">'
+                f'{html.escape(m.get("content") or "")}</div>'
+                for m in mensajes
+            ) + "</div>"
+        else:
+            burbujas = (
+                '<p class="subtitulo">Todavía no tienes mensajes con el '
+                "asistente de IA.</p>"
+            )
 
-    tarjeta_historial = f"""
-    <div class="tarjeta">
-        <h1>💬 Tu historial</h1>
-        <p class="subtitulo">Las últimas {len(mensajes)} interacciones con el asistente.</p>
-        {burbujas}
-    </div>
-    """
-
-    contenido = (
-        tarjeta_estado
-        + _tarjeta_roadmap(roadmap)
-        + _tarjeta_fechas_personales()
-        + _tarjeta_calendario(user)
-        + tarjeta_historial
-    )
-
-    head_extra = f"""
-    <meta
-        name="financial-csrf-token"
-        content="{html.escape(csrf_token, quote=True)}"
-    >
-    <link rel="stylesheet" href="/static/portal_calendar.css">
-    """
-    scripts = """
-    <script defer src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.15/locales-all.global.min.js"></script>
-    <script defer src="/static/portal_calendar.js"></script>
-    """
+        contenido = f"""
+        <div class="tarjeta">
+            <h1>💬 Tu historial</h1>
+            <p class="subtitulo">
+                Las últimas {len(mensajes)} interacciones con el asistente.
+            </p>
+            {burbujas}
+        </div>
+        """
 
     return Response(
         content=_pagina_base(
@@ -543,6 +716,7 @@ async def panel(
             contenido,
             head_extra=head_extra,
             scripts=scripts,
+            active_tab=active_tab,
         ),
         media_type="text/html",
     )
