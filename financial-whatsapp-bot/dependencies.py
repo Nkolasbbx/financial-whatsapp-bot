@@ -20,6 +20,7 @@ from supabase import create_client
 from redis_settings import get_redis_settings
 
 from config import (
+    ARQ_QUEUE_NAME,
     EMBEDDING_MODEL_NAME,
     IA_API_KEY,
     INGESTION_STORAGE_BUCKET,
@@ -224,7 +225,7 @@ async def init_dependencies() -> None:
     if redis_configured():
         try:
             logger.info("🔌 Conectando pool de Redis para la cola de jobs...")
-            redis_pool = await create_pool(get_redis_settings())
+            redis_pool = await create_pool(get_redis_settings(), default_queue_name=ARQ_QUEUE_NAME)
             logger.info("Pool de Redis conectado")
         except Exception as error:
             logger.error("No se pudo conectar a Redis: %s", error)
