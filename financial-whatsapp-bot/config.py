@@ -35,6 +35,9 @@ RES_MODEL=os.getenv("RES_MODEL")
 RES_KEY=os.getenv("RES_KEY")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# Cola de arq. En local cada dev debe usar una propia (ej. arq:queue:jorsh):
+# si dos workers comparten Redis y cola, se roban los jobs entre sí.
+ARQ_QUEUE_NAME = os.getenv("ARQ_QUEUE_NAME", "arq:queue")
 
 
 HF_TOKEN= os.getenv("HF_TOKEN")
@@ -104,6 +107,10 @@ RAG_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.6"))
 # HdU15 — Ingesta automática de documentos desde el panel admin.
 INGESTION_MAX_UPLOAD_MB = int(os.getenv("INGESTION_MAX_UPLOAD_MB", "20"))
 INGESTION_STORAGE_BUCKET = os.getenv("INGESTION_STORAGE_BUCKET", "ingestion-uploads")
+# Límites por lote (subida múltiple): acotan lo que puede haber en vuelo en
+# Supabase Storage (Free: 1 GB total) y en la RAM del server web.
+INGESTION_MAX_BATCH_FILES = int(os.getenv("INGESTION_MAX_BATCH_FILES", "10"))
+INGESTION_MAX_BATCH_MB = int(os.getenv("INGESTION_MAX_BATCH_MB", "100"))
 INGESTION_EMBEDDING_BATCH_SIZE = int(os.getenv("INGESTION_EMBEDDING_BATCH_SIZE", "16"))
 INGESTION_JOB_TIMEOUT_SECONDS = int(os.getenv("INGESTION_JOB_TIMEOUT_SECONDS", "300"))
 # Contextual retrieval (frase de contexto por chunk generada con Groq, ver
@@ -157,6 +164,12 @@ if not 0.0 <= RAG_SIMILARITY_THRESHOLD <= 1.0:
 
 if INGESTION_MAX_UPLOAD_MB < 1:
     raise ValueError("INGESTION_MAX_UPLOAD_MB debe ser mayor que cero")
+
+if INGESTION_MAX_BATCH_FILES < 1:
+    raise ValueError("INGESTION_MAX_BATCH_FILES debe ser mayor que cero")
+
+if INGESTION_MAX_BATCH_MB < 1:
+    raise ValueError("INGESTION_MAX_BATCH_MB debe ser mayor que cero")
 
 if INGESTION_EMBEDDING_BATCH_SIZE < 1:
     raise ValueError("INGESTION_EMBEDDING_BATCH_SIZE debe ser mayor que cero")

@@ -107,6 +107,24 @@ class ProcessDocumentIngestionTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("boom", final_call["error_message"])
         self.fake_supabase_admin.storage.from_.return_value.remove.assert_called_once_with(["hash/doc.md"])
 
+    async def test_original_error_propagates_even_if_marking_failed_also_fails(self):
+        # Caso real: worker sin pool de Postgres, todo update_ingestion_job revienta.
+        with patch.object(worker, "update_ingestion_job", side_effect=AttributeError("no pool")):
+            with self.assertRaises(AttributeError):
+                await worker.process_document_ingestion_task(
+                    {},
+                    job_id="job-4",
+                    storage_path="hash/doc.md",
+                    file_name="doc.md",
+                    content_type="text/markdown",
+                    comuna="Recoleta",
+                    rubros=["general"],
+                    vigencia_desde=None,
+                    vigencia_hasta=None,
+                    content_hash="hash",
+                    uploaded_by="InnovaRecoleta",
+                )
+
     def test_worker_settings_registers_ingestion_function(self):
         self.assertIn(worker.process_document_ingestion_task, worker.WorkerSettings.functions)
         self.assertIn(worker.process_ai_task, worker.WorkerSettings.functions)
@@ -163,3 +181,28 @@ class CleanupOrphanedUploadsJobTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkerStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def _startup_con(self, db_pool, supabase_admin):
+        with patch.object(dependencies, "init_dependencies", AsyncMock()), \
+             patch.object(dependencies, "shutdown_dependencies", AsyncMock()) as shutdown_mock, \
+             patch.object(dependencies, "db_pool", db_pool), \
+             patch.object(dependencies, "supabase_admin", supabase_admin):
+            await worker.startup({})
+        return shutdown_mock
+
+    async def test_aborts_without_postgres_pool(self):
+        with self.assertRaisesRegex(RuntimeError, "Postgres"):
+            await self._startup_con(None, MagicMock())
+
+    async def test_aborts_without_supabase_admin(self):
+        with self.assertRaisesRegex(RuntimeError, "Supabase"):
+            await self._startup_con(MagicMock(), None)
+
+    async def test_starts_with_all_dependencies(self):
+        shutdown_mock = await self._startup_con(MagicMock(), MagicMock())
+        shutdown_mock.assert_not_awaited()
+
+    def test_worker_uses_configured_queue_name(self):
+        self.assertEqual(worker.WorkerSettings.queue_name, worker.ARQ_QUEUE_NAME)

@@ -5,7 +5,7 @@ import os
 from arq import cron
 
 import dependencies
-from config import INGESTION_JOB_TIMEOUT_SECONDS
+from config import ARQ_QUEUE_NAME, INGESTION_JOB_TIMEOUT_SECONDS
 from core.ia import process_ai_and_send
 from core.ingestion import embed_batch_remoto, extract_pdf_to_markdown, process_document_to_rows
 from db.documents import get_stale_ingestion_jobs, update_ingestion_job, upsert_document
@@ -24,8 +24,27 @@ REDIS_SETTINGS = get_redis_settings()
 async def startup(ctx):
     """Hook de arq: el worker corre en un proceso aparte del servidor web, así
     que no pasa por el lifespan de FastAPI y necesita inicializar sus propias
-    dependencias compartidas (Supabase, pool de Postgres, etc.) al arrancar."""
+    dependencias compartidas (Supabase, pool de Postgres, etc.) al arrancar.
+
+    Si falta Postgres o Supabase admin se aborta el arranque: un worker así
+    igual tomaría jobs de la cola y los haría fallar al instante (sin poder
+    siquiera marcarlos como fallidos), robándoselos a un worker sano.
+    """
     await dependencies.init_dependencies()
+    faltantes = [
+        nombre
+        for nombre, valor in (
+            ("pool de Postgres (DB_DSN)", dependencies.db_pool),
+            ("cliente admin de Supabase (SUPABASE_SERVICE_ROLE_KEY)", dependencies.supabase_admin),
+        )
+        if valor is None
+    ]
+    if faltantes:
+        await dependencies.shutdown_dependencies()
+        raise RuntimeError(
+            "El worker no puede arrancar sin: " + ", ".join(faltantes) + ". Revisa las variables de entorno."
+        )
+    logger.info("Worker escuchando la cola %s", ARQ_QUEUE_NAME)
 
 
 async def shutdown(ctx):
@@ -169,8 +188,13 @@ async def process_document_ingestion_task(
         logger.info("Ingesta completada: %s -> %d chunks (job %s)", file_name, chunks_written, job_id)
     except Exception as exc:
         logger.exception("Fallo la ingesta de %s (job %s)", file_name, job_id)
-        update_ingestion_job(job_id, status="failed", error_message=str(exc)[:2000])
-        raise  # re-lanzar: arq marca el job como fallido y lo reintenta (max_tries)
+        try:
+            update_ingestion_job(job_id, status="failed", error_message=str(exc)[:2000])
+        except Exception:
+            # Si esto también falla el job queda en 'queued'/'processing' hasta
+            # que cleanup_orphaned_uploads_job lo marque como fallido.
+            logger.exception("No se pudo marcar como fallido el job %s", job_id)
+        raise  # re-lanzar: arq registra el job como fallido (no lo reintenta: solo reintenta con Retry o timeouts)
     finally:
         try:
             dependencies.supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
@@ -218,6 +242,7 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = REDIS_SETTINGS
+    queue_name = ARQ_QUEUE_NAME
     max_jobs = 10
     job_timeout = INGESTION_JOB_TIMEOUT_SECONDS
     max_tries = 3

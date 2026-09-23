@@ -17,7 +17,7 @@ import logging
 from collections import Counter
 from datetime import datetime
 
-from fastapi import APIRouter, Cookie, File, Form, Request, Response, UploadFile
+from fastapi import APIRouter, Cookie, Form, Request, Response
 
 from core.onboarding import RUBRO_DISPLAY, RUBROS_ACTIVOS
 from core.roadmaps import get_pending_milestone
@@ -30,7 +30,8 @@ from services.admin_auth import (
     destroy_admin_session,
     get_admin_session_account,
 )
-from services.ingestion_jobs import enqueue_document_ingestion, validate_upload
+from config import INGESTION_MAX_BATCH_FILES, INGESTION_MAX_BATCH_MB
+from services.ingestion_jobs import enqueue_document_ingestion, validate_batch, validate_upload
 
 logger = logging.getLogger("financial")
 
@@ -309,59 +310,90 @@ def _fila_ingestion_job(job: dict) -> str:
             <button type="submit" class="admin-delete-button">Eliminar</button>
         </form>'''
 
-    return f"""<tr>
+    pendiente = job["status"] in ("queued", "processing") and not job.get("deleted_at")
+    data_attrs = f' data-job-id="{html.escape(str(job["id"]))}"' if pendiente else ""
+
+    return f"""<tr{data_attrs}>
         <td>{html.escape(job["file_name"])}{detalle}</td>
         <td>{html.escape(rubros)}</td>
         <td>{html.escape(vigencia_txt)}</td>
-        <td><span class="admin-badge {badge_clase}">{html.escape(label)}</span></td>
-        <td>{job.get("chunks_written") if job.get("chunks_written") is not None else "—"}</td>
+        <td class="js-estado"><span class="admin-badge {badge_clase}">{html.escape(label)}</span></td>
+        <td class="js-chunks">{job.get("chunks_written") if job.get("chunks_written") is not None else "—"}</td>
         <td>{acciones}</td>
     </tr>"""
 
 
-def _pagina_documentos(account: dict, error: str | None = None) -> str:
-    checkboxes = "\n".join(
-        f'''<label class="admin-checkbox">
-            <input type="checkbox" name="rubros" value="{html.escape(rubro)}"> {html.escape(RUBRO_DISPLAY.get(rubro, rubro))}
-        </label>'''
-        for rubro in RUBROS_ACTIVOS
+_FLASH_PREFIX = "admin_flash:"
+_FLASH_TTL_SECONDS = 60
+
+
+async def _set_flash(redis, session_id: str | None, kind: str, title: str, details: list[str] | None = None) -> None:
+    if not session_id:
+        return
+    payload = json.dumps({"kind": kind, "title": title, "details": details or []})
+    await redis.set(_FLASH_PREFIX + session_id, payload, ex=_FLASH_TTL_SECONDS)
+
+
+async def _pop_flash(redis, session_id: str | None) -> dict | None:
+    if not session_id:
+        return None
+    key = _FLASH_PREFIX + session_id
+    raw = await redis.get(key)
+    if not raw:
+        return None
+    await redis.delete(key)
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+def _flash_html(flash: dict | None) -> str:
+    if not flash:
+        return ""
+    detalles = "".join(f"<li>{html.escape(d)}</li>" for d in flash.get("details", []))
+    lista = f"<ul>{detalles}</ul>" if detalles else ""
+    kind = flash.get("kind") if flash.get("kind") in ("ok", "warn", "error") else "error"
+    return f'<div class="admin-flash {kind}" role="status"><strong>{html.escape(flash.get("title", ""))}</strong>{lista}</div>'
+
+
+def _pagina_documentos(account: dict, flash: dict | None = None) -> str:
+    rubros_config = [{"value": "general", "label": "General (todos los rubros)"}] + [
+        {"value": rubro, "label": RUBRO_DISPLAY.get(rubro, rubro)} for rubro in RUBROS_ACTIVOS
+    ]
+    config_js = json.dumps(
+        {
+            "rubros": rubros_config,
+            "maxFiles": INGESTION_MAX_BATCH_FILES,
+            "maxBatchMb": INGESTION_MAX_BATCH_MB,
+            "estados": {k: list(v) for k, v in _ESTADO_LABELS.items()},
+        }
     )
     jobs = list_recent_jobs(account["comuna"], limit=20)
     filas = "\n".join(_fila_ingestion_job(job) for job in jobs) or (
         '<tr><td colspan="6">Todavía no se han subido documentos.</td></tr>'
     )
-    aviso = f'<p class="admin-error">{html.escape(error)}</p>' if error else ""
 
     contenido = f"""
-    <div class="admin-card">
-        <h2>Subir documento</h2>
+    {_flash_html(flash)}
+    <div id="live-banner"></div>
+    <div class="admin-card admin-card-feature">
+        <h2>Subir documentos</h2>
         <p class="subtitulo">
-            Se etiqueta automáticamente con la comuna de tu cuenta
-            ({html.escape(account["comuna"])}). El procesamiento ocurre en
-            segundo plano: la nueva información queda disponible para el
-            asistente en unos minutos.
+            Se etiquetan automáticamente con la comuna de tu cuenta
+            ({html.escape(account["comuna"])}). Puedes subir hasta
+            {INGESTION_MAX_BATCH_FILES} archivos ({INGESTION_MAX_BATCH_MB} MB en
+            total) y definir rubros y vigencia por cada uno. El procesamiento
+            ocurre en segundo plano: el estado se actualiza aquí mismo.
         </p>
-        {aviso}
-        <form class="admin-upload-form" method="post" action="/admin/documentos/subir" enctype="multipart/form-data">
+        <form id="upload-form" class="admin-upload-form" method="post" action="/admin/documentos/subir"
+              enctype="multipart/form-data" data-config="{html.escape(config_js, quote=True)}">
             <label>
-                Archivo (PDF o Markdown)
-                <input type="file" name="archivo" accept=".pdf,.md" required>
+                Archivos (PDF o Markdown)
+                <input type="file" id="archivos" name="archivos" accept=".pdf,.md" multiple required>
             </label>
-            <fieldset>
-                <legend>Rubros aplicables</legend>
-                <label class="admin-checkbox">
-                    <input type="checkbox" name="rubros" value="general" checked> General (todos los rubros)
-                </label>
-                {checkboxes}
-            </fieldset>
-            <label>
-                Vigente desde (opcional)
-                <input type="date" name="vigencia_desde">
-            </label>
-            <label>
-                Vigente hasta (opcional — sin fecha significa que no vence)
-                <input type="date" name="vigencia_hasta">
-            </label>
+            <p class="subtitulo" id="batch-summary"></p>
+            <div id="file-cards"></div>
             <button type="submit">Subir e iniciar ingesta</button>
         </form>
     </div>
@@ -377,6 +409,7 @@ def _pagina_documentos(account: dict, error: str | None = None) -> str:
             </tbody>
         </table>
     </div>
+    <script src="/static/admin_documentos.js"></script>
     """
     return _pagina_base("Documentos", contenido, account)
 
@@ -391,7 +424,8 @@ async def documentos_form(
     if not account:
         return Response(status_code=303, headers={"Location": "/admin/login"})
 
-    return Response(content=_pagina_documentos(account), media_type="text/html")
+    flash = await _pop_flash(redis, financial_admin_session)
+    return Response(content=_pagina_documentos(account, flash=flash), media_type="text/html")
 
 
 def _parse_vigencia(valor: str | None) -> str | None:
@@ -402,54 +436,79 @@ def _parse_vigencia(valor: str | None) -> str | None:
     return valor.strip()
 
 
+def _redirect_documentos() -> Response:
+    return Response(status_code=303, headers={"Location": "/admin/documentos"})
+
+
 @router.post("/documentos/subir")
 async def subir_documento(
     request: Request,
     financial_admin_session: str | None = Cookie(default=None),
-    archivo: UploadFile = File(...),
-    rubros: list[str] = Form(default_factory=list),
-    vigencia_desde: str | None = Form(default=None),
-    vigencia_hasta: str | None = Form(default=None),
 ):
     redis = request.app.state.redis
     account = await get_admin_session_account(redis, financial_admin_session)
     if not account:
         return Response(status_code=303, headers={"Location": "/admin/login"})
 
-    raw_bytes = await archivo.read()
+    form = await request.form()
+    try:
+        # El navegador manda una parte vacía si no se eligió ningún archivo.
+        archivos = [a for a in form.getlist("archivos") if getattr(a, "filename", "")]
 
-    error = validate_upload(archivo.filename or "", archivo.content_type, len(raw_bytes))
-    if error is None:
-        try:
-            vigencia_desde = _parse_vigencia(vigencia_desde)
-            vigencia_hasta = _parse_vigencia(vigencia_hasta)
-        except ValueError:
-            error = "Las fechas de vigencia deben tener el formato AAAA-MM-DD."
+        error = validate_batch([(a.filename, a.size or 0) for a in archivos])
+        if error:
+            await _set_flash(redis, financial_admin_session, "error", "No se subió ningún documento.", [error])
+            return _redirect_documentos()
 
-    if error:
-        return Response(
-            content=_pagina_documentos(account, error=error),
-            media_type="text/html",
-            status_code=400,
-        )
+        enviados: list[str] = []
+        rechazados: list[str] = []
 
-    job_id = await enqueue_document_ingestion(
-        redis=redis,
-        raw_bytes=raw_bytes,
-        file_name=archivo.filename,
-        content_type=archivo.content_type,
-        comuna=account["comuna"],  # nunca desde el form: evita etiquetar documentos de otra comuna
-        uploaded_by=account.get("nombre", account["comuna"]),
-        rubros=rubros or ["general"],
-        vigencia_desde=vigencia_desde,
-        vigencia_hasta=vigencia_hasta,
-    )
+        for i, archivo in enumerate(archivos):
+            nombre = archivo.filename
+            raw_bytes = await archivo.read()
 
-    return Response(
-        status_code=202,
-        content=json.dumps({"job_id": job_id, "status": "queued"}),
-        media_type="application/json",
-    )
+            error = validate_upload(nombre, archivo.content_type, len(raw_bytes))
+            vigencia_desde = vigencia_hasta = None
+            if error is None:
+                try:
+                    vigencia_desde = _parse_vigencia(form.get(f"vigencia_desde_{i}"))
+                    vigencia_hasta = _parse_vigencia(form.get(f"vigencia_hasta_{i}"))
+                except ValueError:
+                    error = "las fechas de vigencia deben tener el formato AAAA-MM-DD."
+
+            if error is None:
+                try:
+                    await enqueue_document_ingestion(
+                        redis=redis,
+                        raw_bytes=raw_bytes,
+                        file_name=nombre,
+                        content_type=archivo.content_type,
+                        comuna=account["comuna"],  # nunca desde el form: evita etiquetar documentos de otra comuna
+                        uploaded_by=account.get("nombre", account["comuna"]),
+                        rubros=form.getlist(f"rubros_{i}") or ["general"],
+                        vigencia_desde=vigencia_desde,
+                        vigencia_hasta=vigencia_hasta,
+                    )
+                except Exception:
+                    logger.exception("No se pudo encolar la ingesta de %s", nombre)
+                    error = "no se pudo subir el archivo, intenta de nuevo."
+
+            if error is None:
+                enviados.append(nombre)
+            else:
+                rechazados.append(f"{nombre} — {error}")
+    finally:
+        await form.close()
+
+    if enviados and not rechazados:
+        titulo, kind = f"{len(enviados)} documento(s) enviado(s) a procesar. Aquí verás si se ingirieron correctamente.", "ok"
+    elif enviados:
+        titulo, kind = f"{len(enviados)} documento(s) enviado(s) a procesar, {len(rechazados)} rechazado(s):", "warn"
+    else:
+        titulo, kind = "No se subió ningún documento:", "error"
+
+    await _set_flash(redis, financial_admin_session, kind, titulo, rechazados)
+    return _redirect_documentos()
 
 
 @router.get("/documentos/estado/{job_id}")
@@ -489,16 +548,15 @@ async def eliminar_documento(
         return Response(status_code=404)
 
     if job["status"] != "done" or job.get("deleted_at"):
-        return Response(
-            content=_pagina_documentos(
-                account, error="Solo se pueden eliminar documentos ya procesados y no eliminados previamente."
-            ),
-            media_type="text/html",
-            status_code=400,
+        await _set_flash(
+            redis, financial_admin_session, "error",
+            "Solo se pueden eliminar documentos ya procesados y no eliminados previamente.",
         )
+        return _redirect_documentos()
 
     delete_ingested_document(
         job["file_name"], job_id, account.get("nombre", account["comuna"])
     )
 
-    return Response(status_code=303, headers={"Location": "/admin/documentos"})
+    await _set_flash(redis, financial_admin_session, "ok", f"«{job['file_name']}» fue eliminado del asistente.")
+    return _redirect_documentos()

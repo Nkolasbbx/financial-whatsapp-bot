@@ -14,12 +14,18 @@ worker, sin bloquear el request (AC1 de la HdU).
 import logging
 import uuid
 
-from config import INGESTION_MAX_UPLOAD_MB, INGESTION_STORAGE_BUCKET
+from config import (
+    INGESTION_MAX_BATCH_FILES,
+    INGESTION_MAX_BATCH_MB,
+    INGESTION_MAX_UPLOAD_MB,
+    INGESTION_STORAGE_BUCKET,
+)
 from db.documents import compute_content_hash, create_ingestion_job
 
 logger = logging.getLogger("financial")
 
 MAX_UPLOAD_BYTES = INGESTION_MAX_UPLOAD_MB * 1024 * 1024
+MAX_BATCH_BYTES = INGESTION_MAX_BATCH_MB * 1024 * 1024
 ALLOWED_EXTENSIONS = (".pdf", ".md")
 STORAGE_BUCKET = INGESTION_STORAGE_BUCKET
 
@@ -90,5 +96,27 @@ def validate_upload(file_name: str, content_type: str | None, size: int) -> str 
     name_lower = (file_name or "").lower()
     if not name_lower.endswith(ALLOWED_EXTENSIONS):
         return "Solo se aceptan archivos PDF (.pdf) o Markdown (.md)."
+
+    return None
+
+
+def validate_batch(files: list[tuple[str, int]]) -> str | None:
+    """Valida un lote completo de (nombre, tamaño). Devuelve un mensaje de
+    error o None si es válido. Un lote que falla acá se rechaza entero."""
+    if not files:
+        return "Selecciona al menos un archivo."
+
+    if len(files) > INGESTION_MAX_BATCH_FILES:
+        return f"Máximo {INGESTION_MAX_BATCH_FILES} archivos por subida (elegiste {len(files)})."
+
+    if sum(size for _, size in files) > MAX_BATCH_BYTES:
+        return f"El total de la subida supera el máximo permitido ({INGESTION_MAX_BATCH_MB} MB)."
+
+    # upsert_document reemplaza por file_name: dos archivos con el mismo
+    # nombre en un lote se pisarían entre sí.
+    nombres = [name.lower() for name, _ in files]
+    repetidos = sorted({n for n in nombres if nombres.count(n) > 1})
+    if repetidos:
+        return f"Hay archivos con el mismo nombre en la subida: {', '.join(repetidos)}."
 
     return None

@@ -148,6 +148,9 @@ Nuevas para esta funcionalidad (todas con default razonable, no es obligatorio s
 | Variable | Default | Para qué |
 |---|---|---|
 | `INGESTION_MAX_UPLOAD_MB` | `20` | Tamaño máximo de archivo aceptado por el endpoint. Debe quedar por debajo del límite de la plataforma (50MB en el free tier de Supabase Storage, ver sección 7). |
+| `INGESTION_MAX_BATCH_FILES` | `10` | Máximo de archivos por subida (lote). Coincide con `max_jobs` del worker. |
+| `INGESTION_MAX_BATCH_MB` | `100` | Tamaño total máximo de un lote. Como el archivo se borra de Storage al terminar de procesarse, esto acota lo que puede haber en vuelo respecto al 1GB del free tier. |
+| `ARQ_QUEUE_NAME` | `arq:queue` | Cola de arq que usan web, worker y scripts. En producción se deja el default. **En local cada dev usa una propia** (ej. `arq:queue:jorsh`) si comparte el Redis de Upstash: dos workers en la misma cola se roban los jobs entre sí (así se "perdían" los archivos de un lote que tomaba el worker sin `DB_DSN`). |
 | `INGESTION_STORAGE_BUCKET` | `ingestion-uploads` | Bucket de Supabase Storage usado como almacenamiento temporal mientras se procesa. |
 | `INGESTION_EMBEDDING_BATCH_SIZE` | `16` | Cuántos textos se envían por request a la API de embeddings de Hugging Face. |
 | `INGESTION_JOB_TIMEOUT_SECONDS` | `300` | Timeout del job de arq (también aplica a `process_ai_task`, que normalmente responde en segundos). |
@@ -159,6 +162,8 @@ Ejemplo de bloque en `.env` (valores ficticios — nunca pegar credenciales real
 ```bash
 # HdU15 — Ingesta automática de documentos
 INGESTION_MAX_UPLOAD_MB=20
+INGESTION_MAX_BATCH_FILES=10
+INGESTION_MAX_BATCH_MB=100
 INGESTION_STORAGE_BUCKET=ingestion-uploads
 INGESTION_EMBEDDING_BATCH_SIZE=16
 INGESTION_JOB_TIMEOUT_SECONDS=300
@@ -193,7 +198,7 @@ El diseño minimiza el uso del total: el archivo original solo vive en Storage m
 
 ## 8. Cómo probarlo localmente
 
-1. Variables necesarias en `.env`: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DB_DSN`, `HF_TOKEN`, `REDIS_URL`, `ADMIN_RECOLETA_PASSWORD`/`ADMIN_ELBOSQUE_PASSWORD`. Si el `.env` apunta a la misma base que producción, poner `REMINDERS_ENABLED=false` y `CALENDAR_REMINDERS_ENABLED=false` para no disparar WhatsApps reales mientras el worker corre localmente.
+1. Variables necesarias en `.env`: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DB_DSN`, `HF_TOKEN`, `REDIS_URL`, `ARQ_QUEUE_NAME` (propia, ej. `arq:queue:<tu-nombre>`), `ADMIN_RECOLETA_PASSWORD`/`ADMIN_ELBOSQUE_PASSWORD`. Si el `.env` apunta a la misma base que producción, poner `REMINDERS_ENABLED=false` y `CALENDAR_REMINDERS_ENABLED=false` para no disparar WhatsApps reales mientras el worker corre localmente.
 2. Aplicar las migraciones: `psql "$DB_DSN" -f supabase/migrations/20260916_document_ingestion.sql` y `-f supabase/migrations/20260918_document_lifecycle.sql`.
 3. Dos terminales: `uvicorn main:app --reload` (server) y `arq worker.WorkerSettings` (worker — sin esto los jobs se quedan en `queued`).
 4. `http://localhost:8000/admin/login` (usuarios `recoleta`/`elbosque`, contraseñas en `.env`) → `/admin/documentos`.
