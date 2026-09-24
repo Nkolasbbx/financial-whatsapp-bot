@@ -469,12 +469,12 @@ def split_message(text: str, max_len: int) -> list[str]:
 
 
 UNSATISFIED_PATTERNS = {
-    "no me sirvió", "no sirvio", "eso no me sirvió", "eso no sirvio",
+    "no me sirvió", "no sirvio", "no sirvió", "eso no me sirvió", "eso no sirvio",
     "no me funcionó", "no funciono", "sigo sin entender", "no entiendo",
     "aún tengo dudas", "todavia tengo dudas", "me sigue confundiendo",
     "confundido", "confundida", "eso no fue lo que", "no es lo que",
     "no era lo que", "no me sirve", "no me ayuda", "puedes explicar mejor",
-    "explica mejor", "más detalles", "mas detalles", "no entendí", "no entendí", "no me quedó claro", "no me quedo claro",
+    "explica mejor", "más detalles", "mas detalles", "no entendí", "no entendi", "no me quedó claro", "no me quedo claro",
 }
 
 
