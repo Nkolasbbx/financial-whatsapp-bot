@@ -474,7 +474,7 @@ UNSATISFIED_PATTERNS = {
     "aún tengo dudas", "todavia tengo dudas", "me sigue confundiendo",
     "confundido", "confundida", "eso no fue lo que", "no es lo que",
     "no era lo que", "no me sirve", "no me ayuda", "puedes explicar mejor",
-    "explica mejor", "más detalles", "mas detalles",
+    "explica mejor", "más detalles", "mas detalles", "no entendí", "no entendí", "no me quedó claro", "no me quedo claro",
 }
 
 
