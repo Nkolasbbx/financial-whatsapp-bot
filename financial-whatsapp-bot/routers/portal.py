@@ -11,10 +11,12 @@ El panel muestra el estado actual, roadmap, calendario, historial y resumen
 financiero mensual en secciones independientes.
 Escribir mensajes nuevos al asistente desde la web queda para otra iteración.
 """
+import hashlib
 import html
 import logging
 import re
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Cookie, Request, Response
@@ -43,6 +45,13 @@ _PORTAL_TABS = (
 )
 _PORTAL_TAB_IDS = frozenset(tab_id for tab_id, _ in _PORTAL_TABS)
 _MONTH_PATTERN = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
+
+
+def _versioned_static_url(filename: str) -> str:
+    """Renueva la caché del navegador cuando cambia el contenido del recurso."""
+    asset = Path(__file__).resolve().parent.parent / "static" / filename
+    version = hashlib.sha256(asset.read_bytes()).hexdigest()[:12]
+    return f"/static/{filename}?v={version}"
 
 
 def _portal_navigation(active_tab: str) -> str:
@@ -733,9 +742,9 @@ async def panel(
         contenido = _tarjeta_finanzas(selected_month)
         head_extra = f'''
         <meta name="financial-csrf-token" content="{html.escape(csrf_token, quote=True)}">
-        <link rel="stylesheet" href="/static/portal_finances.css">
+        <link rel="stylesheet" href="{_versioned_static_url('portal_finances.css')}">
         '''
-        scripts = '<script defer src="/static/portal_finances.js"></script>'
+        scripts = f'<script defer src="{_versioned_static_url("portal_finances.js")}"></script>'
 
     else:
         mensajes = get_messages(phone, limit=200)
