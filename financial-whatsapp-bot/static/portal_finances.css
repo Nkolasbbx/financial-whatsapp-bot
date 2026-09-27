@@ -1,4 +1,69 @@
-/* Consulta financiera mensual del panel del emprendedor. */
+/* Consulta y registro financiero del panel del emprendedor. */
+
+.finance-dashboard [hidden] { display: none !important; }
+
+.finance-actions,
+.finance-form-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
+}
+
+.finance-button {
+    padding: 11px 18px;
+    border: 1px solid var(--petrol);
+    border-radius: 10px;
+    background: #fff;
+    color: var(--petrol);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.finance-button.primary {
+    background: var(--petrol);
+    color: #fff;
+}
+
+.finance-button:hover { filter: brightness(0.94); }
+.finance-button:disabled { opacity: 0.6; cursor: wait; }
+.finance-button:focus-visible { outline: 3px solid var(--emerald); outline-offset: 3px; }
+
+.finance-entry {
+    padding: 22px;
+    margin-bottom: 22px;
+    border: 1px solid color-mix(in srgb, var(--emerald) 65%, var(--petrol));
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--emerald) 8%, white);
+}
+
+.finance-entry h2 { margin: 0 0 18px; font-size: 18px; }
+.finance-entry fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.finance-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.finance-form-grid label { display: grid; align-content: start; gap: 7px; font-size: 13px; font-weight: 700; }
+.finance-form-grid input,
+.finance-form-grid select {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--petrol) 30%, transparent);
+    border-radius: 10px;
+    background: #fff;
+    color: var(--petrol);
+    font: inherit;
+    font-weight: 500;
+}
+.finance-form-grid input:focus,
+.finance-form-grid select:focus { outline: 2px solid var(--teal); outline-offset: 2px; }
+.finance-form-grid small { font-size: 12px; font-weight: 400; }
+.finance-description-field { grid-column: 1 / -1; }
+.finance-form-actions { justify-content: flex-end; margin: 22px 0 0; }
+.finance-status.success { background: #dcfce7; color: #166534; }
+.finance-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
 
 .finance-dashboard {
     overflow: hidden;
@@ -244,6 +309,9 @@
 }
 
 @media (max-width: 560px) {
+    .finance-form-grid { grid-template-columns: 1fr; }
+    .finance-actions .finance-button { flex: 1 1 100%; }
+    .finance-entry { padding: 16px; }
     .finance-header {
         flex-direction: column;
     }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -270,6 +271,24 @@ class PortalFinancialMovement(BaseModel):
     currency: Literal["CLP"] = "CLP"
     category: str
     description: str
+    occurred_on: date
+
+    @model_validator(mode="after")
+    def validate_category_matches_type(self):
+        _validate_category_for_type(self.movement_type, self.category)
+        return self
+
+
+class PortalFinancialMovementCreate(BaseModel):
+    """Alta desde el panel; la identidad proviene exclusivamente de la sesión."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    request_id: UUID
+    movement_type: MovementType
+    amount: int = Field(strict=True, gt=0, le=9007199254740991)
+    category: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=500)
     occurred_on: date
 
     @model_validator(mode="after")

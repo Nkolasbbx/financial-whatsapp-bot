@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
+
+from postgrest.exceptions import APIError
 
 
 VALID_MOVEMENT_TYPES = {"income", "expense"}
@@ -300,6 +303,51 @@ def list_financial_movements(
         .execute()
     )
     return result.data or []
+
+
+def create_portal_financial_movement(
+    user_id: str,
+    request_id: str,
+    movement_type: str,
+    amount: int,
+    category: str,
+    description: str,
+    occurred_on: date,
+) -> dict:
+    """Crea un movimiento sin consumir el borrador conversacional de WhatsApp.
+
+    Un ID estable por usuario y solicitud permite reintentar después de una
+    respuesta perdida sin duplicar el movimiento ni sobrescribir registros.
+    """
+    movement_type, amount, category = _validate_movement_fields(
+        movement_type, amount, category,
+    )
+    payload = {
+        "id": str(uuid5(NAMESPACE_URL, f"portal-finance:{user_id}:{request_id}")),
+        "user_id": user_id,
+        "movement_type": movement_type,
+        "amount": amount,
+        "currency": "CLP",
+        "category": category,
+        "description": _normalize_description(description),
+        "occurred_on": occurred_on.isoformat(),
+        "status": "confirmed",
+    }
+    try:
+        result = _admin_client().table("financial_movements").insert(payload).execute()
+    except APIError as error:
+        if error.code != "23505":
+            raise
+        existing = get_financial_movement(user_id, payload["id"], include_deleted=True)
+        if existing and all(existing.get(key) == value for key, value in payload.items()):
+            return existing
+        raise ValueError(
+            "Esta solicitud ya se utilizó para otro movimiento. Recarga el panel."
+        ) from error
+    movement = _first_record(result.data)
+    if movement is None:
+        raise RuntimeError("No se recibió la confirmación del guardado")
+    return movement
 
 
 def confirm_financial_movement(

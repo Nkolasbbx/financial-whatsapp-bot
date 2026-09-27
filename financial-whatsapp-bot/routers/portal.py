@@ -523,8 +523,12 @@ def _tarjeta_fechas_personales() -> str:
 
 
 def _tarjeta_finanzas(selected_month: str) -> str:
-    """Contenedor de consulta mensual; los datos se obtienen por API privada."""
+    """Consulta y registro de movimientos mediante la API privada del panel."""
     safe_month = html.escape(selected_month, quote=True)
+    try:
+        today = datetime.now(ZoneInfo(REMINDER_TIMEZONE)).date().isoformat()
+    except Exception:
+        today = date.today().isoformat()
     return f"""
     <section
         class="tarjeta finance-dashboard"
@@ -535,7 +539,7 @@ def _tarjeta_finanzas(selected_month: str) -> str:
             <div>
                 <h1>💰 Resumen financiero</h1>
                 <p class="subtitulo">
-                    Revisa los ingresos y gastos que registraste por WhatsApp.
+                    Registra tus ingresos y gastos aquí o por WhatsApp y revisa tu mes.
                 </p>
             </div>
             <label class="finance-month-field">
@@ -547,6 +551,49 @@ def _tarjeta_finanzas(selected_month: str) -> str:
                 >
             </label>
         </div>
+
+        <div class="finance-actions">
+            <button type="button" class="finance-button primary" id="finance-add-income">+ Registrar ingreso</button>
+            <button type="button" class="finance-button" id="finance-add-expense">+ Registrar gasto</button>
+        </div>
+
+        <section id="finance-entry" class="finance-entry" aria-labelledby="finance-entry-title" hidden>
+            <h2 id="finance-entry-title">Nuevo movimiento</h2>
+            <form id="finance-form">
+                <fieldset id="finance-fields">
+                    <legend class="finance-sr-only">Datos del movimiento</legend>
+                    <div class="finance-form-grid">
+                        <label for="finance-type">Tipo
+                            <select id="finance-type" name="movement_type" required>
+                                <option value="income">Ingreso</option>
+                                <option value="expense">Gasto</option>
+                            </select>
+                        </label>
+                        <label for="finance-amount">Monto (CLP)
+                            <input id="finance-amount" name="amount" type="number" inputmode="numeric"
+                                   min="1" max="9007199254740991" step="1" placeholder="Ej. 40000" required
+                                   aria-describedby="finance-amount-hint">
+                            <small id="finance-amount-hint">Pesos chilenos, sin puntos ni decimales.</small>
+                        </label>
+                        <label for="finance-category">Categoría
+                            <select id="finance-category" name="category" required></select>
+                        </label>
+                        <label for="finance-date">Fecha del movimiento
+                            <input id="finance-date" name="occurred_on" type="date" value="{today}" required>
+                        </label>
+                        <label for="finance-description" class="finance-description-field">Descripción
+                            <input id="finance-description" name="description" type="text" maxlength="500"
+                                   placeholder="Ej. Venta de productos" required>
+                        </label>
+                    </div>
+                    <div class="finance-form-actions">
+                        <button type="button" class="finance-button" id="finance-cancel">Cancelar</button>
+                        <button type="submit" class="finance-button primary" id="finance-save">Guardar ingreso</button>
+                    </div>
+                </fieldset>
+            </form>
+        </section>
+        <p id="finance-save-status" class="finance-status" role="status" aria-live="polite" hidden></p>
 
         <div
             id="finance-status"
@@ -578,7 +625,7 @@ def _tarjeta_finanzas(selected_month: str) -> str:
             <div id="finance-empty" class="finance-empty" hidden>
                 <h2>Aún no tienes movimientos este mes</h2>
                 <p>
-                    Puedes comenzar escribiendo por WhatsApp, por ejemplo:
+                    Usa «Registrar ingreso» o «Registrar gasto», o escribe por WhatsApp:
                     <em>“Hoy vendí $40.000 en empanadas”</em>.
                 </p>
             </div>
@@ -604,7 +651,7 @@ def _tarjeta_finanzas(selected_month: str) -> str:
 
         <noscript>
             <p class="finance-status error">
-                Activa JavaScript para consultar tu resumen financiero.
+                Activa JavaScript para consultar y registrar tus movimientos.
             </p>
         </noscript>
     </section>
@@ -677,13 +724,17 @@ async def panel(
         """
 
     elif active_tab == "finanzas":
+        csrf_token = await get_or_create_csrf_token(redis, financial_session)
         selected_month = (
             month
             if month and _MONTH_PATTERN.fullmatch(month)
             else _current_portal_month()
         )
         contenido = _tarjeta_finanzas(selected_month)
-        head_extra = '<link rel="stylesheet" href="/static/portal_finances.css">'
+        head_extra = f'''
+        <meta name="financial-csrf-token" content="{html.escape(csrf_token, quote=True)}">
+        <link rel="stylesheet" href="/static/portal_finances.css">
+        '''
         scripts = '<script defer src="/static/portal_finances.js"></script>'
 
     else:

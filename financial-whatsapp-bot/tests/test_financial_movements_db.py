@@ -2,11 +2,56 @@ import unittest
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from postgrest.exceptions import APIError
 
 from db import financial_movements
 
 
 class FinancialMovementsDatabaseTests(unittest.TestCase):
+    @patch.object(financial_movements, "_admin_client")
+    def test_portal_insert_preserves_whatsapp_draft_and_scopes_request_to_user(self, admin_client_mock):
+        client = admin_client_mock.return_value
+        client.table.return_value.insert.return_value.execute.return_value = SimpleNamespace(data=[{"id": "saved"}])
+        args = ("request-1", "income", 40000, "ventas", " Venta ", date(2026, 9, 27))
+        result = financial_movements.create_portal_financial_movement("user-1", *args)
+        first_payload = client.table.return_value.insert.call_args.args[0]
+        self.assertEqual(result["id"], "saved")
+        self.assertEqual(first_payload["description"], "Venta")
+        self.assertEqual(first_payload["user_id"], "user-1")
+        self.assertEqual(first_payload["occurred_on"], "2026-09-27")
+        client.table.assert_called_once_with("financial_movements")
+        client.rpc.assert_not_called()
+        financial_movements.create_portal_financial_movement("user-2", *args)
+        second_payload = client.table.return_value.insert.call_args.args[0]
+        self.assertNotEqual(first_payload["id"], second_payload["id"])
+
+    @patch.object(financial_movements, "get_financial_movement")
+    @patch.object(financial_movements, "_admin_client")
+    def test_portal_retry_recovers_same_record_without_updating_it(self, admin_client_mock, get_mock):
+        client = admin_client_mock.return_value
+        insert = client.table.return_value.insert
+        def duplicate():
+            get_mock.return_value = dict(insert.call_args.args[0])
+            raise APIError({"code": "23505", "message": "duplicate", "details": "", "hint": ""})
+        insert.return_value.execute.side_effect = duplicate
+        result = financial_movements.create_portal_financial_movement(
+            "user-1", "request-1", "expense", 12000, "transporte", "Traslado", date(2026, 9, 27),
+        )
+        get_mock.assert_called_once_with("user-1", result["id"], include_deleted=True)
+        client.table.return_value.update.assert_not_called()
+        client.table.return_value.upsert.assert_not_called()
+
+    @patch.object(financial_movements, "get_financial_movement", return_value={"amount": 1})
+    @patch.object(financial_movements, "_admin_client")
+    def test_portal_rejects_reused_request_with_changed_data(self, admin_client_mock, get_mock):
+        admin_client_mock.return_value.table.return_value.insert.return_value.execute.side_effect = APIError(
+            {"code": "23505", "message": "duplicate", "details": "", "hint": ""}
+        )
+        with self.assertRaises(ValueError):
+            financial_movements.create_portal_financial_movement(
+                "user-1", "request-1", "income", 40000, "ventas", "Venta", date(2026, 9, 27),
+            )
+
     @patch.object(financial_movements, "_admin_client")
     def test_confirm_uses_atomic_rpc(self, admin_client_mock):
         client = MagicMock()
@@ -91,4 +136,3 @@ class FinancialMovementsDatabaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

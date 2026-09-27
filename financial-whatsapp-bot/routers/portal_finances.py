@@ -1,17 +1,19 @@
-"""API privada de consulta financiera del panel del emprendedor."""
+"""API privada de consulta y registro financiero del panel del emprendedor."""
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Cookie, HTTPException, Query, Request
+from fastapi import APIRouter, Cookie, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 
 from config import REMINDER_TIMEZONE
 from db.financial_movements import (
+    create_portal_financial_movement,
     get_financial_month_summary,
     list_financial_movements,
 )
@@ -20,11 +22,13 @@ from schemas.financial_movements import (
     FinancialMonthSummary,
     PortalFinancialDashboardResponse,
     PortalFinancialMovement,
+    PortalFinancialMovementCreate,
 )
-from services.portal_auth import get_session_phone
+from services.portal_auth import get_session_phone, validate_csrf_token
 
 
 router = APIRouter(prefix="/portal/api/finances", tags=["portal-finances"])
+logger = logging.getLogger("financial")
 
 _SESSION_COOKIE = "financial_session"
 _MONTH_PATTERN = re.compile(r"^(\d{4})-(\d{2})$")
@@ -83,6 +87,40 @@ async def _authenticated_user(
     if not user or not user.get("id"):
         raise HTTPException(status_code=404, detail="No encontramos el perfil")
     return user
+
+
+@router.post("/movements", response_model=PortalFinancialMovement, status_code=201)
+async def create_movement(
+    payload: PortalFinancialMovementCreate,
+    request: Request,
+    financial_session: str | None = Cookie(default=None),
+    csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+):
+    user = await _authenticated_user(request, financial_session)
+    if not await validate_csrf_token(
+        request.app.state.redis, financial_session, csrf_token,
+    ):
+        raise HTTPException(status_code=403, detail="La solicitud no es válida. Recarga el panel.")
+    try:
+        movement = await run_in_threadpool(
+            create_portal_financial_movement,
+            str(user["id"]),
+            str(payload.request_id),
+            payload.movement_type,
+            payload.amount,
+            payload.category,
+            payload.description,
+            payload.occurred_on,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except Exception as error:
+        logger.exception("No se pudo registrar el movimiento desde el panel")
+        raise HTTPException(
+            status_code=503,
+            detail="No pudimos confirmar el guardado. Reintenta con los mismos datos.",
+        ) from error
+    return PortalFinancialMovement.model_validate(movement)
 
 
 @router.get(
