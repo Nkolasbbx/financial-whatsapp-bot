@@ -272,6 +272,36 @@ def save_fund_answer(user_id: str, field_key: str, value: Any) -> dict | None:
     return result.data[0] if result.data else None
 
 
+def save_fund_answers(user_id: str, answers: dict[str, Any]) -> list[dict]:
+    """Crea o reemplaza varias respuestas en un único upsert.
+
+    Mismas reglas que ``save_fund_answer``: ``None`` se guarda como
+    ``{"status": "unknown"}``.
+    """
+    now = _utc_now_iso()
+    payload = []
+    for field_key, value in answers.items():
+        normalized_key = (field_key or "").strip()
+        if not normalized_key:
+            raise ValueError("field_key no puede estar vacío")
+        payload.append({
+            "user_id": user_id,
+            "field_key": normalized_key,
+            "value": UNKNOWN_ANSWER.copy() if value is None else value,
+            "updated_at": now,
+        })
+    if not payload:
+        return []
+
+    result = (
+        _admin_client()
+        .table("fund_user_answers")
+        .upsert(payload, on_conflict="user_id,field_key")
+        .execute()
+    )
+    return result.data or []
+
+
 def get_fund_answer_records(user_id: str) -> dict[str, Any]:
     """Obtiene las respuestas JSONB tal como están persistidas."""
     result = (

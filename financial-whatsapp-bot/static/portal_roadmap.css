@@ -1,0 +1,185 @@
+/* FinancIAl — roadmap del panel (/portal?tab=resumen).
+   Checklist desplegable basado en el patrón "Setup guide" de Shopify
+   Polaris: progreso "X de Y", pasos con casilla circular y separadores
+   finos. Botones y mensajes reutilizan portal_calendar.css. */
+
+.roadmap-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+}
+
+.roadmap-header .subtitulo {
+    margin: 0;
+}
+
+.roadmap-undo {
+    flex-shrink: 0;
+    padding: 4px 0;
+    border: 0;
+    background: none;
+    color: var(--petrol);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 300ms;
+}
+
+.roadmap-undo:hover:not(:disabled) {
+    color: var(--teal);
+}
+
+.roadmap-undo:disabled {
+    cursor: wait;
+    opacity: 0.6;
+}
+
+#roadmap-card .barra-fondo {
+    height: 8px;
+    margin: 12px 0 8px;
+}
+
+#roadmap-card .barra-progreso {
+    transition: width 0.4s ease-out;
+}
+
+#roadmap-message:not(:empty) {
+    margin-top: 12px;
+}
+
+.roadmap-list {
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.roadmap-step {
+    border-top: 1px solid color-mix(in srgb, var(--petrol) 20%, transparent);
+}
+
+.roadmap-step-toggle {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 14px 0;
+    border: 0;
+    background: none;
+    color: var(--petrol);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.roadmap-check {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border: 2px dashed color-mix(in srgb, var(--petrol) 40%, transparent);
+    border-radius: 50%;
+    transition: background-color 0.3s, border-color 0.3s;
+}
+
+.roadmap-check svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: var(--petrol);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.roadmap-step.done .roadmap-check {
+    border: 2px solid var(--emerald);
+    background: var(--emerald);
+}
+
+.roadmap-step.done .roadmap-check svg {
+    opacity: 1;
+}
+
+.roadmap-step.current .roadmap-check {
+    border-style: solid;
+    border-color: var(--emerald);
+}
+
+.roadmap-step-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.roadmap-step.done .roadmap-step-title {
+    font-weight: 500;
+    opacity: 0.75;
+}
+
+.roadmap-chevron {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 0.3s;
+}
+
+.roadmap-step-toggle[aria-expanded="true"] .roadmap-chevron {
+    transform: rotate(180deg);
+}
+
+/* Sangría = casilla (22px) + separación (12px): alinea con el título. */
+.roadmap-step-panel {
+    padding: 0 0 16px 34px;
+}
+
+.roadmap-step-desc {
+    margin: 0;
+    color: color-mix(in srgb, var(--petrol) 90%, transparent);
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+.hito-listo {
+    margin-top: 12px;
+}
+
+/* El botón existe en todos los pasos para que el JS avance sin recargar,
+   pero solo se muestra (y es enfocable) en el paso actual. */
+.roadmap-step:not(.current) .hito-listo {
+    display: none;
+}
+
+.roadmap-link {
+    display: inline-block;
+    text-decoration: none;
+}
+
+@media (max-width: 640px) {
+    .roadmap-step-panel {
+        padding-left: 0;
+    }
+
+    .hito-listo {
+        width: 100%;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #roadmap-card * {
+        transition: none !important;
+    }
+}

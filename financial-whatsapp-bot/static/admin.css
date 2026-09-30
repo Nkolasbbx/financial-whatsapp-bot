@@ -133,7 +133,7 @@ select:focus-visible {
 .admin-nav-session {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 20px;
 }
 
 .admin-nav-account {
@@ -184,6 +184,11 @@ select:focus-visible {
 
 .admin-page-heading {
     margin-bottom: 32px;
+}
+
+/* Login: kicker y titular centrados sobre la tarjeta angosta */
+.admin-page-heading-center {
+    text-align: center;
 }
 
 .admin-kicker {
@@ -268,11 +273,6 @@ select:focus-visible {
     padding: 24px;
     text-align: center;
     border: 1px solid transparent;
-    transition: border-color 300ms, transform 300ms;
-}
-
-.admin-stat:hover {
-    transform: translateY(-4px);
 }
 
 .admin-stat:nth-child(1) {
@@ -395,6 +395,33 @@ select:focus-visible {
     border-top: 1px solid color-mix(in srgb, var(--petrol) 20%, transparent);
 }
 
+/* Filas extra de la lista de emprendedores, ocultas hasta "Ver más" */
+.admin-table-row-hidden {
+    display: none;
+}
+
+.admin-table-row-hidden.is-visible {
+    display: table-row;
+}
+
+.admin-table-toggle {
+    display: block;
+    margin: 16px auto 0;
+    background: transparent;
+    color: var(--petrol);
+    border: 1px solid color-mix(in srgb, var(--petrol) 40%, transparent);
+    padding: 8px 20px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: border-color 300ms;
+}
+
+.admin-table-toggle:hover {
+    border-color: var(--emerald);
+}
+
 .admin-badge {
     display: inline-block;
     padding: 2px 12px;
@@ -404,16 +431,22 @@ select:focus-visible {
     border: 1px solid transparent;
 }
 
+/* Formalizado/En progreso (tabla de emprendedores): verde y azul semánticos
+   a pedido explícito, ambos fuera de la paleta cerrada de CLAUDE.md a
+   propósito — mismo criterio que las insignias de estado de la ingesta de
+   documentos más abajo (colores semánticos, no de marca, para distinguir
+   estados de un vistazo en una tabla), y el azul reutiliza el mismo tono
+   que la insignia "Procesando" de esa tabla. */
 .admin-badge.completo {
-    background: color-mix(in srgb, var(--emerald) 22%, white);
-    border-color: color-mix(in srgb, var(--emerald) 50%, transparent);
-    color: var(--petrol);
+    background: #dcfce7;
+    border-color: #4ade80;
+    color: #166534;
 }
 
 .admin-badge.progreso {
-    background: color-mix(in srgb, var(--teal) 22%, white);
-    border-color: color-mix(in srgb, var(--teal) 50%, transparent);
-    color: var(--petrol);
+    background: #dbeafe;
+    border-color: #60a5fa;
+    color: #1e40af;
 }
 
 .admin-badge.eliminado {

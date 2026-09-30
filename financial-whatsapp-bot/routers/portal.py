@@ -7,8 +7,9 @@ web"), recibe un link de un solo uso, y ese link crea una sesión válida
 por 7 días (cookie). No se pide ni guarda ningún dato nuevo — la
 identidad sigue siendo el mismo teléfono que ya usa con el bot.
 
-El panel muestra el estado actual, roadmap, calendario, historial y resumen
-financiero mensual en secciones independientes.
+El panel muestra el estado actual, roadmap (con avance de hitos), calendario,
+evaluación de fondos, historial y resumen financiero mensual en secciones
+independientes.
 Escribir mensajes nuevos al asistente desde la web queda para otra iteración.
 """
 import hashlib
@@ -27,6 +28,7 @@ from config import CALENDAR_DEFAULT_HOUR, REMINDER_TIMEZONE
 from db.users import get_messages, get_user
 from services.portal_auth import (
     create_session,
+    destroy_session,
     get_or_create_csrf_token,
     get_session_phone,
     redeem_access_token,
@@ -40,6 +42,7 @@ _SESSION_COOKIE = "financial_session"
 _PORTAL_TABS = (
     ("resumen", "Resumen"),
     ("calendario", "Calendario"),
+    ("fondos", "Fondos"),
     ("finanzas", "Finanzas"),
     ("chat", "Chat"),
 )
@@ -86,6 +89,15 @@ def _pagina_base(
     active_tab: str | None = None,
 ) -> str:
     navigation = _portal_navigation(active_tab) if active_tab else ""
+    # El botón de logout solo tiene sentido con una sesión activa. active_tab
+    # únicamente lo pasa panel() (la página autenticada) — _pagina_no_autorizado
+    # nunca lo pasa, así que sirve como señal de "hay sesión" sin agregar otro
+    # parámetro.
+    logout_link = (
+        '<a href="/portal/logout" class="portal-logout">Cerrar sesión</a>'
+        if active_tab
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="es">
 <head>
@@ -126,6 +138,8 @@ def _pagina_base(
         min-height: 68px;
         display: flex;
         align-items: center;
+        justify-content: space-between;
+        gap: 16px;
         padding: 16px 24px;
     }}
     .portal-brand {{
@@ -144,6 +158,21 @@ def _pagina_base(
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: var(--petrol);
+    }}
+    .portal-logout {{
+        border: 1px solid color-mix(in srgb, var(--petrol) 25%, transparent);
+        border-radius: 999px;
+        padding: 6px 14px;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--petrol);
+        text-decoration: none;
+        white-space: nowrap;
+        transition: border-color 300ms, color 300ms;
+    }}
+    .portal-logout:hover {{
+        border-color: var(--emerald);
+        color: var(--emerald);
     }}
     .contenedor {{
         max-width: 1280px;
@@ -290,6 +319,7 @@ def _pagina_base(
                 <span class="portal-brand-sub">Panel del emprendedor</span>
             </span>
         </a>
+        {logout_link}
     </div>
 </header>
 <div class="contenedor" id="main" tabindex="-1">
@@ -338,23 +368,192 @@ async def acceso(token: str, request: Request):
     return response
 
 
-def _tarjeta_roadmap(roadmap: list[dict]) -> str:
-    """Lista completa de hitos (✅/⬜), no solo el pendiente."""
-    if not roadmap:
-        return ""
+@router.get("/logout")
+async def logout(
+    request: Request,
+    financial_session: str | None = Cookie(default=None),
+):
+    redis = request.app.state.redis
+    await destroy_session(redis, financial_session)
 
-    filas = "\n".join(
-        f'<div class="hito {"completado" if hito.get("done") else "pendiente"}">'
-        f'<span class="check">{"✅" if hito.get("done") else "⬜"}</span>'
-        f'<div><strong>{html.escape(hito.get("title") or "")}</strong>'
-        f'<div class="hito-desc">{html.escape(hito.get("desc") or "")}</div></div>'
-        f'</div>'
-        for hito in roadmap
+    response = Response(status_code=303, headers={"Location": "/portal"})
+    response.delete_cookie(_SESSION_COOKIE)
+    return response
+
+
+def _csrf_meta(csrf_token: str) -> str:
+    return (
+        '<meta name="financial-csrf-token" '
+        f'content="{html.escape(csrf_token, quote=True)}">'
     )
+
+
+_CHECK_ICON = (
+    '<svg viewBox="0 0 24 24" aria-hidden="true">'
+    '<path d="M5 12.5l4.5 4.5L19 7.5"/></svg>'
+)
+_CHEVRON_ICON = (
+    '<svg class="roadmap-chevron" viewBox="0 0 24 24" aria-hidden="true">'
+    '<path d="M6 9l6 6 6-6"/></svg>'
+)
+
+
+def _tarjeta_roadmap(user: dict) -> str:
+    """Roadmap de formalización como checklist desplegable (patrón "Setup
+    guide" de Shopify Polaris).
+
+    Todos los pasos traen su botón "Marcar como listo", pero el CSS solo
+    muestra el del paso actual: así el JS puede avanzar/retroceder sin
+    recargar, y el backend igual valida que sea el hito pendiente (el
+    roadmap avanza en orden, igual que en WhatsApp)."""
+    if user.get("inicio_sii") == "si":
+        return """
+        <section class="tarjeta" id="roadmap-card">
+            <h1>🎉 Completaste tu formalización</h1>
+            <p class="subtitulo">Tu negocio ya opera formalmente ante el SII.
+            El siguiente paso es hacerlo crecer: revisa los fondos concursables
+            a los que puedes postular.</p>
+            <a class="calendar-primary-button roadmap-link" href="/portal?tab=fondos">Ver fondos concursables</a>
+        </section>
+        """
+
+    roadmap = user.get("roadmap") or []
+    if not roadmap:
+        return """
+        <section class="tarjeta" id="roadmap-card">
+            <h1>📋 Tu ruta de formalización</h1>
+            <p class="subtitulo" style="margin-bottom:0">Aún no tienes una ruta
+            activa. Escríbele <strong>hola</strong> a FinancIAl por WhatsApp y
+            cuéntale sobre tu negocio: tu ruta de trámites aparecerá aquí.</p>
+        </section>
+        """
+
+    pendiente = get_pending_milestone(user)
+    completados = sum(1 for hito in roadmap if hito.get("done"))
+    total = len(roadmap)
+    porcentaje = round((completados / total) * 100) if total else 0
+
+    pasos = []
+    for indice, hito in enumerate(roadmap, start=1):
+        if hito.get("done"):
+            estado = "done"
+        elif hito is pendiente:
+            estado = "current"
+        else:
+            estado = "upcoming"
+        abierto = estado == "current"
+        titulo = html.escape(hito.get("title") or "")
+        milestone_id = html.escape(str(hito.get("id")), quote=True)
+        panel_id = f"roadmap-panel-{indice}"
+        pasos.append(f"""
+        <li class="roadmap-step {estado}" data-milestone-id="{milestone_id}">
+            <button type="button" class="roadmap-step-toggle"
+                    aria-expanded="{"true" if abierto else "false"}" aria-controls="{panel_id}">
+                <span class="roadmap-check">{_CHECK_ICON}</span>
+                <span class="roadmap-step-title">{titulo}</span>
+                {_CHEVRON_ICON}
+            </button>
+            <div class="roadmap-step-panel" id="{panel_id}"{"" if abierto else " hidden"}>
+                <p class="roadmap-step-desc">{html.escape(hito.get("desc") or "")}</p>
+                <button type="button" class="calendar-primary-button hito-listo"
+                        aria-label="Marcar como listo: {titulo}">Marcar como listo</button>
+            </div>
+        </li>
+        """)
+
     return f"""
-    <div class="tarjeta">
-        <h1>📋 Tu ruta de formalización</h1>
-        {filas}
+    <section class="tarjeta" id="roadmap-card">
+        <div class="roadmap-header">
+            <div>
+                <h1>📋 Tu ruta de formalización</h1>
+                <p class="subtitulo" id="roadmap-count">{completados} de {total} trámites completados</p>
+            </div>
+            <button type="button" id="roadmap-undo-button"
+                    class="roadmap-undo"{"" if completados else " hidden"}>Deshacer último</button>
+        </div>
+        <div class="barra-fondo" role="progressbar" aria-label="Progreso de formalización"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="{porcentaje}" id="roadmap-bar">
+            <div class="barra-progreso" style="width:{porcentaje}%"></div>
+        </div>
+        <div id="roadmap-message" role="status" aria-live="polite"></div>
+        <ol class="roadmap-list">{"".join(pasos)}</ol>
+        <noscript>
+            <p class="calendar-message error">
+                Activa JavaScript para ver el detalle y marcar tus trámites.
+            </p>
+        </noscript>
+    </section>
+    """
+
+
+def _tarjeta_fondos() -> str:
+    """Contenedor de la evaluación de fondos; los datos llegan por API privada."""
+    return """
+    <section class="tarjeta funds-dashboard" id="funds-dashboard">
+        <div class="calendar-header">
+            <div>
+                <h1>🎯 Fondos concursables</h1>
+                <p class="subtitulo">Tu compatibilidad con los fondos vigentes
+                según tu perfil y tus respuestas. Si algo cambió, actualiza tus
+                datos y recalculamos al instante.</p>
+            </div>
+            <button
+                type="button"
+                id="funds-edit-button"
+                class="calendar-primary-button"
+                disabled
+            >Actualizar mis datos</button>
+        </div>
+
+        <div id="funds-message" role="status" aria-live="polite"></div>
+        <div id="funds-status" class="finance-status">Cargando evaluación…</div>
+        <div id="funds-list" class="funds-list"></div>
+
+        <noscript>
+            <p class="calendar-message error">
+                Activa JavaScript para revisar tu evaluación de fondos.
+            </p>
+        </noscript>
+    </section>
+
+    <div
+        id="funds-modal-backdrop"
+        class="calendar-modal-backdrop"
+        aria-hidden="true"
+    >
+        <section
+            class="calendar-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="funds-modal-title"
+        >
+            <button
+                type="button"
+                id="funds-modal-close"
+                class="calendar-close-button"
+                aria-label="Cerrar"
+            >×</button>
+
+            <h2 id="funds-modal-title">Actualizar datos de postulación</h2>
+            <p class="subtitulo">Esto no modifica tu rubro, comuna, estado SII
+            ni tu ruta de formalización.</p>
+            <form id="funds-form" novalidate>
+                <div id="funds-fields"></div>
+                <div id="funds-form-error" class="calendar-form-error"></div>
+                <div class="calendar-modal-actions">
+                    <button
+                        type="button"
+                        id="funds-cancel-button"
+                        class="calendar-secondary-button"
+                    >Cancelar</button>
+                    <button
+                        type="submit"
+                        id="funds-save-button"
+                        class="calendar-primary-button"
+                    >Guardar y recalcular</button>
+                </div>
+            </form>
+        </section>
     </div>
     """
 
@@ -690,12 +889,6 @@ async def panel(
     scripts = ""
 
     if active_tab == "resumen":
-        roadmap = user.get("roadmap") or []
-        completados = sum(1 for hito in roadmap if hito.get("done"))
-        total = len(roadmap)
-        porcentaje = round((completados / total) * 100) if total else 0
-        hito_pendiente = get_pending_milestone(user)
-
         rubro = html.escape(
             (user.get("rubro") or user.get("rubro_raw") or "tu negocio").capitalize()
         )
@@ -703,27 +896,29 @@ async def panel(
         es_formalizado = user.get("inicio_sii") == "si"
         estado_sii = "✅ Formalizado" if es_formalizado else "⚠️ No formalizado"
 
+        # El progreso y el siguiente paso viven en el timeline del roadmap,
+        # que el JS actualiza en vivo; aquí solo va el saludo y el perfil.
         tarjeta_estado = f"""
         <div class="tarjeta">
             <h1>👋 Hola de nuevo</h1>
-            <p class="subtitulo">{rubro} · {comuna} · {estado_sii}</p>
-            {"" if es_formalizado else f'''
-            <div class="barra-fondo"><div class="barra-progreso" style="width:{porcentaje}%"></div></div>
-            <p class="subtitulo">{completados} de {total} hitos completados ({porcentaje}%)</p>
-            '''}
-            {f'<p><strong>👉 Tu siguiente paso:</strong> {html.escape(hito_pendiente["title"])}</p>' if hito_pendiente else ''}
+            <p class="subtitulo" style="margin-bottom:0">{rubro} · {comuna} · {estado_sii}</p>
         </div>
         """
-        contenido = tarjeta_estado + _tarjeta_roadmap(roadmap)
+        contenido = tarjeta_estado + _tarjeta_roadmap(user)
+        csrf_token = await get_or_create_csrf_token(redis, financial_session)
+        # Los botones reutilizan los estilos de portal_calendar.css.
+        head_extra = f"""
+        {_csrf_meta(csrf_token)}
+        <link rel="stylesheet" href="/static/portal_calendar.css">
+        <link rel="stylesheet" href="/static/portal_roadmap.css">
+        """
+        scripts = '<script defer src="/static/portal_roadmap.js"></script>'
 
     elif active_tab == "calendario":
         csrf_token = await get_or_create_csrf_token(redis, financial_session)
         contenido = _tarjeta_fechas_personales() + _tarjeta_calendario(user)
         head_extra = f"""
-        <meta
-            name="financial-csrf-token"
-            content="{html.escape(csrf_token, quote=True)}"
-        >
+        {_csrf_meta(csrf_token)}
         <link rel="stylesheet" href="/static/portal_calendar.css">
         """
         scripts = """
@@ -731,6 +926,19 @@ async def panel(
         <script defer src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.15/locales-all.global.min.js"></script>
         <script defer src="/static/portal_calendar.js"></script>
         """
+
+    elif active_tab == "fondos":
+        csrf_token = await get_or_create_csrf_token(redis, financial_session)
+        contenido = _tarjeta_fondos()
+        # Modal, botones y campos reutilizan portal_calendar.css; el estado
+        # de carga reutiliza portal_finances.css.
+        head_extra = f"""
+        {_csrf_meta(csrf_token)}
+        <link rel="stylesheet" href="/static/portal_calendar.css">
+        <link rel="stylesheet" href="/static/portal_finances.css">
+        <link rel="stylesheet" href="/static/portal_funds.css">
+        """
+        scripts = '<script defer src="/static/portal_funds.js"></script>'
 
     elif active_tab == "finanzas":
         csrf_token = await get_or_create_csrf_token(redis, financial_session)

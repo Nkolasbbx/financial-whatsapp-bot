@@ -6,3 +6,4 @@ venv/
 .venv/
 local_testing/
 CLAUDE.md
+.CLAUDE

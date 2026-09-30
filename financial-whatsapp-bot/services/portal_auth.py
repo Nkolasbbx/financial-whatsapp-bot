@@ -66,6 +66,14 @@ async def get_session_phone(redis, session_id: str | None) -> str | None:
     return _as_str(phone)
 
 
+async def destroy_session(redis, session_id: str | None) -> None:
+    """Cierra sesión: borra la sesión de Redis (mismo patrón que
+    admin_auth.destroy_admin_session). El CSRF token queda con su propio TTL
+    y no hace falta borrarlo aparte: sin sesión válida no se puede usar."""
+    if session_id:
+        await redis.delete(_SESSION_PREFIX + session_id)
+
+
 async def get_or_create_csrf_token(redis, session_id: str) -> str:
     """Obtiene el token CSRF asociado a una sesión o crea uno nuevo."""
     if not session_id:

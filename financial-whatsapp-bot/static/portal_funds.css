@@ -1,0 +1,188 @@
+/* FinancIAl — evaluación de fondos concursables (/portal?tab=fondos).
+   Modal, botones y campos reutilizan portal_calendar.css; el estado de
+   carga reutiliza .finance-status de portal_finances.css. Las tarjetas
+   usan las recetas tintadas de CLAUDE.md §3.1. */
+
+.funds-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.fund-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    padding: 20px;
+    border: 1px solid color-mix(in srgb, var(--petrol) 18%, transparent);
+    border-radius: 16px;
+    background: color-mix(in srgb, white 96%, var(--petrol));
+    transition: transform 300ms, border-color 300ms;
+}
+
+.fund-card:hover {
+    transform: translateY(-4px);
+    border-color: color-mix(in srgb, var(--emerald) 50%, transparent);
+}
+
+/* Fondo con requisito excluyente: receta petróleo neutra. */
+.fund-card.blocked {
+    border-color: color-mix(in srgb, var(--petrol) 30%, transparent);
+    background: color-mix(in srgb, var(--petrol) 10%, white);
+}
+
+.fund-card-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.fund-emoji {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--emerald) 40%, white);
+    font-size: 22px;
+}
+
+.fund-card.blocked .fund-emoji {
+    background: color-mix(in srgb, var(--petrol) 20%, white);
+}
+
+.fund-title {
+    flex: 1;
+    min-width: 0;
+}
+
+.fund-title h2 {
+    margin: 0 0 4px;
+    color: var(--petrol);
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.fund-meta {
+    margin: 0;
+    color: color-mix(in srgb, var(--petrol) 90%, transparent);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.fund-percentage {
+    flex-shrink: 0;
+    color: var(--teal);
+    font-size: 24px;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.fund-counts {
+    margin: 0;
+    color: var(--petrol);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.fund-blocked-note {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--petrol) 12%, white);
+    color: var(--petrol);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.fund-details summary {
+    cursor: pointer;
+    color: var(--petrol);
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.fund-details summary:hover {
+    color: var(--teal);
+}
+
+.fund-requirements {
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.fund-requirement {
+    display: flex;
+    gap: 10px;
+    padding: 10px 0;
+    border-top: 1px solid color-mix(in srgb, var(--petrol) 20%, transparent);
+}
+
+.fund-requirement:first-child {
+    border-top: none;
+}
+
+.fund-requirement-icon {
+    font-size: 16px;
+    line-height: 1.4;
+}
+
+.fund-requirement-body {
+    min-width: 0;
+    font-size: 14px;
+}
+
+.fund-requirement-body strong {
+    display: block;
+    color: var(--petrol);
+}
+
+.fund-requirement-status {
+    display: inline-block;
+    margin-top: 2px;
+    color: color-mix(in srgb, var(--petrol) 90%, transparent);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.025em;
+    text-transform: uppercase;
+}
+
+.fund-requirement.met .fund-requirement-body strong {
+    font-weight: 600;
+}
+
+.fund-requirement-note {
+    margin: 6px 0 0;
+    color: color-mix(in srgb, var(--petrol) 90%, transparent);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.fund-link {
+    align-self: flex-start;
+    margin-top: auto;
+    color: var(--petrol);
+    font-size: 14px;
+    font-weight: 700;
+    transition: color 300ms;
+}
+
+.fund-link:hover {
+    color: var(--emerald);
+}
+
+.funds-field-question {
+    color: color-mix(in srgb, var(--petrol) 90%, transparent);
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.45;
+}
+
+@media (max-width: 850px) {
+    .funds-list {
+        grid-template-columns: 1fr;
+    }
+}

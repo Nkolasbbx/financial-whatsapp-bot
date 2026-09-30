@@ -30,7 +30,7 @@ def _evaluar_requisito_legacy(clave: str, user: dict) -> bool | None:
     """Evaluación de respaldo para instalaciones sin el catálogo nuevo."""
     is_formal = user.get("inicio_sii") == "si"
 
-    rubro_lower = (user.get("rubro_raw") or user.get("rubro", "")).lower()
+    rubro_lower = (user.get("rubro_raw") or user.get("rubro") or "").lower()
     rubros_pioneras = [
         "construccion", "construcción",
         "tecnologia", "tecnología", "informatica", "informática", "computador",
@@ -85,7 +85,7 @@ def _evaluate_custom_requirement(
     if handler != "rubro_pioneras":
         return None
 
-    rubro_lower = (user.get("rubro_raw") or user.get("rubro", "")).lower()
+    rubro_lower = (user.get("rubro_raw") or user.get("rubro") or "").lower()
     rubros_pioneras = [
         "construccion", "construcción",
         "tecnologia", "tecnología", "informatica", "informática", "computador",
@@ -446,20 +446,28 @@ def evaluate_available_funds(
     user: dict,
     today: date | None = None,
     include_closed: bool = False,
+    definitions: dict[str, dict] | None = None,
+    answers: dict | None = None,
 ) -> list[dict]:
-    """Evalúa y ordena en una sola operación los fondos del perfil."""
+    """Evalúa y ordena en una sola operación los fondos del perfil.
+
+    ``definitions`` y ``answers`` pueden venir precargados para no repetir
+    consultas cuando quien llama ya los necesitaba (ej. el panel web).
+    """
     current_date = today or date.today()
-    definitions = {}
-    answers = {}
-    try:
-        definitions = get_requirement_definitions()
-        if user.get("id"):
-            answers = get_fund_answers(user["id"])
-    except Exception as error:
-        logger.warning(
-            "No se pudo cargar el contexto estructurado de fondos: %s",
-            error,
-        )
+    if definitions is None or answers is None:
+        try:
+            if definitions is None:
+                definitions = get_requirement_definitions()
+            if answers is None:
+                answers = get_fund_answers(user["id"]) if user.get("id") else {}
+        except Exception as error:
+            logger.warning(
+                "No se pudo cargar el contexto estructurado de fondos: %s",
+                error,
+            )
+        definitions = definitions or {}
+        answers = answers or {}
 
     funds = _get_fondos_from_supabase() or FONDOS_FALLBACK
     evaluations = []

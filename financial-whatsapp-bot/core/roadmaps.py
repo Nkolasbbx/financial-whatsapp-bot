@@ -52,19 +52,19 @@ def _buttons(body: str, options: list[tuple[str, str]]) -> dict:
 
 def get_pending_milestone(user: dict) -> dict | None:
     return next(
-        (hito for hito in user.get("roadmap", []) if not hito.get("done")),
+        (hito for hito in (user.get("roadmap") or []) if not hito.get("done")),
         None,
     )
 
 
 def get_last_completed_milestone(user: dict) -> dict | None:
-    roadmap = user.get("roadmap", [])
+    roadmap = user.get("roadmap") or []
     completed = [h for h in roadmap if h.get("done")]
     return completed[-1] if completed else None
 
 
 def _progress_bar(user: dict) -> tuple[str, int, int, int]:
-    roadmap = user.get("roadmap", [])
+    roadmap = user.get("roadmap") or []
     completed = sum(1 for h in roadmap if h.get("done"))
     total = len(roadmap)
     pct = round((completed / total) * 100) if total else 0
@@ -100,7 +100,7 @@ def get_roadmap_text(user: dict) -> dict:
         )
 
     # ── CASO 2: NO FORMALIZADO (Ruta secuencial) ──
-    roadmap = user.get("roadmap", [])
+    roadmap = user.get("roadmap") or []
     if not roadmap:
         return {
             "type": "text",

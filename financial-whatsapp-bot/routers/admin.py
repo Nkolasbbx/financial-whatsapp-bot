@@ -40,7 +40,12 @@ router = APIRouter(prefix="/admin")
 _SESSION_COOKIE = "financial_admin_session"
 
 
-def _pagina_base(titulo: str, contenido: str, cuenta: dict | None = None) -> str:
+def _pagina_base(
+    titulo: str,
+    contenido: str,
+    cuenta: dict | None = None,
+    encabezado_centrado: bool = False,
+) -> str:
     cuenta_html = ""
     if cuenta:
         cuenta_html = f"""
@@ -82,7 +87,7 @@ def _pagina_base(titulo: str, contenido: str, cuenta: dict | None = None) -> str
 </header>
 <div class="admin-glow" aria-hidden="true"></div>
 <main class="admin-container" id="main" tabindex="-1">
-    <div class="admin-page-heading">
+    <div class="admin-page-heading{" admin-page-heading-center" if encabezado_centrado else ""}">
         <span class="admin-kicker">FinancIAl · Panel municipal</span>
         <h1>{html.escape(titulo)}</h1>
     </div>
@@ -106,7 +111,7 @@ def _pagina_login(error: str | None = None) -> str:
         </form>
     </div>
     """
-    return _pagina_base("Acceso municipal", contenido)
+    return _pagina_base("Acceso municipal", contenido, encabezado_centrado=True)
 
 
 @router.get("/login")
@@ -203,8 +208,16 @@ async def dashboard(
     ) or '<p class="subtitulo">No hay emprendedores en progreso todavía.</p>'
 
     # --- Tabla de emprendedores ---
+    # Solo se muestran de entrada las primeras filas; el resto queda oculto
+    # tras el botón "Ver más" (admin.js), que revela EMPRENDEDORES_PASO filas
+    # adicionales por click (acumulativo) en vez de mostrarlas todas de golpe
+    # — para no alargar el panel con listas largas de comunas con muchos
+    # emprendedores.
+    EMPRENDEDORES_VISIBLES = 8
+    EMPRENDEDORES_PASO = 10
+
     filas_emprendedores = []
-    for u in usuarios:
+    for indice, u in enumerate(usuarios):
         hito = get_pending_milestone(u)
         completo = bool(u.get("roadmap_completed_at"))
         numero_hito = "✔" if completo else (str(hito["id"]) + "/" + str(len(u.get("roadmap"))) if hito else "0")
@@ -212,15 +225,26 @@ async def dashboard(
         estado_clase = "completo" if completo else "progreso"
         hito_titulo = "Formalización completa" if completo else (hito["title"] if hito else "Sin roadmap asignado")
         rubro = u.get("rubro") or "No definido"
+        fila_clase = ' class="admin-table-row-hidden"' if indice >= EMPRENDEDORES_VISIBLES else ""
 
         filas_emprendedores.append(
-            f"""<tr>
+            f"""<tr{fila_clase}>
                 <td>{html.escape(u.get("phone", ""))}</td>
                 <td><span class="admin-badge {estado_clase}">{estado}</span></td>
                 <td>{html.escape("(" + numero_hito + ") - " + hito_titulo)}</td>
                 <td>{html.escape(rubro)}</td>
             </tr>"""
         )
+
+    restantes = max(0, total - EMPRENDEDORES_VISIBLES)
+    primer_paso = min(EMPRENDEDORES_PASO, restantes)
+    boton_ver_mas = (
+        f'''<button type="button" class="admin-table-toggle"
+                aria-controls="tabla-emprendedores" data-paso="{EMPRENDEDORES_PASO}"
+                >Ver {primer_paso} más</button>'''
+        if restantes > 0
+        else ""
+    )
 
     insights = get_admin_insights(comuna)
 
@@ -257,7 +281,7 @@ async def dashboard(
 
     <div class="admin-card">
         <h2>Emprendedores de {html.escape(comuna)}</h2>
-        <table class="admin-table">
+        <table class="admin-table" id="tabla-emprendedores">
             <thead>
                 <tr><th>Teléfono</th><th>Estado</th><th>Hito</th><th>Rubro</th></tr>
             </thead>
@@ -265,6 +289,7 @@ async def dashboard(
                 {''.join(filas_emprendedores) or '<tr><td colspan="4">No hay emprendedores</td></tr>'}
             </tbody>
         </table>
+        {boton_ver_mas}
     </div>
 
     <div class="admin-card">

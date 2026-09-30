@@ -15,6 +15,8 @@ from routers import (
     portal,
     portal_calendar,
     portal_finances,
+    portal_funds,
+    portal_roadmap,
     reminders,
     test,
 )
@@ -43,6 +45,8 @@ app.include_router(reminders.router)
 app.include_router(portal.router)
 app.include_router(portal_calendar.router)
 app.include_router(portal_finances.router)
+app.include_router(portal_funds.router)
+app.include_router(portal_roadmap.router)
 app.include_router(admin.router)
 
 
