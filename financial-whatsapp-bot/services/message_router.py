@@ -8,7 +8,12 @@ from core.calendar_flow import (
     should_exit_calendar_message,
     should_handle_calendar_message,
 )
-from core.fund_flow import handle_fund_message, should_handle_fund_message
+from core.fund_flow import (
+    FUND_ANSWER_PREFIX,
+    handle_fund_message,
+    is_fund_entry_message,
+    should_handle_fund_message,
+)
 from core.financial_flow import (
     handle_financial_message,
     is_financial_entry_message,
@@ -28,7 +33,12 @@ from core.roadmaps import (
 )
 from core.onboarding import process_onboarding
 from db.calendar import clear_calendar_session, get_calendar_session
-from db.fondos import cancel_fund_session
+from db.fondos import (
+    cancel_fund_session,
+    get_active_fund_session,
+    get_requirement_definitions,
+    normalize_fund_text,
+)
 from db.financial_movements import (
     clear_financial_session,
     get_financial_session,
@@ -82,6 +92,32 @@ MENU_PHRASES = (
 
 def _mentions_menu(msg_lower: str) -> bool:
     return any(phrase in msg_lower for phrase in MENU_PHRASES)
+
+
+def _is_explicit_other_module_action(message: str) -> bool:
+    """Permite navegar sin confundir preguntas con acciones sobre el roadmap."""
+    raw = message.strip().lower()
+    if raw.startswith(("menu_", "calendar_", "finance_", "hito_", "unsatisfied_")):
+        return True
+    if is_calendar_entry_message(message):
+        return True
+    if FINANCIAL_MOVEMENTS_ENABLED and is_financial_entry_message(message):
+        return True
+    if "?" in message or "¿" in message:
+        return False
+    commands = {
+        *RESET_COMMANDS, *MENU_PHRASES,
+        "ayuda", "help", "menu", "menú", "opciones",
+        "roadmap", "mi roadmap", "hitos", "qué me falta", "que me falta",
+        "formalizar", "mis pasos", "mi ruta", "plan de crecimiento",
+        "mi plan de crecimiento", "listo", "hecho", "completado",
+        "ya lo hice", "ya está", "ya esta", "siguiente", "deshacer", "deshacer paso",
+        "activar recordatorios", "acepto recordatorios", "reanudar recordatorios",
+        "pausar recordatorios", "desactivar recordatorios", "no quiero recordatorios",
+        *VER_MAS_INFO_TRIGGERS, *YA_LO_REALICE_TRIGGERS,
+    }
+    normalized = normalize_fund_text(message)
+    return normalized in {normalize_fund_text(command) for command in commands}
 
 
 def _record_reply_safely(phone: str, reply_to_message_id: str | None) -> bool:
@@ -147,6 +183,49 @@ def route_message(
         response = process_onboarding(user, message, save_user)
         if response:
             return response
+
+    # Leer una sola vez el contexto de fondos, también antes de los comandos
+    # que retornan temprano (reiniciar/recordatorios). Cancelar la sesión no
+    # elimina fund_user_answers: al retomar solo se preguntará lo pendiente.
+    fund_session = None
+    fund_definition = None
+    try:
+        if user.get("id"):
+            fund_session = get_active_fund_session(user["id"])
+        if fund_session and fund_session.get("pending_field_key"):
+            key = fund_session["pending_field_key"]
+            fund_definition = get_requirement_definitions([key]).get(key)
+        handles_fund = should_handle_fund_message(
+            user, message, fund_session, fund_definition,
+        )
+        if msg_lower.startswith(FUND_ANSWER_PREFIX) and (
+            not fund_session or not fund_session.get("pending_field_key")
+        ):
+            # Un botón antiguo no debe cerrar el borrador de otro módulo.
+            return handle_fund_message(user, message, fund_session, fund_definition)
+        if fund_session and not handles_fund:
+            cancel_fund_session(user["id"])
+            fund_session = None
+            if not _is_explicit_other_module_action(message):
+                if reply_to_message_id or int(user.get("reminder_count") or 0) > 0:
+                    _record_reply_safely(phone, reply_to_message_id)
+                # Una consulta como "¿qué me falta para formalizar?" no debe
+                # activar los comandos por substring que aparecen más abajo.
+                return "__AI_QUERY__"
+    except Exception as error:
+        logger.exception("No se pudo consultar o cerrar la sesión de fondos: %s", error)
+        return (
+            "No pude procesar la evaluación de fondos en este momento. "
+            "Inténtalo nuevamente más tarde."
+        )
+
+    # Las entradas y botones de fondos también deben poder salir de otro
+    # borrador, sin quedar capturados por el calendario o las finanzas.
+    if handles_fund and (
+        is_fund_entry_message(message) or msg_lower.startswith("fund_")
+    ):
+        _clear_calendar_session_safely(user.get("id"))
+        _clear_financial_session_safely(user.get("id"))
 
     # ── Reset command ──
     if msg_lower in RESET_COMMANDS:
@@ -261,7 +340,8 @@ def route_message(
                 if financial_entry:
                     _clear_calendar_session_safely(user.get("id"))
                     try:
-                        cancel_fund_session(user["id"])
+                        if fund_session is not None:
+                            cancel_fund_session(user["id"])
                     except Exception as error:
                         logger.error(
                             "No se pudo cerrar la sesión de fondos al abrir "
@@ -315,7 +395,8 @@ def route_message(
         try:
             if calendar_entry:
                 try:
-                    cancel_fund_session(user["id"])
+                    if fund_session is not None:
+                        cancel_fund_session(user["id"])
                 except Exception as error:
                     logger.error(
                         "No se pudo cerrar la sesión de fondos al abrir el calendario: %s",
@@ -336,9 +417,9 @@ def route_message(
     # ── Fund application flow ──
     # Se procesa antes del roadmap y de la IA para que respuestas breves como
     # "sí", "no" o una cifra se asocien a la pregunta pendiente del fondo.
-    if should_handle_fund_message(user, message):
+    if handles_fund:
         try:
-            return handle_fund_message(user, message)
+            return handle_fund_message(user, message, fund_session, fund_definition)
         except Exception as error:
             logger.exception("No se pudo procesar el flujo de fondos: %s", error)
             return (

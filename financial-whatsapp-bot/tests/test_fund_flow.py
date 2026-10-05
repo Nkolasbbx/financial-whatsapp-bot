@@ -4,6 +4,7 @@ from unittest.mock import patch
 from core.fund_flow import (
     FUND_UPDATE_DATA_ID,
     FUND_UPDATE_FIELD_PREFIX,
+    _INVALID_ANSWER,
     _parse_numeric_answer,
     handle_fund_message,
     should_handle_fund_message,
@@ -12,6 +13,91 @@ from core.fund_flow import (
 
 
 class FundFlowTests(unittest.TestCase):
+    def test_questions_are_not_captured_by_pending_boolean_requirement(self):
+        session = {"pending_field_key": "proyecto_negocio"}
+        definition = {"answer_type": "boolean"}
+        for message in (
+            "¿Cómo hago mi pitch?", "¿Cómo postular a fondos?",
+            "No sé qué significa ese requisito", "¿Qué me falta para formalizar?",
+        ):
+            with self.subTest(message=message):
+                self.assertFalse(should_handle_fund_message(
+                    {"id": "user-1"}, message, session, definition,
+                ))
+
+    def test_short_answers_and_invalid_numeric_attempts_stay_in_flow(self):
+        session = {"pending_field_key": "requirement"}
+        for message in ("sí", "no", "no sé", "tal vez", "quizás"):
+            with self.subTest(message=message):
+                self.assertTrue(should_handle_fund_message(
+                    {"id": "user-1"}, message, session, {"answer_type": "boolean"},
+                ))
+        for message in ("1500 UF", "-10", "1,2,3"):
+            with self.subTest(message=message):
+                self.assertTrue(should_handle_fund_message(
+                    {"id": "user-1"}, message, session, {"answer_type": "number"},
+                ))
+
+    @patch("core.fund_flow.cancel_fund_session")
+    @patch("core.fund_flow.start_fund_session")
+    @patch("core.fund_flow.evaluate_available_funds", return_value=[])
+    def test_no_available_funds_closes_selection_session(
+        self, _evaluate, _start, cancel,
+    ):
+        self.assertIn("No encontré fondos", start_fund_flow({"id": "user-1"}))
+        cancel.assert_called_once_with("user-1")
+
+    @patch("core.fund_flow.save_fund_answer")
+    @patch("core.fund_flow.start_fund_session")
+    def test_old_answer_button_does_not_open_or_modify_evaluation(self, start, save):
+        for session in (None, {"status": "selecting", "pending_field_key": None}):
+            result = handle_fund_message(
+                {"id": "user-1"}, "fund_answer:yes", session, None,
+            )
+            self.assertIn("ya no está activa", result)
+        save.assert_not_called()
+        start.assert_not_called()
+
+    @patch("core.fund_flow.get_active_fund_session")
+    @patch("core.fund_flow.get_requirement_definitions")
+    @patch("core.fund_flow._save_updated_data", return_value="actualizado")
+    def test_supplied_context_is_reused(self, update, get_definitions, get_session):
+        session = {"pending_field_key": "proyecto_negocio", "fondo_id": None}
+        definition = {"source_type": "user_answer", "answer_type": "boolean"}
+        result = handle_fund_message({"id": "user-1"}, "sí", session, definition)
+        self.assertEqual(result, "actualizado")
+        update.assert_called_once_with(
+            {"id": "user-1"}, "sí", "proyecto_negocio", definition,
+        )
+        get_definitions.assert_not_called()
+        get_session.assert_not_called()
+
+    @patch("core.fund_flow.update_fund_session")
+    @patch("core.fund_flow.get_fund_answer_records", return_value={"mayor_edad": True})
+    @patch("core.fund_flow.get_requirement_definitions")
+    def test_resuming_fund_only_asks_unanswered_requirements(
+        self, get_definitions, _get_answers, update,
+    ):
+        from core.fund_flow import _evaluate_selected_fund
+
+        definitions = {
+            key: {
+                "source_type": "user_answer", "answer_type": "boolean",
+                "evaluation_rule": {"operator": "equals", "expected": True},
+                "question": question, "question_order": order,
+            }
+            for key, question, order in (
+                ("mayor_edad", "¿Eres mayor de edad?", 10),
+                ("proyecto_negocio", "¿Tienes tu pitch?", 20),
+            )
+        }
+        get_definitions.return_value = definitions
+        fund = {"requisitos": [{"clave": key} for key in definitions]}
+        result = _evaluate_selected_fund({"id": "user-1"}, fund)
+        self.assertIn("¿Tienes tu pitch?", result["body"])
+        self.assertNotIn("¿Eres mayor de edad?", result["body"])
+        self.assertEqual(update.call_args.kwargs["pending_field_key"], "proyecto_negocio")
+
     @patch("core.fund_flow.evaluate_available_funds")
     @patch("core.fund_flow.start_fund_session")
     def test_start_flow_returns_interactive_fund_list(
@@ -172,6 +258,17 @@ class FundFlowTests(unittest.TestCase):
     def test_numeric_parser_accepts_chilean_thousands_format(self):
         self.assertEqual(_parse_numeric_answer("1.500 UF"), 1500)
         self.assertEqual(_parse_numeric_answer("250,5 UF"), 250.5)
+        self.assertEqual(_parse_numeric_answer("1.500,5 UF"), 1500.5)
+        self.assertEqual(_parse_numeric_answer("1500.5"), 1500.5)
+        self.assertEqual(_parse_numeric_answer("0"), 0)
+
+    def test_numeric_parser_does_not_extract_numbers_from_questions(self):
+        for message in (
+            "¿Cómo declaro el F29?", "F29", "tengo 2 dudas", "-1",
+            "1,2,3", "1.50.0", "9" * 400,
+        ):
+            with self.subTest(message=message):
+                self.assertIs(_parse_numeric_answer(message), _INVALID_ANSWER)
 
     @patch("core.fund_flow._evaluate_selected_fund", return_value="resultado")
     @patch("core.fund_flow.update_fund_session")

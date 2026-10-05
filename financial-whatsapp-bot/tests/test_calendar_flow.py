@@ -8,6 +8,10 @@ from services.message_router import route_message
 
 class CalendarFlowTests(unittest.TestCase):
     def setUp(self):
+        for name in ("get_active_fund_session", "get_financial_session"):
+            mock = patch(f"services.message_router.{name}", return_value=None)
+            mock.start()
+            self.addCleanup(mock.stop)
         self.user = {
             "id": "user-1",
             "phone": "+56911111111",
@@ -132,7 +136,10 @@ class CalendarFlowTests(unittest.TestCase):
         }
         handle_mock.return_value = {"type": "text", "body": "calendario"}
 
-        result = route_message(self.user["phone"], "menu_calendar")
+        with patch("services.message_router.get_active_fund_session", return_value={
+            "status": "selecting", "pending_field_key": None,
+        }):
+            result = route_message(self.user["phone"], "menu_calendar")
 
         self.assertEqual(result["body"], "calendario")
         handle_mock.assert_called_once()

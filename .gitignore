@@ -7,3 +7,4 @@ venv/
 local_testing/
 CLAUDE.md
 .CLAUDE
+.codex-doc-review/

@@ -8,6 +8,14 @@ from services.message_router import route_message
 
 
 class UserProfileResetTests(unittest.TestCase):
+    def setUp(self):
+        for name in (
+            "get_active_fund_session", "clear_calendar_session", "clear_financial_session",
+        ):
+            mock = patch(f"services.message_router.{name}", return_value=None)
+            mock.start()
+            self.addCleanup(mock.stop)
+
     def test_database_reset_nulls_functional_fields_and_preserves_identity(self):
         client = MagicMock()
         query = client.table.return_value

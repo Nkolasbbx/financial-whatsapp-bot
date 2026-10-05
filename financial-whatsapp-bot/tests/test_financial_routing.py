@@ -7,6 +7,10 @@ from services.message_router import route_message
 
 class FinancialRoutingTests(unittest.TestCase):
     def setUp(self):
+        for name in ("get_active_fund_session", "get_calendar_session"):
+            mock = patch(f"services.message_router.{name}", return_value=None)
+            mock.start()
+            self.addCleanup(mock.stop)
         self.user = {
             "id": "user-1",
             "phone": "+56911111111",
@@ -26,11 +30,13 @@ class FinancialRoutingTests(unittest.TestCase):
         cancel_fund_mock,
     ):
         get_user_mock.return_value = self.user
-
-        result = route_message(
-            self.user["phone"],
-            "hoy vendí $40.000 en empanadas",
-        )
+        with patch("services.message_router.get_active_fund_session", return_value={
+            "status": "selecting", "pending_field_key": None,
+        }):
+            result = route_message(
+                self.user["phone"],
+                "hoy vendí $40.000 en empanadas",
+            )
 
         self.assertEqual(result, FINANCIAL_PARSE_TASK)
         clear_calendar_mock.assert_called_once_with("user-1")
@@ -62,4 +68,3 @@ class FinancialRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

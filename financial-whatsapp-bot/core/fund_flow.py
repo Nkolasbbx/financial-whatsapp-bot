@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 
 from core.fondos import (
@@ -40,12 +41,16 @@ FUND_CANCEL_COMMANDS = {
     "salir de fondos",
     "fund cancel",
 }
-FUND_ENTRY_TERMS = {
+FUND_ENTRY_COMMANDS = {
     "fondo",
     "fondos",
     "postular",
     "postular fondos",
     "postular a fondos",
+    "quiero postular a un fondo",
+    "evaluacion a fondos",
+    "evaluacion de fondos",
+    "evaluar fondos",
     "sercotec",
     "corfo",
     "financiamiento",
@@ -54,11 +59,19 @@ FUND_ENTRY_TERMS = {
 FUND_NAME_HINTS = {"capital", "semilla", "abeja", "pioneras", "crece"}
 
 _INVALID_ANSWER = object()
+_NOT_LOADED = object()
+
+
+def is_fund_entry_message(message: str) -> bool:
+    """Distingue comandos de entrada de preguntas que mencionan fondos."""
+    return normalize_fund_text(message) in FUND_ENTRY_COMMANDS
 
 
 def _fund_list_widget(user: dict, prefix: str = "") -> dict | str:
     evaluations = evaluate_available_funds(user)
     if not evaluations:
+        if user.get("id"):
+            cancel_fund_session(user["id"])
         return (
             f"{prefix}⚠️ No encontré fondos vigentes compatibles con tu perfil "
             "en este momento. Puedes volver a consultar más adelante."
@@ -149,10 +162,12 @@ def _start_data_update(user: dict, message: str) -> dict | str:
     )
 
 
-def _save_updated_data(user: dict, message: str, field_key: str) -> dict | str:
+def _save_updated_data(
+    user: dict, message: str, field_key: str, definition=_NOT_LOADED,
+) -> dict | str:
     """Valida y reemplaza una respuesta guardada en fund_user_answers."""
-    definitions = get_requirement_definitions([field_key])
-    definition = definitions.get(field_key)
+    if definition is _NOT_LOADED:
+        definition = get_requirement_definitions([field_key]).get(field_key)
     if definition is None or definition.get("source_type") != "user_answer":
         cancel_fund_session(user["id"])
         return _update_data_widget(user)
@@ -206,23 +221,23 @@ def _question_widget(requirement: dict, prefix: str = "") -> dict | str:
 
 
 def _parse_numeric_answer(message: str):
-    value = message.casefold().replace("uf", "").strip()
-    raw_value = re.sub(r"[^0-9,.-]", "", value)
-    if not raw_value:
+    # La respuesta completa debe ser una cifra: "F29" no equivale a 29 UF.
+    number_pattern = r"(?:\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)"
+    match = re.fullmatch(
+        rf"({number_pattern})\s*(?:uf)?", message.casefold().strip(),
+    )
+    if not match:
         return _INVALID_ANSWER
-
-    if re.fullmatch(r"\d{1,3}(\.\d{3})+", raw_value):
+    raw_value = match.group(1)
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+", raw_value.split(",")[0]):
         raw_value = raw_value.replace(".", "")
-    elif "," in raw_value and "." not in raw_value:
-        raw_value = raw_value.replace(",", ".")
-    elif "," in raw_value and "." in raw_value:
-        raw_value = raw_value.replace(".", "").replace(",", ".")
+    raw_value = raw_value.replace(",", ".")
 
     try:
         numeric_value = float(raw_value)
     except ValueError:
         return _INVALID_ANSWER
-    if numeric_value < 0:
+    if not math.isfinite(numeric_value) or numeric_value < 0:
         return _INVALID_ANSWER
     return int(numeric_value) if numeric_value.is_integer() else numeric_value
 
@@ -297,8 +312,10 @@ def _select_fund(user: dict, message: str) -> dict | str:
     return _evaluate_selected_fund(user, fund)
 
 
-def should_handle_fund_message(user: dict, message: str) -> bool:
-    """Determina si el mensaje pertenece al flujo de fondos."""
+def should_handle_fund_message(
+    user: dict, message: str, session=_NOT_LOADED, definition=_NOT_LOADED,
+) -> bool:
+    """Captura acciones de fondos y respuestas a su requisito pendiente, no consultas."""
     normalized = normalize_fund_text(message)
     raw_lower = message.strip().lower()
     if raw_lower == FUND_UPDATE_DATA_ID:
@@ -309,26 +326,38 @@ def should_handle_fund_message(user: dict, message: str) -> bool:
         return True
     if normalized in FUND_CANCEL_COMMANDS:
         return True
-    if any(term in normalized for term in FUND_ENTRY_TERMS):
+    if is_fund_entry_message(message):
         return True
     if any(hint in normalized.split() for hint in FUND_NAME_HINTS):
         try:
-            return find_active_fund(message) is not None
+            if find_active_fund(message) is not None:
+                return True
         except Exception as error:
             logger.error("No se pudo buscar el fondo mencionado: %s", error)
-            return False
 
     user_id = user.get("id")
     if not user_id:
         return False
-    try:
-        return get_active_fund_session(user_id) is not None
-    except Exception as error:
-        logger.error("No se pudo consultar la sesión de fondos: %s", error)
+    if session is _NOT_LOADED:
+        session = get_active_fund_session(user_id)
+    if not session or not session.get("pending_field_key"):
         return False
+    if definition is _NOT_LOADED:
+        key = session["pending_field_key"]
+        definition = get_requirement_definitions([key]).get(key)
+    if not definition:
+        return False
+    if _parse_answer(message, definition) is not _INVALID_ANSWER:
+        return True
+    # Un intento reconocible pero inválido se aclara sin salir del formulario.
+    if definition.get("answer_type") == "number":
+        return re.fullmatch(r"[+-]?[0-9.,]+\s*(?:uf)?", raw_lower) is not None
+    return normalized in {"tal vez", "quizas", "depende"}
 
 
-def handle_fund_message(user: dict, message: str) -> dict | str:
+def handle_fund_message(
+    user: dict, message: str, session=_NOT_LOADED, definition=_NOT_LOADED,
+) -> dict | str:
     """Procesa inicio, selección y respuestas de una evaluación de fondos."""
     user_id = user.get("id")
     if not user_id:
@@ -349,16 +378,22 @@ def handle_fund_message(user: dict, message: str) -> dict | str:
     if raw_lower.startswith(FUND_UPDATE_FIELD_PREFIX):
         return _start_data_update(user, message)
 
-    if "postular" in normalized or normalized in {
-        "fondo",
-        "fondos",
-        "menu fondo",
-    }:
+    if is_fund_entry_message(message):
         return start_fund_flow(user)
 
-    session = get_active_fund_session(user_id)
+    if session is _NOT_LOADED:
+        session = get_active_fund_session(user_id)
     if raw_lower.startswith(FUND_SELECT_PREFIX):
         return _select_fund(user, message)
+
+    if raw_lower.startswith(FUND_ANSWER_PREFIX) and (
+        not session or not session.get("pending_field_key")
+    ):
+        return (
+            "Esa pregunta ya no está activa. Para retomar la evaluación "
+            "escribe *postular fondos* y elige el fondo. "
+            "Tus respuestas anteriores siguen guardadas."
+        )
 
     if (
         session is not None
@@ -369,6 +404,7 @@ def handle_fund_message(user: dict, message: str) -> dict | str:
             user,
             message,
             session["pending_field_key"],
+            definition,
         )
 
     if session is None:
@@ -389,8 +425,8 @@ def handle_fund_message(user: dict, message: str) -> dict | str:
     if not pending_key:
         return _evaluate_selected_fund(user, fund)
 
-    definitions = get_requirement_definitions([pending_key])
-    definition = definitions.get(pending_key)
+    if definition is _NOT_LOADED:
+        definition = get_requirement_definitions([pending_key]).get(pending_key)
     if definition is None:
         cancel_fund_session(user_id)
         return "No pude cargar el requisito pendiente. Inténtalo nuevamente."
