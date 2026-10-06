@@ -114,6 +114,22 @@ class FundDatabaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Estado de sesión"):
             update_fund_session("user-1", status="invalid")
 
+    def test_preselection_question_is_saved_in_one_upsert_without_selected_fund(self):
+        client = MagicMock()
+        query = client.table.return_value
+        query.upsert.return_value.execute.return_value = SimpleNamespace(data=[])
+        with patch.dict(sys.modules, {"dependencies": SimpleNamespace(supabase_admin=client)}):
+            start_fund_session("user-1", status="selecting", pending_field_key="mayor_edad")
+        payload = query.upsert.call_args.args[0]
+        self.assertEqual(payload["status"], "selecting")
+        self.assertEqual(payload["pending_field_key"], "mayor_edad")
+        self.assertIsNone(payload["fondo_id"])
+        query.upsert.assert_called_once()
+
+    def test_start_session_rejects_invalid_status(self):
+        with self.assertRaisesRegex(ValueError, "Estado de sesión"):
+            start_fund_session("user-1", status="invalid")
+
 
 if __name__ == "__main__":
     unittest.main()

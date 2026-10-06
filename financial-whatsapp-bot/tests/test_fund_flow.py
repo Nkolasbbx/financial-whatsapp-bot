@@ -40,7 +40,7 @@ class FundFlowTests(unittest.TestCase):
 
     @patch("core.fund_flow.cancel_fund_session")
     @patch("core.fund_flow.start_fund_session")
-    @patch("core.fund_flow.evaluate_available_funds", return_value=[])
+    @patch("core.fund_flow.get_available_fund_candidates", return_value=[])
     def test_no_available_funds_closes_selection_session(
         self, _evaluate, _start, cancel,
     ):
@@ -62,7 +62,7 @@ class FundFlowTests(unittest.TestCase):
     @patch("core.fund_flow.get_requirement_definitions")
     @patch("core.fund_flow._save_updated_data", return_value="actualizado")
     def test_supplied_context_is_reused(self, update, get_definitions, get_session):
-        session = {"pending_field_key": "proyecto_negocio", "fondo_id": None}
+        session = {"status": "collecting_data", "pending_field_key": "proyecto_negocio", "fondo_id": None}
         definition = {"source_type": "user_answer", "answer_type": "boolean"}
         result = handle_fund_message({"id": "user-1"}, "sí", session, definition)
         self.assertEqual(result, "actualizado")
@@ -72,14 +72,13 @@ class FundFlowTests(unittest.TestCase):
         get_definitions.assert_not_called()
         get_session.assert_not_called()
 
-    @patch("core.fund_flow.update_fund_session")
+    @patch("core.fund_flow.get_available_fund_candidates")
+    @patch("core.fund_flow.start_fund_session")
     @patch("core.fund_flow.get_fund_answer_records", return_value={"mayor_edad": True})
     @patch("core.fund_flow.get_requirement_definitions")
     def test_resuming_fund_only_asks_unanswered_requirements(
-        self, get_definitions, _get_answers, update,
+        self, get_definitions, _get_answers, start, get_candidates,
     ):
-        from core.fund_flow import _evaluate_selected_fund
-
         definitions = {
             key: {
                 "source_type": "user_answer", "answer_type": "boolean",
@@ -93,17 +92,25 @@ class FundFlowTests(unittest.TestCase):
         }
         get_definitions.return_value = definitions
         fund = {"requisitos": [{"clave": key} for key in definitions]}
-        result = _evaluate_selected_fund({"id": "user-1"}, fund)
+        get_candidates.return_value = [fund]
+        result = start_fund_flow({"id": "user-1"})
         self.assertIn("¿Tienes tu pitch?", result["body"])
         self.assertNotIn("¿Eres mayor de edad?", result["body"])
-        self.assertEqual(update.call_args.kwargs["pending_field_key"], "proyecto_negocio")
+        self.assertEqual(start.call_args.kwargs["pending_field_key"], "proyecto_negocio")
+        self.assertEqual(start.call_args.kwargs["status"], "selecting")
 
+    @patch("core.fund_flow.get_fund_answer_records", return_value={})
+    @patch("core.fund_flow.get_requirement_definitions", return_value={})
+    @patch("core.fund_flow.get_available_fund_candidates", return_value=[{"id": "fund-1"}])
     @patch("core.fund_flow.evaluate_available_funds")
     @patch("core.fund_flow.start_fund_session")
-    def test_start_flow_returns_interactive_fund_list(
+    def test_start_flow_returns_interactive_fund_list_when_no_questions_remain(
         self,
         start_session_mock,
         evaluate_funds_mock,
+        _get_candidates,
+        _get_definitions,
+        _get_records,
     ):
         evaluate_funds_mock.return_value = [{
             "fund": {
@@ -194,14 +201,14 @@ class FundFlowTests(unittest.TestCase):
 
         self.assertEqual(result["type"], "buttons")
         self.assertIn("¿Ya tienes listo tu pitch?", result["body"])
-        start_session_mock.assert_called_once_with("user-1")
-        update_session_mock.assert_called_once_with(
+        start_session_mock.assert_called_once_with(
             "user-1",
             status="collecting_data",
             pending_field_key="proyecto_negocio",
         )
+        update_session_mock.assert_not_called()
 
-    @patch("core.fund_flow._fund_list_widget", return_value="fondos recalculados")
+    @patch("core.fund_flow._advance_fund_preselection", return_value="fondos recalculados")
     @patch("core.fund_flow.finish_fund_session")
     @patch("core.fund_flow.save_fund_answer")
     @patch("core.fund_flow.get_requirement_definitions")
@@ -241,7 +248,7 @@ class FundFlowTests(unittest.TestCase):
             "proyecto_negocio",
             True,
         )
-        finish_session_mock.assert_called_once_with("user-1")
+        finish_session_mock.assert_not_called()
         self.assertIn("Actualicé", fund_list_mock.call_args.args[1])
 
     @patch("core.fund_flow.find_active_fund", return_value={"id": "fund-1"})

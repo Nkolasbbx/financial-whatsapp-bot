@@ -442,17 +442,77 @@ def _fondo_aplica_para_usuario(fondo: dict, is_formal: bool) -> bool:
     return True
 
 
+def get_available_fund_candidates(user: dict, today: date | None = None) -> list[dict]:
+    """Lee el catálogo real para el cuestionario, sin recurrir a fondos de respaldo.
+
+    Un catálogo vacío es distinto de un error de consulta: los errores se
+    propagan para no iniciar preguntas sobre convocatorias ficticias.
+    """
+    current_date = today or date.today()
+    candidates = []
+    for fund in list_active_funds():
+        if fund.get("activo") is False or not fund_applies_to_user(fund, user):
+            continue
+        try:
+            closing = fund.get("fecha_cierre")
+            if isinstance(closing, str):
+                closing = date.fromisoformat(closing)
+            opening = fund.get("fecha_apertura")
+            if isinstance(opening, str):
+                opening = date.fromisoformat(opening)
+        except ValueError:
+            logger.warning("Fecha inválida en fondo %s", fund.get("nombre"))
+            continue
+        if not isinstance(closing, date) or closing < current_date:
+            continue
+        if isinstance(opening, date) and opening > current_date:
+            continue
+        candidates.append({**fund, "fecha_cierre": closing})
+    return candidates
+
+
+def get_fund_preselection_questions(
+    funds: list[dict],
+    definitions: dict[str, dict],
+    answered_keys: set[str],
+) -> list[dict]:
+    """Une preguntas por clave y omite perfil, cálculos y respuestas guardadas.
+
+    Una respuesta desconocida/omitida cuenta como respondida; su resultado
+    seguirá siendo desconocido, sin repetir indefinidamente la pregunta.
+    """
+    required_keys = {
+        requirement.get("clave")
+        for fund in funds
+        for requirement in fund.get("requisitos") or []
+    }
+    questions = [
+        {**definition, "field_key": key}
+        for key, definition in definitions.items()
+        if key in required_keys
+        and key not in answered_keys
+        and definition.get("source_type") == "user_answer"
+        and definition.get("question")
+    ]
+    questions.sort(key=lambda question: (question.get("question_order", 100), question["field_key"]))
+    return questions
+
+
 def evaluate_available_funds(
     user: dict,
     today: date | None = None,
     include_closed: bool = False,
     definitions: dict[str, dict] | None = None,
     answers: dict | None = None,
+    funds: list[dict] | None = None,
+    answered_keys: set[str] | None = None,
 ) -> list[dict]:
     """Evalúa y ordena en una sola operación los fondos del perfil.
 
     ``definitions`` y ``answers`` pueden venir precargados para no repetir
     consultas cuando quien llama ya los necesitaba (ej. el panel web).
+    ``funds`` permite evaluar el catálogo ya validado del cuestionario sin
+    volver a consultarlo ni activar el fallback cuando la lista está vacía.
     """
     current_date = today or date.today()
     if definitions is None or answers is None:
@@ -469,7 +529,8 @@ def evaluate_available_funds(
         definitions = definitions or {}
         answers = answers or {}
 
-    funds = _get_fondos_from_supabase() or FONDOS_FALLBACK
+    if funds is None:
+        funds = _get_fondos_from_supabase() or FONDOS_FALLBACK
     evaluations = []
     for fund in funds:
         if not fund_applies_to_user(fund, user):
@@ -480,6 +541,7 @@ def evaluate_available_funds(
             answers,
             definitions,
             current_date,
+            answered_keys=answered_keys,
         )
         if not include_closed and not evaluation["is_open"]:
             continue

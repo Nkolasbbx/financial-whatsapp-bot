@@ -177,14 +177,27 @@ def get_active_fund_session(user_id: str) -> dict | None:
     return session if session.get("status") in ACTIVE_SESSION_STATUSES else None
 
 
-def start_fund_session(user_id: str, fund_id: str | None = None) -> dict | None:
-    """Crea o reinicia la única sesión de fondos del usuario."""
+def start_fund_session(
+    user_id: str,
+    fund_id: str | None = None,
+    *,
+    status: str | None = None,
+    pending_field_key: str | None = None,
+) -> dict | None:
+    """Crea la sesión y su pregunta en una operación.
+
+    ``selecting`` con una pregunta pendiente representa el cuestionario previo;
+    ``collecting_data`` sin fondo representa la edición de una respuesta.
+    """
+    session_status = status or ("collecting_data" if fund_id else "selecting")
+    if session_status not in VALID_SESSION_STATUSES:
+        raise ValueError(f"Estado de sesión de fondos inválido: {session_status}")
     now = _utc_now_iso()
     payload = {
         "user_id": user_id,
         "fondo_id": fund_id,
-        "status": "collecting_data" if fund_id else "selecting",
-        "pending_field_key": None,
+        "status": session_status,
+        "pending_field_key": pending_field_key,
         "updated_at": now,
     }
     result = (

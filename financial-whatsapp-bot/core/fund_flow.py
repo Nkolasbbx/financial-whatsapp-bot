@@ -11,7 +11,8 @@ from core.fondos import (
     evaluate_fund,
     format_fund_evaluation,
     format_funds_summary,
-    fund_applies_to_user,
+    get_available_fund_candidates,
+    get_fund_preselection_questions,
 )
 from db.fondos import (
     UNKNOWN_ANSWER,
@@ -67,8 +68,15 @@ def is_fund_entry_message(message: str) -> bool:
     return normalize_fund_text(message) in FUND_ENTRY_COMMANDS
 
 
-def _fund_list_widget(user: dict, prefix: str = "") -> dict | str:
-    evaluations = evaluate_available_funds(user)
+def _fund_list_widget(
+    user: dict, prefix: str = "", evaluations: list[dict] | None = None,
+) -> dict | str:
+    if evaluations is None:
+        funds, definitions, records = _load_preselection_context(user)
+        evaluations = evaluate_available_funds(
+            user, definitions=definitions, answers=_answers_from_records(records),
+            funds=funds, answered_keys=set(records),
+        )
     if not evaluations:
         if user.get("id"):
             cancel_fund_session(user["id"])
@@ -150,8 +158,7 @@ def _start_data_update(user: dict, message: str) -> dict | str:
     if definition is None or definition.get("source_type") != "user_answer":
         return _update_data_widget(user)
 
-    start_fund_session(user["id"])
-    update_fund_session(
+    start_fund_session(
         user["id"],
         status="collecting_data",
         pending_field_key=field_key,
@@ -180,21 +187,75 @@ def _save_updated_data(
         )
 
     save_fund_answer(user["id"], field_key, parsed_answer)
-    finish_fund_session(user["id"])
     label = _definition_label(field_key, definition)
-    return _fund_list_widget(
+    return _advance_fund_preselection(
         user,
-        f"✅ Actualicé *{label}*. Recalculé tus fondos con este dato.\n\n",
+        f"✅ Actualicé *{label}*.\n\n",
     )
 
 
 def start_fund_flow(user: dict) -> dict | str:
-    """Inicia la selección de fondos para un usuario registrado."""
+    """Completa los datos compartidos antes de ofrecer la selección de fondos."""
     user_id = user.get("id")
     if not user_id:
         return "No pude identificar tu perfil. Escribe *menu* e intenta nuevamente."
-    start_fund_session(user_id)
-    return _fund_list_widget(user)
+    context = _load_preselection_context(user)
+    funds, definitions, records = context
+    prefix = (
+        "Para comparar los fondos disponibles, primero necesito confirmar "
+        "algunos datos de postulación.\n\n"
+        if get_fund_preselection_questions(funds, definitions, set(records)) else ""
+    )
+    return _advance_fund_preselection(user, prefix, context)
+
+
+def _answers_from_records(records: dict) -> dict:
+    return {key: None if value == UNKNOWN_ANSWER else value for key, value in records.items()}
+
+
+def _load_preselection_context(user: dict) -> tuple[list[dict], dict, dict]:
+    funds = get_available_fund_candidates(user)
+    if not funds:
+        return [], {}, {}
+    return funds, get_requirement_definitions(), get_fund_answer_records(user["id"])
+
+
+def _advance_fund_preselection(
+    user: dict, prefix: str = "", context: tuple[list[dict], dict, dict] | None = None,
+) -> dict | str:
+    """Pregunta una sola vez cada dato compartido; después muestra los fondos."""
+    funds, definitions, records = context if context is not None else _load_preselection_context(user)
+    if not funds:
+        return _fund_list_widget(user, evaluations=[])
+    questions = get_fund_preselection_questions(funds, definitions, set(records))
+    if questions:
+        question = questions[0]
+        start_fund_session(
+            user["id"], status="selecting", pending_field_key=question["field_key"],
+        )
+        return _question_widget(question, prefix)
+
+    start_fund_session(user["id"])
+    evaluations = evaluate_available_funds(
+        user, definitions=definitions, answers=_answers_from_records(records),
+        funds=funds, answered_keys=set(records),
+    )
+    return _fund_list_widget(user, prefix, evaluations=evaluations)
+
+
+def _save_preselection_answer(
+    user: dict, message: str, field_key: str, definition=_NOT_LOADED,
+) -> dict | str:
+    if definition is _NOT_LOADED:
+        definition = get_requirement_definitions([field_key]).get(field_key)
+    if not definition or definition.get("source_type") != "user_answer":
+        cancel_fund_session(user["id"])
+        return "No pude cargar el requisito pendiente. Escribe *postular fondos* para retomar."
+    parsed_answer = _parse_answer(message, definition)
+    if parsed_answer is _INVALID_ANSWER:
+        return _question_widget(definition, "No pude interpretar esa respuesta.\n\n")
+    save_fund_answer(user["id"], field_key, parsed_answer)
+    return _advance_fund_preselection(user)
 
 
 def _question_widget(requirement: dict, prefix: str = "") -> dict | str:
@@ -259,6 +320,8 @@ def _parse_answer(message: str, definition: dict):
         }:
             return option.get("value")
 
+    # También reconocer los botones predeterminados cuando options está vacío.
+    normalized = normalize_fund_text(answer_id)
     if normalized in {"si", "s", "yes", "confirmo"}:
         return True
     if normalized in {"no", "n"}:
@@ -268,13 +331,14 @@ def _parse_answer(message: str, definition: dict):
     return _INVALID_ANSWER
 
 
-def _evaluate_selected_fund(user: dict, fund: dict) -> dict | str:
-    definitions = get_requirement_definitions()
-    records = get_fund_answer_records(user["id"])
-    answers = {
-        key: None if value == UNKNOWN_ANSWER else value
-        for key, value in records.items()
-    }
+def _evaluate_selected_fund(
+    user: dict, fund: dict, definitions: dict | None = None, records: dict | None = None,
+) -> dict | str:
+    if definitions is None:
+        definitions = get_requirement_definitions()
+    if records is None:
+        records = get_fund_answer_records(user["id"])
+    answers = _answers_from_records(records)
     evaluation = evaluate_fund(
         fund,
         user,
@@ -284,13 +348,11 @@ def _evaluate_selected_fund(user: dict, fund: dict) -> dict | str:
     )
 
     if evaluation["missing_questions"]:
-        requirement = evaluation["missing_questions"][0]
-        update_fund_session(
-            user["id"],
-            status="collecting_data",
-            pending_field_key=requirement["clave"],
+        # Compatibilidad con sesiones antiguas o cambios del catálogo: completar
+        # los datos comunes y volver a la selección, no preguntar por un fondo.
+        return _advance_fund_preselection(
+            user, "Necesito completar tus datos antes de comparar los fondos.\n\n",
         )
-        return _question_widget(requirement)
 
     finish_fund_session(user["id"])
     return format_fund_evaluation(evaluation, user)
@@ -301,15 +363,29 @@ def _select_fund(user: dict, message: str) -> dict | str:
     if raw_selection.lower().startswith(FUND_SELECT_PREFIX):
         raw_selection = raw_selection[len(FUND_SELECT_PREFIX):]
 
-    fund = find_active_fund(raw_selection)
-    if fund is None or not fund_applies_to_user(fund, user):
-        return _fund_list_widget(
+    context = _load_preselection_context(user)
+    funds, definitions, records = context
+    if get_fund_preselection_questions(funds, definitions, set(records)):
+        return _advance_fund_preselection(
+            user, "Antes de elegir un fondo, confirmemos tus datos de postulación.\n\n", context,
+        )
+    search = normalize_fund_text(raw_selection)
+    fund = next((
+        candidate for candidate in funds
+        if any(normalize_fund_text(value) == search for value in (
+            candidate.get("id"), candidate.get("slug"), candidate.get("nombre"),
+            *(candidate.get("aliases") or []),
+        ))
+    ), None)
+    if fund is None:
+        return _advance_fund_preselection(
             user,
             "No pude identificar ese fondo entre los disponibles.\n\n",
+            context,
         )
 
     start_fund_session(user["id"], fund["id"])
-    return _evaluate_selected_fund(user, fund)
+    return _evaluate_selected_fund(user, fund, definitions, records)
 
 
 def should_handle_fund_message(
@@ -393,6 +469,16 @@ def handle_fund_message(
             "Esa pregunta ya no está activa. Para retomar la evaluación "
             "escribe *postular fondos* y elige el fondo. "
             "Tus respuestas anteriores siguen guardadas."
+        )
+
+    if (
+        session is not None
+        and session.get("status") == "selecting"
+        and not session.get("fondo_id")
+        and session.get("pending_field_key")
+    ):
+        return _save_preselection_answer(
+            user, message, session["pending_field_key"], definition,
         )
 
     if (
