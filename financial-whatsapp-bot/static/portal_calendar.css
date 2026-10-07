@@ -292,10 +292,15 @@
     color: var(--petrol);
 }
 
-#business-calendar .fc-button-primary:not(:disabled).fc-button-active {
+#business-calendar .fc-button-primary:not(:disabled).fc-button-active,
+#business-calendar .fc-button-primary:not(:disabled).fc-button-active:hover {
     border-color: var(--petrol);
     background: var(--petrol);
-    color: #fff;
+    color: #fff !important;
+}
+
+#business-calendar .fc-button-primary.fc-button-active * {
+    color: #fff !important;
 }
 
 #business-calendar .fc-button-primary:focus,
