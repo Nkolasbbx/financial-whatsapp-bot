@@ -909,7 +909,7 @@ async def panel(
         # Los botones reutilizan los estilos de portal_calendar.css.
         head_extra = f"""
         {_csrf_meta(csrf_token)}
-        <link rel="stylesheet" href="/static/portal_calendar.css">
+        <link rel="stylesheet" href="{_versioned_static_url('portal_calendar.css')}">
         <link rel="stylesheet" href="/static/portal_roadmap.css">
         """
         scripts = '<script defer src="/static/portal_roadmap.js"></script>'
@@ -919,7 +919,7 @@ async def panel(
         contenido = _tarjeta_fechas_personales() + _tarjeta_calendario(user)
         head_extra = f"""
         {_csrf_meta(csrf_token)}
-        <link rel="stylesheet" href="/static/portal_calendar.css">
+        <link rel="stylesheet" href="{_versioned_static_url('portal_calendar.css')}">
         """
         scripts = """
         <script defer src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
@@ -934,7 +934,7 @@ async def panel(
         # de carga reutiliza portal_finances.css.
         head_extra = f"""
         {_csrf_meta(csrf_token)}
-        <link rel="stylesheet" href="/static/portal_calendar.css">
+        <link rel="stylesheet" href="{_versioned_static_url('portal_calendar.css')}">
         <link rel="stylesheet" href="/static/portal_finances.css">
         <link rel="stylesheet" href="/static/portal_funds.css">
         """
