@@ -795,3 +795,214 @@ select:focus-visible {
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+/* ── Solicitudes de experto (HdU16) ── */
+.admin-req-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+}
+
+.admin-req-head h2 {
+    margin: 0;
+    font-size: 24px;
+}
+
+.admin-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 14px 24px;
+    margin: 0;
+}
+
+.admin-facts dt {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: color-mix(in srgb, var(--petrol) 65%, transparent);
+    margin-bottom: 2px;
+}
+
+.admin-facts dd {
+    margin: 0;
+    font-weight: 700;
+    color: var(--petrol);
+}
+
+.admin-facts dd small {
+    display: block;
+    font-weight: 500;
+    color: color-mix(in srgb, var(--petrol) 70%, transparent);
+}
+
+.admin-window-ok { color: #166534; }
+.admin-window-warn { color: #b45309; }
+.admin-window-closed { color: #b91c1c; }
+
+.admin-steps {
+    margin: 0 0 22px;
+    padding: 0;
+    list-style: none;
+    counter-reset: paso;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.admin-steps li {
+    counter-increment: paso;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    color: var(--petrol);
+}
+
+.admin-steps li::before {
+    content: counter(paso);
+    flex: 0 0 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--emerald) 30%, white);
+    font-size: 13px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.admin-form-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+}
+
+.admin-btn {
+    background: var(--emerald);
+    color: var(--petrol);
+    border: 0;
+    padding: 12px 30px;
+    border-radius: 999px;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 800;
+    cursor: pointer;
+    box-shadow: 0 0 20px rgba(80, 200, 135, 0.3);
+    transition: transform 300ms, color 300ms;
+}
+
+.admin-btn:hover {
+    transform: translateY(-2px);
+    color: #fff;
+}
+
+.admin-btn-secondary {
+    background: #fff;
+    color: var(--petrol);
+    border: 1px solid color-mix(in srgb, var(--petrol) 40%, transparent);
+    padding: 10px 20px;
+    border-radius: 999px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+    transition: border-color 300ms, transform 300ms;
+}
+
+.admin-btn-secondary:hover {
+    border-color: var(--petrol);
+    transform: translateY(-2px);
+}
+
+.admin-thread {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 20px;
+    padding: 14px;
+    max-height: 420px;
+    overflow-y: auto;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--petrol) 4%, white);
+}
+
+.admin-thread-empty {
+    margin: 0;
+    text-align: center;
+    color: color-mix(in srgb, var(--petrol) 65%, transparent);
+}
+
+.admin-msg {
+    max-width: 80%;
+    padding: 10px 14px;
+    border-radius: 14px 14px 14px 4px;
+    background: #fff;
+    border: 1px solid color-mix(in srgb, var(--petrol) 12%, transparent);
+}
+
+.admin-msg p {
+    margin: 4px 0 0;
+    white-space: pre-wrap;
+}
+
+.admin-msg-expert {
+    align-self: flex-end;
+    border-radius: 14px 14px 4px 14px;
+    background: color-mix(in srgb, var(--emerald) 25%, white);
+    border-color: transparent;
+}
+
+.admin-msg-meta {
+    font-size: 12px;
+    opacity: 0.7;
+}
+
+.admin-compose {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.admin-compose label {
+    font-weight: 700;
+    color: var(--petrol);
+}
+
+.admin-compose textarea {
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--petrol) 30%, transparent);
+    border-radius: 12px;
+    font: inherit;
+    resize: vertical;
+}
+
+.admin-compose textarea:focus {
+    outline: none;
+    border-color: var(--emerald);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--emerald) 90%, transparent);
+}
+
+.admin-hint {
+    margin: 0;
+    font-size: 13px;
+    color: color-mix(in srgb, var(--petrol) 70%, transparent);
+}
+
+.admin-wait {
+    font-size: 13px;
+    color: color-mix(in srgb, var(--petrol) 70%, transparent);
+}
+
+.admin-badge.listo {
+    background: #dcfce7;
+    border-color: #4ade80;
+    color: #166534;
+}

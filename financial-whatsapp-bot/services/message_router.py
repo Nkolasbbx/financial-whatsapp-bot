@@ -20,6 +20,7 @@ from core.financial_flow import (
     should_exit_financial_message,
     should_handle_financial_message,
 )
+from core.expert_flow import handle_expert_message
 from core.menu import MENU_BUTTON, get_menu_widget
 from core.roadmaps import (
     get_roadmap_text,
@@ -183,6 +184,13 @@ def route_message(
         response = process_onboarding(user, message, save_user)
         if response:
             return response
+
+    # ── Contacto con un experto (HdU16) ──
+    # Va antes del resto de los flujos: mientras un experto conversa con el
+    # emprendedor, el asistente de IA queda en pausa para él.
+    expert_response = handle_expert_message(user, message, RESET_COMMANDS)
+    if expert_response is not None:
+        return expert_response
 
     # Leer una sola vez el contexto de fondos, también antes de los comandos
     # que retornan temprano (reiniciar/recordatorios). Cancelar la sesión no

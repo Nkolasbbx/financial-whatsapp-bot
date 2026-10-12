@@ -12,6 +12,7 @@ from config import DEBUG
 from dependencies import lifespan
 from routers import (
     admin,
+    admin_solicitudes,
     portal,
     portal_calendar,
     portal_finances,
@@ -48,6 +49,7 @@ app.include_router(portal_finances.router)
 app.include_router(portal_funds.router)
 app.include_router(portal_roadmap.router)
 app.include_router(admin.router)
+app.include_router(admin_solicitudes.router)
 
 
 @app.get("/")

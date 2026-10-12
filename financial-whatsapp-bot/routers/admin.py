@@ -52,6 +52,7 @@ def _pagina_base(
         <nav class="admin-nav" aria-label="Cuenta">
             <a href="/admin">Panel</a>
             <a href="/admin/documentos">Documentos</a>
+            <a href="/admin/solicitudes">Solicitudes</a>
             <span class="admin-nav-session">
                 <span class="admin-nav-account">{html.escape(cuenta.get("nombre", ""))}</span>
                 <a href="/admin/logout" class="admin-nav-logout">Cerrar sesión</a>

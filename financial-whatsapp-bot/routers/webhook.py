@@ -7,6 +7,7 @@ import dependencies
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from config import META_WEBHOOK_VERIFY_TOKEN, DEBUG
+from core.expert_flow import EXPERT_RELAY
 from core.roadmaps import extract_hito_context
 from db.rate_limits import (
     RATE_LIMIT_WARNING,
@@ -413,6 +414,11 @@ async def whatsapp_webhook(request: Request):
                                 lock_token=lock_token,
                             )
                             hand_off_to_worker = True
+
+                        elif result == EXPERT_RELAY:
+                            # Mensaje reenviado al panel del experto (HdU16):
+                            # no hay respuesta automática que mandar.
+                            logger.info("Mensaje de %s reenviado al experto", phone)
 
                         elif result == "__WEB_PANEL_LINK__":
                             token = await create_access_token(redis, phone)

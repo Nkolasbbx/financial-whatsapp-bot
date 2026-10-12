@@ -43,6 +43,7 @@ MENU_OPTIONS_NO_FORMALIZADO = [
     ("menu_recordatorios_on", "🔔 Activar recordatorios"),
     ("menu_recordatorios_off", "🔕 Pausar recordatorios"),
     ("menu_panel_web", "📊 Ver mi panel web"),
+    ("menu_experto", "🧑‍💼 Hablar con un experto"),
     ("menu_reiniciar", "🔄 Reiniciar"),
 ]
 
@@ -53,6 +54,7 @@ MENU_OPTIONS_FORMALIZADO = [
     ("menu_calendar", "📅 Mi calendario"),
     ("menu_recordatorios_on", "🔔 Alertas SII (F29)"),
     ("menu_panel_web", "📊 Ver mi panel web"),
+    ("menu_experto", "🧑‍💼 Hablar con un experto"),
     ("menu_reiniciar", "🔄 Reiniciar"),
 ]
 
