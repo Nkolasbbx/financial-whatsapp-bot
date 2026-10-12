@@ -125,15 +125,27 @@ def touch_user_message(request_id: str) -> None:
     ).eq("id", request_id).execute()
 
 
-def add_expert_message(request_id: str, sender: str, content: str) -> None:
-    _client().table("expert_messages").insert(
-        {"request_id": request_id, "sender": sender, "content": content}
-    ).execute()
+def add_expert_message(
+    request_id: str,
+    sender: str,
+    content: str,
+    wa_message_id: str | None = None,
+    reply_to_id: int | None = None,
+) -> None:
+    """`wa_message_id`: wamid del mensaje recibido (para poder citarlo después).
+    `reply_to_id`: id del mensaje de esta conversación al que responde el experto."""
+    row = {"request_id": request_id, "sender": sender, "content": content}
+    if wa_message_id:
+        row["wa_message_id"] = wa_message_id
+    if reply_to_id:
+        row["reply_to_id"] = reply_to_id
+    _client().table("expert_messages").insert(row).execute()
 
 
 def list_expert_messages(request_id: str) -> list[dict]:
     result = (
-        _client().table("expert_messages").select("sender, content, created_at")
+        _client().table("expert_messages")
+        .select("id, sender, content, created_at, wa_message_id, reply_to_id")
         .eq("request_id", request_id).order("created_at").execute()
     )
     return result.data or []

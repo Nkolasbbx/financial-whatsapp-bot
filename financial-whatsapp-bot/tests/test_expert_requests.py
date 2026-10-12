@@ -116,8 +116,13 @@ class OpenRequestTests(unittest.TestCase):
     def test_in_progress_relays_message_and_pauses_ai(self):
         result, m = _flow("gracias", open_request={"id": "r1", "status": "in_progress"})
         self.assertEqual(result, expert_flow.EXPERT_RELAY)
-        m["add_expert_message"].assert_called_once_with("r1", "user", "gracias")
+        m["add_expert_message"].assert_called_once_with("r1", "user", "gracias", wa_message_id=None)
         m["touch_user_message"].assert_called_once_with("r1")
+
+    def test_relayed_message_keeps_its_whatsapp_id_so_it_can_be_quoted(self):
+        with patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),              patch.object(expert_flow, "add_expert_message") as add,              patch.object(expert_flow, "touch_user_message"):
+            expert_flow.handle_expert_message(USER, "hola", RESET, "wamid.ABC")
+        add.assert_called_once_with("r1", "user", "hola", wa_message_id="wamid.ABC")
 
     def test_user_can_end_conversation(self):
         result, m = _flow("Terminar", open_request={"id": "r1", "status": "in_progress"})
@@ -273,7 +278,7 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
             return send, add
         send, add = await self._with(_row(), run)
         self.assertIn("InnovaRecoleta", send.await_args.args[1])
-        add.assert_called_once_with("r1", "expert", "Hola, ¿en qué te ayudo?")
+        add.assert_called_once_with("r1", "expert", "Hola, ¿en qué te ayudo?", reply_to_id=None)
 
     async def test_message_is_blocked_outside_window(self):
         async def run():
@@ -288,6 +293,92 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
     async def test_request_from_another_comuna_is_404(self):
         response = await self._with(None, lambda: panel.detalle("x", _request(), "sid"))
         self.assertEqual(response.status_code, 404)
+
+
+MSGS = [
+    {"id": 1, "sender": "user", "content": "cuanto cuesta la patente", "wa_message_id": "wamid.1", "created_at": _iso(timedelta(minutes=-30))},
+    {"id": 2, "sender": "user", "content": "mensaje viejo sin id", "wa_message_id": None, "created_at": _iso(timedelta(minutes=-20))},
+    {"id": 3, "sender": "expert", "content": "son 120 mil", "wa_message_id": None, "reply_to_id": 1, "created_at": _iso(timedelta(minutes=-10))},
+]
+
+
+class QuoteReplyTests(unittest.IsolatedAsyncioTestCase):
+    def test_only_user_messages_with_whatsapp_id_can_be_quoted(self):
+        self.assertEqual(panel._mensaje_citable(MSGS, "1")["id"], 1)
+        self.assertIsNone(panel._mensaje_citable(MSGS, "2"))   # sin wamid
+        self.assertIsNone(panel._mensaje_citable(MSGS, "3"))   # del experto
+        self.assertIsNone(panel._mensaje_citable(MSGS, "999"))
+        self.assertIsNone(panel._mensaje_citable(MSGS, "abc"))
+
+    def test_thread_shows_reply_link_only_for_quotable_messages(self):
+        html_hilo = panel._hilo_html(MSGS, "r1", puede_responder=True)
+        self.assertEqual(html_hilo.count("Responder</a>"), 1)
+        self.assertIn("?responder=1#mensaje", html_hilo)
+
+    def test_thread_hides_reply_links_when_window_is_closed(self):
+        self.assertNotIn("Responder</a>", panel._hilo_html(MSGS, "r1", puede_responder=False))
+
+    def test_expert_message_shows_the_quoted_text(self):
+        self.assertIn("cuanto cuesta la patente", panel._hilo_html(MSGS, "r1", puede_responder=True).split("son 120 mil")[0].split("admin-quote")[-1])
+
+    def _patches(self):
+        return [
+            patch.object(panel, "_auth", new=AsyncMock(return_value={"comuna": "Recoleta", "nombre": "InnovaRecoleta"})),
+            patch.object(panel, "get_expert_request", return_value=_row()),
+            patch.object(panel, "_set_flash", new=AsyncMock()),
+            patch.object(panel, "list_expert_messages", return_value=MSGS),
+        ]
+
+    async def _send(self, responder_a):
+        patches = self._patches()
+        for p in patches:
+            p.start()
+        try:
+            with patch.object(panel, "send_text", new=AsyncMock()) as send,                  patch.object(panel, "add_expert_message") as add:
+                await panel.enviar_mensaje("r1", _request(), mensaje="son 120 mil", responder_a=responder_a, financial_admin_session="sid")
+            return send, add
+        finally:
+            for p in patches:
+                p.stop()
+
+    async def test_reply_is_sent_quoting_the_selected_message(self):
+        send, add = await self._send("1")
+        self.assertEqual(send.await_args.kwargs.get("reply_to_message_id"), "wamid.1")
+        add.assert_called_once_with("r1", "expert", "son 120 mil", reply_to_id=1)
+
+    async def test_invalid_or_foreign_quote_is_ignored_but_message_still_sent(self):
+        for valor in ("2", "3", "999", "no-numero"):
+            send, add = await self._send(valor)
+            self.assertNotIn("reply_to_message_id", send.await_args.kwargs)
+            add.assert_called_once_with("r1", "expert", "son 120 mil", reply_to_id=None)
+
+    async def test_if_whatsapp_rejects_the_quote_it_resends_without_it(self):
+        calls = []
+
+        async def fake_send(phone, text, reply_to_message_id=None):
+            calls.append(reply_to_message_id)
+            if reply_to_message_id:
+                raise panel.WhatsAppAPIError("id inválido")
+
+        with patch.object(panel, "send_text", new=fake_send):
+            ok = await panel._notificar("+56911112222", "hola", reply_to="wamid.malo")
+        self.assertTrue(ok)
+        self.assertEqual(calls, ["wamid.malo", None])
+
+    async def test_detail_page_preselects_the_message_to_reply(self):
+        request = _request()
+        request.query_params = {"responder": "1"}
+        patches = self._patches() + [patch.object(panel, "_pop_flash", new=AsyncMock(return_value=None))]
+        for p in patches:
+            p.start()
+        try:
+            response = await panel.detalle("abcd1234-0000", request, "sid")
+        finally:
+            for p in patches:
+                p.stop()
+        body = response.body.decode()
+        self.assertIn("Respondiendo a: «cuanto cuesta la patente»", body)
+        self.assertIn('name="responder_a" value="1"', body)
 
 
 if __name__ == "__main__":

@@ -248,15 +248,57 @@ async def lista(request: Request, financial_admin_session: str | None = Cookie(d
     return Response(content=_pagina_base("Solicitudes de experto", contenido, account), media_type="text/html")
 
 
-def _hilo_html(mensajes: list[dict]) -> str:
+QUOTE_PREVIEW_CHARS = 120
+
+
+def _extracto(texto: str) -> str:
+    texto = " ".join((texto or "").split())
+    return texto if len(texto) <= QUOTE_PREVIEW_CHARS else texto[:QUOTE_PREVIEW_CHARS].rstrip() + "…"
+
+
+def _mensaje_citable(mensajes: list[dict], mensaje_id) -> dict | None:
+    """Un mensaje del emprendedor que se puede citar (tiene el wamid guardado)."""
+    try:
+        mensaje_id = int(mensaje_id)
+    except (TypeError, ValueError):
+        return None
+    return next(
+        (m for m in mensajes if m.get("id") == mensaje_id and m["sender"] == "user" and m.get("wa_message_id")),
+        None,
+    )
+
+
+def _hilo_html(
+    mensajes: list[dict],
+    request_id: str | None = None,
+    puede_responder: bool = False,
+    seleccionado: int | None = None,
+) -> str:
     if not mensajes:
         return '<p class="admin-thread-empty">Todavía no hay mensajes en esta conversación.</p>'
-    return "\n".join(
-        f'<div class="admin-msg admin-msg-{"expert" if m["sender"] == "expert" else "user"}">'
-        f'<span class="admin-msg-meta">{"Tú" if m["sender"] == "expert" else "Emprendedor"} · {html.escape(_fecha_local(m.get("created_at")))}</span>'
-        f'<p>{html.escape(m["content"])}</p></div>'
-        for m in mensajes
-    )
+    por_id = {m.get("id"): m for m in mensajes}
+    burbujas = []
+    for m in mensajes:
+        es_experto = m["sender"] == "expert"
+        cita = ""
+        citado = por_id.get(m.get("reply_to_id")) if es_experto else None
+        if citado:
+            cita = f'<div class="admin-quote">↩ {html.escape(_extracto(citado["content"]))}</div>'
+        responder = ""
+        if puede_responder and request_id and not es_experto and m.get("wa_message_id") and m.get("id"):
+            marca = " admin-msg-selected" if m["id"] == seleccionado else ""
+            responder = (
+                f'<a class="admin-reply-link" href="/admin/solicitudes/{html.escape(request_id)}'
+                f'?responder={int(m["id"])}#mensaje">Responder</a>'
+            )
+        else:
+            marca = ""
+        burbujas.append(
+            f'<div class="admin-msg admin-msg-{"expert" if es_experto else "user"}{marca}">'
+            f'<span class="admin-msg-meta">{"Tú" if es_experto else "Emprendedor"} · {html.escape(_fecha_local(m.get("created_at")))}</span>'
+            f'{cita}<p>{html.escape(m["content"])}</p>{responder}</div>'
+        )
+    return "\n".join(burbujas)
 
 
 def _bloque_motivo(fila: dict) -> str:
@@ -291,11 +333,25 @@ def _bloque_tomar(request_id: str, nombre: str, restante: timedelta) -> str:
     </div>"""
 
 
-def _bloque_conversacion(request_id: str, mensajes: list[dict], restante: timedelta, nombre: str) -> str:
+def _bloque_conversacion(
+    request_id: str,
+    mensajes: list[dict],
+    restante: timedelta,
+    nombre: str,
+    responder: dict | None = None,
+) -> str:
     if restante > timedelta(0):
+        cita = ""
+        if responder:
+            cita = f"""
+            <div class="admin-quote-preview">
+                <span>Respondiendo a: «{html.escape(_extracto(responder["content"]))}»</span>
+                <a href="/admin/solicitudes/{html.escape(request_id)}#mensaje">Quitar cita</a>
+            </div>
+            <input type="hidden" name="responder_a" value="{int(responder["id"])}">"""
         composer = f"""
         <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/mensaje" class="admin-compose">
-            <label for="mensaje">Escribe tu respuesta</label>
+            <label for="mensaje">Escribe tu respuesta</label>{cita}
             <textarea id="mensaje" name="mensaje" rows="3" maxlength="{MAX_MESSAGE_CHARS}" required
                       placeholder="El emprendedor lo recibe en su WhatsApp como «{html.escape(nombre)}»"></textarea>
             <div class="admin-form-actions">
@@ -312,10 +368,14 @@ def _bloque_conversacion(request_id: str, mensajes: list[dict], restante: timede
                 <button type="submit" class="admin-btn-secondary">Marcar como resuelta</button>
             </div>
         </form>"""
+    hilo = _hilo_html(
+        mensajes, request_id, puede_responder=restante > timedelta(0),
+        seleccionado=responder["id"] if responder else None,
+    )
     return f"""
     <div class="admin-card">
         <h2>Conversación</h2>
-        <div class="admin-thread">{_hilo_html(mensajes)}</div>
+        <div class="admin-thread">{hilo}</div>
         {composer}
     </div>
     <div class="admin-card">{cerrar}</div>"""
@@ -347,7 +407,8 @@ async def detalle(
     if status == "pending":
         cuerpo = _bloque_tomar(request_id, nombre, restante)
     elif status == "in_progress":
-        cuerpo = _bloque_conversacion(request_id, mensajes, restante, nombre)
+        responder = _mensaje_citable(mensajes, request.query_params.get("responder"))
+        cuerpo = _bloque_conversacion(request_id, mensajes, restante, nombre, responder)
     else:
         cierre = f"{_fecha_local(fila.get('resolved_at'))} por {fila.get('closed_by') or '—'}"
         cuerpo = f"""
@@ -385,11 +446,16 @@ async def detalle(
     return Response(content=_pagina_base("Solicitud de experto", contenido, account), media_type="text/html")
 
 
-async def _notificar(phone: str, texto: str) -> bool:
+async def _notificar(phone: str, texto: str, reply_to: str | None = None) -> bool:
     try:
-        await send_text(phone, texto)
+        await send_text(phone, texto, reply_to_message_id=reply_to) if reply_to else await send_text(phone, texto)
         return True
     except WhatsAppAPIError as error:
+        if reply_to:
+            # Si WhatsApp rechaza la cita (por ejemplo un id vencido), el
+            # mensaje igual se manda, solo que sin citar.
+            logger.warning("No se pudo citar el mensaje, se envía sin cita: %s", error)
+            return await _notificar(phone, texto)
         logger.error("No se pudo enviar el mensaje al emprendedor: %s", error)
         return False
 
@@ -437,6 +503,7 @@ async def enviar_mensaje(
     request_id: str,
     request: Request,
     mensaje: str = Form(...),
+    responder_a: str = Form(""),
     financial_admin_session: str | None = Cookie(default=None),
 ):
     account = await _auth(request, financial_admin_session)
@@ -449,6 +516,11 @@ async def enviar_mensaje(
     if not fila:
         return Response(status_code=404)
 
+    # Solo se puede citar un mensaje del emprendedor de ESTA conversación.
+    citado = None
+    if isinstance(responder_a, str) and responder_a.strip():
+        citado = _mensaje_citable(list_expert_messages(request_id), responder_a)
+
     texto = mensaje.strip()
     if fila["status"] != "in_progress":
         await _set_flash(redis, financial_admin_session, "error", "Solo puedes escribir en solicitudes en atención.")
@@ -459,8 +531,9 @@ async def enviar_mensaje(
     elif await _notificar(
         (fila.get("users") or {}).get("phone", ""),
         f"👤 *{account.get('nombre', account['comuna'])}*: {texto}",
+        reply_to=citado["wa_message_id"] if citado else None,
     ):
-        add_expert_message(request_id, "expert", texto)
+        add_expert_message(request_id, "expert", texto, reply_to_id=citado["id"] if citado else None)
         await _set_flash(redis, financial_admin_session, "ok", "Mensaje enviado.")
     else:
         await _set_flash(redis, financial_admin_session, "error", "No se pudo enviar el mensaje por WhatsApp.")

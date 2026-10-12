@@ -1070,3 +1070,37 @@ select:focus-visible {
     background: color-mix(in srgb, var(--petrol) 4%, white);
     white-space: pre-wrap;
 }
+
+/* ── Responder citando un mensaje ── */
+.admin-reply-link {
+    display: inline-block;
+    margin-top: 6px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.admin-msg-selected {
+    outline: 2px solid var(--emerald);
+}
+
+.admin-quote {
+    margin: 6px 0 2px;
+    padding: 6px 10px;
+    border-left: 3px solid var(--teal);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--petrol) 6%, white);
+    font-size: 13px;
+    color: color-mix(in srgb, var(--petrol) 80%, transparent);
+}
+
+.admin-quote-preview {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-left: 3px solid var(--emerald);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--emerald) 15%, white);
+    font-size: 13px;
+}

@@ -375,6 +375,7 @@ async def whatsapp_webhook(request: Request):
                         phone,
                         message,
                         reply_to_message_id,
+                        message_id=message_id,
                     )
 
                     try:

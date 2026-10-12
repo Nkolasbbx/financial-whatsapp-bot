@@ -127,10 +127,16 @@ def _handle_draft(draft: dict, message: str, reset_commands: set[str]):
     )
 
 
-def handle_expert_message(user: dict, message: str, reset_commands: set[str]):
+def handle_expert_message(
+    user: dict,
+    message: str,
+    reset_commands: set[str],
+    message_id: str | None = None,
+):
     """Devuelve la respuesta para el emprendedor (texto o widget), EXPERT_RELAY si
     el mensaje se reenvió al panel (sin respuesta), o None si no aplica y sigue
-    el flujo normal."""
+    el flujo normal. `message_id` es el wamid del mensaje recibido: se guarda
+    para que el admin pueda responderlo citándolo."""
     user_id = user.get("id")
     if not user_id:
         return None
@@ -156,7 +162,7 @@ def handle_expert_message(user: dict, message: str, reset_commands: set[str]):
                     "con el asistente. Si necesitas al experto otra vez, puedes "
                     "pedirlo desde el menú."
                 )
-            add_expert_message(open_request["id"], "user", message)
+            add_expert_message(open_request["id"], "user", message, wa_message_id=message_id)
             touch_user_message(open_request["id"])
             return EXPERT_RELAY
 

@@ -168,6 +168,7 @@ def route_message(
     phone: str,
     message: str,
     reply_to_message_id: str | None = None,
+    message_id: str | None = None,
 ):
     message = message.strip()
     msg_lower = message.lower()
@@ -188,7 +189,7 @@ def route_message(
     # ── Contacto con un experto (HdU16) ──
     # Va antes del resto de los flujos: mientras un experto conversa con el
     # emprendedor, el asistente de IA queda en pausa para él.
-    expert_response = handle_expert_message(user, message, RESET_COMMANDS)
+    expert_response = handle_expert_message(user, message, RESET_COMMANDS, message_id)
     if expert_response is not None:
         return expert_response
 
