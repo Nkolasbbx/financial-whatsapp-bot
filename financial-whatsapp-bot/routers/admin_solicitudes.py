@@ -6,21 +6,26 @@ El admin ve las solicitudes de SU comuna, toma una y conversa con el
 emprendedor desde el panel. Los mensajes salen y entran por el número del
 bot: el teléfono del emprendedor nunca se renderiza acá, y el emprendedor
 nunca ve el del admin.
+
+La lista se ordena por urgencia (primero las que están por cerrar su ventana
+de 24 h de WhatsApp) y se puede filtrar por tema, rubro, formalización y
+ventana por cerrar.
 """
 import html
 import logging
-import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Form, Request, Response
 
 from core.calendar_service import get_calendar_timezone
+from core.expert_flow import TOPIC_LABELS, TOPICS
 from core.roadmaps import get_pending_milestone
 from db.expert_requests import (
     add_expert_message,
     get_expert_request,
     list_expert_messages,
     list_expert_requests,
+    parse_timestamp as _parse_dt,
     resolve_expert_request,
     take_expert_request,
 )
@@ -33,25 +38,15 @@ logger = logging.getLogger("financial")
 router = APIRouter(prefix="/admin/solicitudes")
 
 WHATSAPP_WINDOW = timedelta(hours=24)
+URGENT_WINDOW = timedelta(hours=6)
 MAX_MESSAGE_CHARS = 1000
+REASON_PREVIEW_CHARS = 90
 
 _ESTADOS = {
     "pending": ("Pendiente", "en-cola"),
     "in_progress": ("En atención", "procesando"),
     "resolved": ("Resuelta", "listo"),
 }
-
-
-def _parse_dt(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    text = value.replace("Z", "+00:00")
-    # Postgres puede devolver 1-6 decimales; fromisoformat (3.10) exige 3 o 6.
-    text = re.sub(r"\.(\d+)", lambda m: "." + m.group(1).ljust(6, "0")[:6], text)
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
 
 
 def _alias(request_row: dict) -> str:
@@ -79,6 +74,53 @@ def _window_text(remaining: timedelta) -> str:
         return "Ventana cerrada"
     horas, resto = divmod(int(remaining.total_seconds()), 3600)
     return f"{horas} h {resto // 60} min restantes"
+
+
+def _formalizado_txt(usuario: dict) -> str:
+    estado = usuario.get("inicio_sii")
+    if estado == "si":
+        return "Formalizado"
+    if estado == "no":
+        return "No formalizado"
+    return "Formalización sin confirmar"
+
+
+def _progreso(usuario: dict) -> tuple[int, int]:
+    roadmap = usuario.get("roadmap") or []
+    return sum(1 for hito in roadmap if hito.get("done")), len(roadmap)
+
+
+def _progreso_txt(usuario: dict) -> str:
+    hechos, total = _progreso(usuario)
+    return f"{hechos} de {total} hitos" if total else "Sin roadmap"
+
+
+def ordenar_por_urgencia(filas: list[dict]) -> list[dict]:
+    """Primero las que están por cerrar su ventana; las ya cerradas, al final."""
+    def clave(fila: dict):
+        restante = window_remaining(fila)
+        return (restante <= timedelta(0), restante)
+    return sorted(filas, key=clave)
+
+
+def filtrar(filas: list[dict], tema: str = "", rubro: str = "", formalizado: str = "", vence: bool = False) -> list[dict]:
+    resultado = []
+    for fila in filas:
+        usuario = fila.get("users") or {}
+        if tema and fila.get("topic") != tema:
+            continue
+        if rubro and (usuario.get("rubro") or "") != rubro:
+            continue
+        if formalizado == "si" and usuario.get("inicio_sii") != "si":
+            continue
+        if formalizado == "no" and usuario.get("inicio_sii") == "si":
+            continue
+        if vence:
+            restante = window_remaining(fila)
+            if not (timedelta(0) < restante < URGENT_WINDOW):
+                continue
+        resultado.append(fila)
+    return resultado
 
 
 async def _auth(request: Request, session: str | None) -> dict | None:
@@ -111,20 +153,31 @@ def _hace(value: str | None) -> str:
 def _ventana_html(restante: timedelta) -> str:
     if restante <= timedelta(0):
         clase = "closed"
-    elif restante < timedelta(hours=6):
+    elif restante < URGENT_WINDOW:
         clase = "warn"
     else:
         clase = "ok"
     return f'<span class="admin-window-{clase}">{html.escape(_window_text(restante))}</span>'
 
 
+def _tema_html(fila: dict) -> str:
+    tema = TOPIC_LABELS.get(fila.get("topic") or "", "")
+    chip = f'<span class="admin-chip">{html.escape(tema)}</span>' if tema else '<span class="admin-wait">Sin tema</span>'
+    motivo = (fila.get("reason") or "").strip()
+    if len(motivo) > REASON_PREVIEW_CHARS:
+        motivo = motivo[:REASON_PREVIEW_CHARS].rstrip() + "…"
+    return chip + (f'<div class="admin-wait">{html.escape(motivo)}</div>' if motivo else "")
+
+
 def _tabla(titulo: str, filas: list[dict], vacio: str) -> str:
     cuerpo = "\n".join(
         f"""<tr>
-            <td><strong>{html.escape(_alias(r))}</strong></td>
-            <td>{html.escape((r.get("users") or {}).get("rubro") or "—")}</td>
+            <td><strong>{html.escape(_alias(r))}</strong>
+                <div class="admin-wait">{html.escape((r.get("users") or {}).get("rubro") or "—")}</div></td>
+            <td>{_tema_html(r)}</td>
+            <td>{html.escape(_formalizado_txt(r.get("users") or {}))}
+                <div class="admin-wait">{html.escape(_progreso_txt(r.get("users") or {}))}</div></td>
             <td>{html.escape(_fecha_local(r.get("created_at")))}<div class="admin-wait">{html.escape(_hace(r.get("created_at")))}</div></td>
-            <td>{_badge(r["status"])}</td>
             <td>{_ventana_html(window_remaining(r)) if r["status"] != "resolved" else "—"}</td>
             <td><a class="admin-btn-secondary" href="/admin/solicitudes/{html.escape(str(r["id"]))}">Abrir</a></td>
         </tr>"""
@@ -135,10 +188,31 @@ def _tabla(titulo: str, filas: list[dict], vacio: str) -> str:
     <div class="admin-card">
         <h2>{html.escape(titulo)}{conteo}</h2>
         <table class="admin-table">
-            <thead><tr><th>Emprendedor</th><th>Rubro</th><th>Solicitada</th><th>Estado</th><th>Ventana WhatsApp</th><th></th></tr></thead>
+            <thead><tr><th>Emprendedor</th><th>Tema y motivo</th><th>Contexto</th><th>Solicitada</th><th>Ventana WhatsApp</th><th></th></tr></thead>
             <tbody>{cuerpo}</tbody>
         </table>
     </div>"""
+
+
+def _opciones(valores: list[tuple[str, str]], elegido: str, todos: str) -> str:
+    opciones = [f'<option value="">{html.escape(todos)}</option>']
+    opciones += [
+        f'<option value="{html.escape(v)}"{" selected" if v == elegido else ""}>{html.escape(etiqueta)}</option>'
+        for v, etiqueta in valores
+    ]
+    return "".join(opciones)
+
+
+def _filtros_html(rubros: list[str], tema: str, rubro: str, formalizado: str, vence: bool) -> str:
+    return f"""
+    <form method="get" action="/admin/solicitudes" class="admin-filters" aria-label="Filtrar solicitudes">
+        <label>Tema <select name="tema">{_opciones(list(TOPICS), tema, "Todos")}</select></label>
+        <label>Rubro <select name="rubro">{_opciones([(r, r.capitalize()) for r in rubros], rubro, "Todos")}</select></label>
+        <label>Formalización <select name="formalizado">{_opciones([("si", "Formalizados"), ("no", "No formalizados")], formalizado, "Todas")}</select></label>
+        <label class="admin-filter-check"><input type="checkbox" name="vence" value="1"{" checked" if vence else ""}> Ventana por cerrar (menos de 6 h)</label>
+        <button type="submit" class="admin-btn-secondary">Filtrar</button>
+        <a href="/admin/solicitudes" class="admin-filter-clear">Limpiar</a>
+    </form>"""
 
 
 @router.get("")
@@ -148,12 +222,28 @@ async def lista(request: Request, financial_admin_session: str | None = Cookie(d
         return _redirect("/admin/login")
 
     comuna = account["comuna"]
+    params = request.query_params
+    tema = params.get("tema", "") if params.get("tema", "") in TOPIC_LABELS else ""
+    rubro = params.get("rubro", "")
+    formalizado = params.get("formalizado", "") if params.get("formalizado", "") in ("si", "no") else ""
+    vence = params.get("vence") == "1"
+
+    pendientes = list_expert_requests(comuna, ("pending",))
+    en_atencion = list_expert_requests(comuna, ("in_progress",))
+    resueltas = list_expert_requests(comuna, ("resolved",), limit=10)
+    rubros = sorted({(f.get("users") or {}).get("rubro") for f in pendientes + en_atencion + resueltas if (f.get("users") or {}).get("rubro")})
+
+    def preparar(filas, abiertas=True):
+        filas = filtrar(filas, tema, rubro, formalizado, vence and abiertas)
+        return ordenar_por_urgencia(filas) if abiertas else filas
+
     flash = await _pop_flash(request.app.state.redis, financial_admin_session)
     contenido = (
         _flash_html(flash)
-        + _tabla("Pendientes", list_expert_requests(comuna, ("pending",)), "No hay solicitudes pendientes.")
-        + _tabla("En atención", list_expert_requests(comuna, ("in_progress",)), "No hay conversaciones en curso.")
-        + _tabla("Resueltas (recientes)", list_expert_requests(comuna, ("resolved",), limit=10), "Todavía no hay solicitudes resueltas.")
+        + _filtros_html(rubros, tema, rubro, formalizado, vence)
+        + _tabla("Pendientes", preparar(pendientes), "No hay solicitudes pendientes con esos filtros.")
+        + _tabla("En atención", preparar(en_atencion), "No hay conversaciones en curso con esos filtros.")
+        + _tabla("Resueltas (recientes)", preparar(resueltas, abiertas=False), "Todavía no hay solicitudes resueltas.")
     )
     return Response(content=_pagina_base("Solicitudes de experto", contenido, account), media_type="text/html")
 
@@ -167,6 +257,16 @@ def _hilo_html(mensajes: list[dict]) -> str:
         f'<p>{html.escape(m["content"])}</p></div>'
         for m in mensajes
     )
+
+
+def _bloque_motivo(fila: dict) -> str:
+    motivo = (fila.get("reason") or "").strip()
+    texto = html.escape(motivo) if motivo else "El emprendedor no dejó detalle."
+    return f"""
+    <div class="admin-card">
+        <h2>Motivo de la solicitud</h2>
+        <blockquote class="admin-reason">{texto}</blockquote>
+    </div>"""
 
 
 def _bloque_tomar(request_id: str, nombre: str, restante: timedelta) -> str:
@@ -262,6 +362,7 @@ async def detalle(
         f'<a href="/admin/solicitudes/{html.escape(request_id)}">Actualizar</a></small>'
         if status != "resolved" else "—"
     )
+    tema = TOPIC_LABELS.get(fila.get("topic") or "", "Sin tema")
     contenido = f"""
     {_flash_html(flash)}
     <div class="admin-card">
@@ -270,12 +371,15 @@ async def detalle(
             {_badge(status)}
         </div>
         <dl class="admin-facts">
+            <div><dt>Tema</dt><dd>{html.escape(tema)}</dd></div>
             <div><dt>Rubro</dt><dd>{html.escape(usuario.get("rubro") or "—")}</dd></div>
-            <div><dt>Hito actual</dt><dd>{html.escape(hito_txt)}</dd></div>
+            <div><dt>Formalización</dt><dd>{html.escape(_formalizado_txt(usuario))}</dd></div>
+            <div><dt>Roadmap</dt><dd>{html.escape(_progreso_txt(usuario))}<small>Hito actual: {html.escape(hito_txt)}</small></dd></div>
             <div><dt>Solicitada</dt><dd>{html.escape(_fecha_local(fila.get("created_at")))}<small>{html.escape(_hace(fila.get("created_at")))}</small></dd></div>
             <div><dt>Ventana WhatsApp</dt><dd>{ventana}</dd></div>
         </dl>
     </div>
+    {_bloque_motivo(fila)}
     {cuerpo}
     <p><a href="/admin/solicitudes">← Volver a las solicitudes</a></p>"""
     return Response(content=_pagina_base("Solicitud de experto", contenido, account), media_type="text/html")

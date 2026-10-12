@@ -1006,3 +1006,67 @@ select:focus-visible {
     border-color: #4ade80;
     color: #166534;
 }
+
+/* ── Solicitudes de experto: filtros, tema y motivo ── */
+.admin-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 12px 18px;
+    margin-bottom: 24px;
+    padding: 16px 20px;
+    border-radius: 16px;
+    border: 1px solid color-mix(in srgb, var(--petrol) 20%, transparent);
+    background: color-mix(in srgb, white 92%, var(--petrol));
+}
+
+.admin-filters label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 700;
+    color: color-mix(in srgb, var(--petrol) 75%, transparent);
+}
+
+.admin-filters select {
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--petrol) 30%, transparent);
+    background: #fff;
+    font: inherit;
+    font-size: 14px;
+    color: var(--petrol);
+}
+
+.admin-filters .admin-filter-check {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    padding-bottom: 8px;
+}
+
+.admin-filter-clear {
+    font-size: 14px;
+    padding-bottom: 8px;
+}
+
+.admin-chip {
+    display: inline-block;
+    padding: 2px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    background: color-mix(in srgb, var(--emerald) 25%, white);
+    color: var(--petrol);
+}
+
+.admin-reason {
+    margin: 0;
+    padding: 14px 18px;
+    border-left: 4px solid var(--emerald);
+    border-radius: 0 12px 12px 0;
+    background: color-mix(in srgb, var(--petrol) 4%, white);
+    white-space: pre-wrap;
+}

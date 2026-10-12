@@ -4,13 +4,18 @@ Usa el cliente administrativo (service role): estas tablas no tienen
 políticas RLS, solo las toca el backend.
 """
 import logging
+import re
 from datetime import datetime, timezone
 
 import dependencies
 
 logger = logging.getLogger("financial")
 
-OPEN_STATUSES = ("pending", "in_progress")
+# 'draft' = el bot todavía le está preguntando el tema/motivo al emprendedor.
+OPEN_STATUSES = ("draft", "pending", "in_progress")
+RESOLVABLE_STATUSES = ("pending", "in_progress")
+
+_USER_FIELDS = "rubro, inicio_sii, roadmap, roadmap_completed_at"
 
 
 def _client():
@@ -24,6 +29,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_timestamp(value: str | None) -> datetime | None:
+    """Parsea un timestamp de Postgres (con 1 a 6 decimales, o 'Z')."""
+    if not value:
+        return None
+    text = value.replace("Z", "+00:00")
+    # fromisoformat (Python 3.10) exige 3 o 6 decimales.
+    text = re.sub(r"\.(\d+)", lambda m: "." + m.group(1).ljust(6, "0")[:6], text)
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 def get_open_expert_request(user_id: str) -> dict | None:
     result = (
         _client().table("expert_requests").select("*")
@@ -33,26 +51,46 @@ def get_open_expert_request(user_id: str) -> dict | None:
     return result.data[0] if result.data else None
 
 
-def create_expert_request(user_id: str, comuna: str) -> dict | None:
+def create_expert_request(user_id: str, comuna: str, status: str = "pending") -> dict | None:
     result = (
         _client().table("expert_requests")
-        .insert({"user_id": user_id, "comuna": comuna}).execute()
+        .insert({"user_id": user_id, "comuna": comuna, "status": status}).execute()
     )
     return result.data[0] if result.data else None
+
+
+def set_expert_topic(request_id: str, topic: str) -> None:
+    _client().table("expert_requests").update({"topic": topic}).eq("id", request_id).execute()
+
+
+def finalize_expert_request(request_id: str, reason: str | None) -> bool:
+    """draft -> pending, con el motivo (opcional) que escribió el emprendedor."""
+    result = (
+        _client().table("expert_requests")
+        .update({"status": "pending", "reason": reason, "user_last_message_at": _now()})
+        .eq("id", request_id).eq("status", "draft").execute()
+    )
+    return bool(result.data)
+
+
+def delete_expert_draft(request_id: str) -> None:
+    """Descarta un borrador (el emprendedor canceló o lo dejó abandonado)."""
+    _client().table("expert_requests").delete().eq("id", request_id).eq("status", "draft").execute()
 
 
 def get_expert_request(request_id: str, comuna: str) -> dict | None:
     """Trae una solicitud solo si pertenece a la comuna del admin."""
     result = (
-        _client().table("expert_requests").select("*, users(phone, rubro, roadmap, roadmap_completed_at)")
-        .eq("id", request_id).eq("comuna", comuna).limit(1).execute()
+        _client().table("expert_requests").select(f"*, users(phone, {_USER_FIELDS})")
+        .eq("id", request_id).eq("comuna", comuna).neq("status", "draft")
+        .limit(1).execute()
     )
     return result.data[0] if result.data else None
 
 
 def list_expert_requests(comuna: str, statuses: tuple[str, ...], limit: int = 50) -> list[dict]:
     result = (
-        _client().table("expert_requests").select("*, users(rubro)")
+        _client().table("expert_requests").select(f"*, users({_USER_FIELDS})")
         .eq("comuna", comuna).in_("status", list(statuses))
         .order("created_at", desc=True).limit(limit).execute()
     )
@@ -73,7 +111,7 @@ def resolve_expert_request(request_id: str, closed_by: str, comuna: str | None =
     query = (
         _client().table("expert_requests")
         .update({"status": "resolved", "resolved_at": _now(), "closed_by": closed_by})
-        .eq("id", request_id).in_("status", list(OPEN_STATUSES))
+        .eq("id", request_id).in_("status", list(RESOLVABLE_STATUSES))
     )
     if comuna:
         query = query.eq("comuna", comuna)
