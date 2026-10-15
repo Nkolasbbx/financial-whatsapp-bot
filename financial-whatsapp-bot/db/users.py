@@ -17,14 +17,38 @@ _RESET_SAFE_DEFAULTS = {
 }
 
 
-def get_user(phone: str) -> dict | None:
+class UserPersistenceError(RuntimeError):
+    """No se pudo leer o guardar el perfil de forma persistente."""
+
+
+_ONBOARDING_FIELDS = {
+    "nombre_completo", "rut", "email", "direccion_negocio", "profile_completion_step",
+    "rubro", "rubro_raw", "comuna", "inicio_sii", "onboarding_step",
+    "roadmap", "roadmap_completed_at", "created_at",
+}
+
+
+def _profile_client():
+    import dependencies
+
+    client = dependencies.supabase
+    if client is None and (
+        getattr(dependencies, "SUPABASE_URL", None)
+        or getattr(dependencies, "SUPABASE_KEY", None)
+    ):
+        raise UserPersistenceError("Supabase está configurado pero su cliente no está disponible")
+    return client
+
+
+def get_user(phone: str, *, strict: bool = False) -> dict | None:
     """Obtiene el perfil de un usuario mediante su número telefónico."""
     import dependencies
 
-    if dependencies.supabase:
+    client = _profile_client() if strict else dependencies.supabase
+    if client:
         try:
             result = (
-                dependencies.supabase
+                client
                 .table("users")
                 .select("*")
                 .eq("phone", phone)
@@ -49,10 +73,69 @@ def get_user(phone: str) -> dict | None:
 
                 return user
 
+            if strict:
+                return None
+
         except Exception as error:
+            if strict:
+                logger.error("No se pudo consultar el perfil (%s)", type(error).__name__)
+                raise UserPersistenceError("No se pudo consultar el perfil") from error
             logger.error("Supabase get_user error: %s", error)
 
     return users_db.get(phone)
+
+
+def create_user_profile(phone: str) -> dict:
+    """Crea la identidad inicial sin sobrescribir un perfil existente."""
+    client = _profile_client()
+    now = datetime.now(timezone.utc).isoformat()
+    data = {"phone": phone, "onboarding_step": "0", "created_at": now, "updated_at": now}
+    if client:
+        try:
+            result = (
+                client.table("users")
+                .upsert(data, on_conflict="phone", ignore_duplicates=True)
+                .execute()
+            )
+            if result.data:
+                return result.data[0]
+            # Otro proceso pudo crear el perfil entre la lectura y el insert.
+            existing = get_user(phone, strict=True)
+            if existing:
+                return existing
+        except Exception as error:
+            logger.error("No se pudo crear el perfil (%s)", type(error).__name__)
+            raise UserPersistenceError("No se pudo crear el perfil") from error
+        raise UserPersistenceError("La creación del perfil no devolvió un registro")
+    # Modo local sin Supabase configurado; nunca se usa tras un error de red.
+    return users_db.setdefault(phone, data)
+
+
+def update_onboarding_profile(phone: str, changes: dict) -> dict:
+    """Guarda únicamente el avance de onboarding, sin reemplazar el resto del usuario."""
+    if not changes or not set(changes).issubset(_ONBOARDING_FIELDS):
+        raise ValueError("Campos de onboarding no permitidos")
+    client = _profile_client()
+    payload = {**changes, "updated_at": datetime.now(timezone.utc).isoformat()}
+    if "onboarding_step" in payload:
+        payload["onboarding_step"] = str(payload["onboarding_step"])
+    if client:
+        try:
+            result = (
+                client.table("users")
+                .update(payload).eq("phone", phone).execute()
+            )
+            if result.data:
+                return result.data[0]
+        except Exception as error:
+            # Los errores de Postgres pueden contener la fila completa: no registrar PII.
+            logger.error("No se pudo guardar el onboarding (%s)", type(error).__name__)
+            raise UserPersistenceError("No se pudo guardar el onboarding") from error
+        raise UserPersistenceError("La actualización no devolvió un perfil")
+    if phone not in users_db:
+        raise UserPersistenceError("El perfil no existe")
+    users_db[phone] = {**users_db[phone], **payload}
+    return dict(users_db[phone])
 
 
 def get_user_id(phone: str) -> str | None:
@@ -138,7 +221,8 @@ def save_user(phone: str, data: dict) -> dict | None:
             return None
 
         except Exception as error:
-            logger.error("Supabase save_user error: %s", error)
+            # El perfil incluye RUT/correo: una excepción puede incluir la fila.
+            logger.error("Supabase save_user error (%s)", type(error).__name__)
 
     users_db[phone] = db_data
     return db_data

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from core import fund_flow, fondos
 from db.fondos import UNKNOWN_ANSWER
+from tests.profile_fixtures import COMPLETE_PROFILE
 
 
 def definition(question, order, **overrides):
@@ -259,7 +260,7 @@ class FundPreselectionFlowTests(unittest.TestCase):
     def test_questionnaire_stays_nonblocking_and_resumes_through_message_router(self):
         from services import message_router
 
-        user = {**self.user, "onboarding_step": "done", "reminder_count": 0}
+        user = {**COMPLETE_PROFILE, **self.user, "onboarding_step": "done", "reminder_count": 0}
         patches = []
         for name, kwargs in {
             "get_user": {"return_value": user},

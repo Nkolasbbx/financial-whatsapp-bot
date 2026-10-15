@@ -1,9 +1,17 @@
 import copy
+import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from core.menu import get_menu_widget
+from core.profile_validation import (
+    PROFILE_VALIDATORS,
+    ProfileValidationError,
+    has_valid_profile_value,
+)
 from core.roadmaps import ROADMAPS
+
+logger = logging.getLogger("financial")
 
 # Rubros activos y palabras clave
 RUBRO_KEYWORDS = {
@@ -127,12 +135,12 @@ def detect_sii(text: str) -> str | None:
     for kw in unknown:
         if kw in text_lower:
             return "no_sabe"
-    for kw in positive:
-        if kw in text_lower:
-            return "si"
     for kw in negative:
-        if kw in text_lower:
+        if re.search(rf"\b{re.escape(kw)}\b", text_lower):
             return "no"
+    for kw in positive:
+        if re.search(rf"\b{re.escape(kw)}\b", text_lower):
+            return "si"
     return None
 
 
@@ -175,154 +183,211 @@ def _prompt_step_3(prefix: str = "") -> dict:
     return _list(body, "Seleccionar estado", SII_LIST_OPTIONS)
 
 
-def _finalize_onboarding(user: dict, sii: str, save_user_fn) -> dict:
-    """Guarda inicio_sii ya resuelto ('si'/'no') y arma el cierre del onboarding + roadmap."""
-    user["inicio_sii"] = sii
+PROFILE_FIELDS = ("nombre_completo", "rut", "email", "direccion_negocio")
+PROFILE_BACK_ID = "profile_back"
+PROFILE_SKIP_ADDRESS_ID = "profile_skip_address"
+PROFILE_BACK_OPTIONS = [(PROFILE_BACK_ID, "↩️ Volver")]
+_SKIP_ADDRESS = {PROFILE_SKIP_ADDRESS_ID, "omitir", "omitir dirección", "omitir direccion", "no tengo"}
+
+_PROFILE_QUESTIONS = {
+    "nombre_completo": "¿Cuál es tu nombre completo?\nPor ejemplo: María González.",
+    "rut": "¿Cuál es tu RUT personal?\nIncluye el dígito verificador, por ejemplo: 12.345.678-5.",
+    "email": "¿Cuál es tu correo electrónico?\nPor ejemplo: nombre@ejemplo.cl.",
+    "direccion_negocio": (
+        "¿Cuál es la dirección de tu negocio?\n\n"
+        "Este dato es *opcional*. Si no tienes un lugar fijo o prefieres no indicarlo, "
+        "toca *Omitir dirección* o escribe *omitir*."
+    ),
+}
+
+
+def _next_profile_field(user: dict) -> str | None:
+    for field in PROFILE_FIELDS[:-1]:
+        if not has_valid_profile_value(user, field):
+            return field
+    if user.get("profile_completion_step") != "done" and not has_valid_profile_value(user, "direccion_negocio"):
+        return "direccion_negocio"
+    return None
+
+
+def needs_profile_completion(user: dict) -> bool:
+    return user.get("profile_completion_step") in PROFILE_FIELDS or _next_profile_field(user) is not None
+
+
+def _next_business_step(user: dict) -> str | None:
+    if not (user.get("rubro") or "").strip():
+        return "1"
+    if not (user.get("comuna") or "").strip():
+        return "2"
+    if user.get("inicio_sii") not in {"si", "no"}:
+        return "3"
+    return None
+
+
+def needs_onboarding(user: dict) -> bool:
+    return (
+        user.get("onboarding_step") != "done"
+        or needs_profile_completion(user)
+        or _next_business_step(user) is not None
+    )
+
+
+def _profile_prompt(field: str, prefix: str = "") -> dict:
+    options = [] if field == "nombre_completo" else list(PROFILE_BACK_OPTIONS)
+    if field == "direccion_negocio":
+        options.insert(0, (PROFILE_SKIP_ADDRESS_ID, "Omitir dirección"))
+    body = prefix + "👤 *Completemos tu perfil*\n\n" + _PROFILE_QUESTIONS[field]
+    return _buttons(body, options) if options else {"type": "text", "body": body}
+
+
+def _business_prompt(step: str, prefix: str = "") -> dict:
+    return {"1": _prompt_step_1, "2": _prompt_step_2, "3": _prompt_step_3}[step](prefix)
+
+
+def _finalize_onboarding(user: dict) -> dict:
+    """Se ejecuta en un borrador; el guardado y la confirmación son atómicos por paso."""
+    user["profile_completion_step"] = "done"
+    if user.get("onboarding_step") == "done":
+        return get_menu_widget(user, prefix="✅ *Datos de tu perfil completados.*\n\nConservamos tu historial y tus avances.\n\n")
+
     user["onboarding_step"] = "done"
-    user["conversation_history"] = []
-    user["created_at"] = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+    if not user.get("created_at"):
+        user["created_at"] = now
+    # Los perfiles antiguos pueden traer una ruta en curso o ya completada.
+    # Completar sus datos no permite regenerarla, aun si ahora responden 'sí'.
+    if user.get("roadmap") is None and not user.get("roadmap_completed_at"):
+        if user["inicio_sii"] == "si":
+            user["roadmap"] = []
+            user["roadmap_completed_at"] = now
+        else:
+            user["roadmap"] = copy.deepcopy(ROADMAPS.get(user["rubro"], ROADMAPS["otro"]))
 
-    rubro_disp = RUBRO_DISPLAY.get(user.get("rubro"), user.get("rubro_raw", "").capitalize())
-    comuna_disp = user.get("comuna", "tu comuna")
-
-    # Caso formalizado (sin lista de hitos)
-    if sii == "si":
-        user["roadmap"] = []
-        user["roadmap_completed_at"] = datetime.utcnow().isoformat()
-        save_user_fn(user["phone"], user)
-
-        felicitacion = (
-            f"🎉 *¡FELICITACIONES! Perfil completado con éxito.*\n\n"
-            f"Tu negocio de *{rubro_disp}* en *{comuna_disp}* ya está formalizado ante el SII. 🏢👏\n\n"
-            f"Bienvenido/a a *FinancIAl*.\n\n"
-        )
-    # Caso no formalizado (asigna hoja de ruta por rubro)
+    prefix = "🎉 *¡Perfil completado con éxito!*\n\n"
+    if user["inicio_sii"] == "si":
+        prefix += "Tu negocio ya cuenta con inicio de actividades en el SII.\n\n"
     else:
-        roadmap_key = user.get("rubro", "otro")
-        user["roadmap"] = copy.deepcopy(ROADMAPS.get(roadmap_key, ROADMAPS["otro"]))
-        save_user_fn(user["phone"], user)
+        prefix += f"Tu ruta tiene *{len(user.get('roadmap') or [])} pasos* para formalizar tu negocio.\n\n"
+    return get_menu_widget(user, prefix=prefix)
 
-        total = len(user["roadmap"])
-        felicitacion = (
-            f"🎉 *¡FELICITACIONES! Perfil completado con éxito.*\n\n"
-            f"📌 Rubro: *{rubro_disp}*\n"
-            f"📍 Comuna: *{comuna_disp}*\n\n"
-            f"Diseñamos una ruta personalizada de *{total} pasos* para formalizar tu negocio.\n\n"
+
+def _continue_onboarding(user: dict, prefix: str = "") -> dict:
+    field = _next_profile_field(user)
+    if field:
+        user["profile_completion_step"] = field
+        return _profile_prompt(field, prefix)
+    user["profile_completion_step"] = "done"
+    step = _next_business_step(user)
+    if step:
+        user["onboarding_step"] = step
+        return _business_prompt(step, prefix)
+    return _finalize_onboarding(user)
+
+
+def _continue_business(user: dict) -> dict:
+    # Mantener la secuencia de usuarios que ya estaban en las tres preguntas
+    # anteriores. Al terminarlas se solicitan sus datos personales faltantes.
+    step = _next_business_step(user)
+    if step:
+        user["onboarding_step"] = step
+        return _business_prompt(step)
+    return _continue_onboarding(user)
+
+
+def _process_profile_step(user: dict, message: str, field: str) -> dict:
+    if not message:
+        return _profile_prompt(field)
+    if is_back_command(message) or message.lower() == PROFILE_BACK_ID:
+        index = PROFILE_FIELDS.index(field)
+        if index == 0:
+            return _profile_prompt(field, "Esta es la primera pregunta.\n\n")
+        previous = PROFILE_FIELDS[index - 1]
+        user["profile_completion_step"] = previous
+        return _profile_prompt(previous, "↩️ Puedes corregir este dato.\n\n")
+    if field == "direccion_negocio" and message.lower() in _SKIP_ADDRESS:
+        user["direccion_negocio"] = None
+        user["profile_completion_step"] = "done"
+        return _continue_onboarding(user)
+    try:
+        user[field] = PROFILE_VALIDATORS[field](message)
+    except ProfileValidationError as error:
+        return _profile_prompt(field, f"⚠️ {error}\n\n")
+    if field == "direccion_negocio":
+        user["profile_completion_step"] = "done"
+    return _continue_onboarding(user)
+
+
+def _advance_onboarding(user: dict, message: str) -> dict:
+    field = user.get("profile_completion_step")
+    if field in PROFILE_FIELDS:
+        return _process_profile_step(user, message, field)
+
+    step = str(user.get("onboarding_step") or "0")
+    if step not in {"1", "2", "3", "3_explicado"}:
+        prefix = (
+            "Vamos a completar los datos que faltan en tu perfil.\n\n"
+            if step == "done" else
+            "¡Hola! 👋 Soy *FinancIAl*. Te pediré tus datos personales y los de tu negocio "
+            "para personalizar la atención. Tu celular se obtiene desde WhatsApp.\n\n"
         )
+        return _continue_onboarding(user, prefix)
 
-    return get_menu_widget(user, prefix=felicitacion)
+    if not message:
+        return _business_prompt("3" if step == "3_explicado" else step)
+    if is_back_command(message):
+        if step == "1":
+            if user.get("profile_completion_step") == "done":
+                user["profile_completion_step"] = "direccion_negocio"
+                return _profile_prompt("direccion_negocio")
+            return _prompt_step_1("Esta es la primera pregunta del negocio.\n\n")
+        previous = "1" if step == "2" else "2"
+        user["onboarding_step"] = previous
+        return _business_prompt(previous, "↩️ Puedes corregir tu respuesta anterior.\n\n")
+
+    if step == "1":
+        rubro = detect_rubro(message)
+        if rubro is None:
+            return _prompt_step_1("⚠️ Elige *Textil* o *Alimentos*, por ejemplo: vendo ropa o preparo comida.\n\n")
+        user.update(rubro=rubro, rubro_raw=message.strip())
+        return _continue_business(user)
+    if step == "2":
+        comuna = detect_comuna(message)
+        if comuna is None:
+            return _prompt_step_2("⚠️ Elige *Recoleta* o *El Bosque*, escribiendo la comuna o tocando un botón.\n\n")
+        user["comuna"] = COMUNA_DISPLAY[comuna]
+        return _continue_business(user)
+
+    sii = detect_sii(message)
+    if sii is None:
+        return _prompt_step_3("⚠️ Responde *Sí*, *No* o *No sé*, o selecciona una opción de la lista.\n\n")
+    if sii == "no_sabe" and step != "3_explicado":
+        user["onboarding_step"] = "3_explicado"
+        return _prompt_step_3(SII_EXPLANATION)
+    user["inicio_sii"] = "no" if sii == "no_sabe" else sii
+    return _continue_business(user)
 
 
 def process_onboarding(user: dict, message: str, save_user_fn) -> dict:
-    raw = user.get("onboarding_step", 0)
+    """Calcula el siguiente paso y confirma solo después de persistir sus cambios.
+
+    save_user_fn recibe un parche parcial y debe devolver el registro guardado.
+    Ante un error se conserva el estado original para permitir el reintento.
+    """
+    draft = copy.deepcopy(user)
+    response = _advance_onboarding(draft, (message or "").strip())
+    changes = {key: value for key, value in draft.items() if key not in user or user[key] != value}
+    if not changes:
+        return response
     try:
-        step = int(raw)
-    except (ValueError, TypeError):
-        step = raw
-
-    # ── Inicio del Onboarding ──
-    if step == 0:
-        user["onboarding_step"] = 1
-        save_user_fn(user["phone"], user)
-        prompt = _prompt_step_1()
-        prompt["body"] = (
-            "¡Hola! 👋 Soy *FinancIAl*, tu asistente para formalizar y hacer crecer tu emprendimiento.\n\n"
-            "Voy a hacerte *3 preguntas rápidas* para personalizar tu experiencia.\n\n"
-            + prompt["body"]
-        )
-        return prompt
-
-    # ── Paso 1: Rubro ──
-    if step == 1:
-        if is_back_command(message):
-            return _prompt_step_1("Esta es la primera pregunta, no hay un paso anterior 🙂\n\n")
-
-        rubro = detect_rubro(message)
-        if rubro is None:
-            guia_error = (
-                "⚠️ *Opción no válida.*\n"
-                "Por el momento solo trabajamos con *Textil* o *Alimentos*.\n\n"
-                "👉 *Elige una opción:* Presiona un botón o escribe textualmente *'Textil'* o *'Alimentos'*.\n\n"
-            )
-            return _prompt_step_1(guia_error)
-
-        user["rubro"] = rubro
-        user["rubro_raw"] = message.strip()
-        user["onboarding_step"] = 2
-        save_user_fn(user["phone"], user)
-
-        rubro_display = RUBRO_DISPLAY.get(rubro, rubro.capitalize())
-        return _prompt_step_2(f"✅ Rubro seleccionado: *{rubro_display}*\n\n")
-
-    # ── Paso 2: Comuna ──
-    if step == 2:
-        if is_back_command(message):
-            user["onboarding_step"] = 1
-            save_user_fn(user["phone"], user)
-            return _prompt_step_1("↩️ *Volviste a la Pregunta 1 (Rubro).*\n\n")
-
-        comuna_id = detect_comuna(message)
-        if comuna_id is None:
-            guia_error = (
-                "⚠️ *Comuna no soportada.*\n"
-                "Por ahora solo atendemos en *Recoleta* y *El Bosque*.\n\n"
-                "👉 *Elige una opción:* Presiona un botón o escribe textualmente *'Recoleta'* o *'El Bosque'* (o *'volver'* para cambiar de rubro).\n\n"
-            )
-            return _prompt_step_2(guia_error)
-
-        user["comuna"] = COMUNA_DISPLAY[comuna_id]
-        user["onboarding_step"] = 3
-        save_user_fn(user["phone"], user)
-
-        return _prompt_step_3(f"✅ Comuna seleccionada: *{user['comuna']}*\n\n")
-
-    # ── Paso 3: Estado SII ──
-    if step == 3:
-        if is_back_command(message):
-            user["onboarding_step"] = 2
-            save_user_fn(user["phone"], user)
-            return _prompt_step_2("↩️ *Volviste a la Pregunta 2 (Comuna).*\n\n")
-
-        sii = detect_sii(message)
-        if sii is None:
-            guia_error = (
-                "⚠️ *Respuesta no comprendida.*\n"
-                "Necesitamos saber tu estado ante el Servicio de Impuestos Internos.\n\n"
-                "👉 *Ejemplos de respuesta:*\n"
-                "• Toca el botón *'Seleccionar estado'* y elige una opción de la lista.\n"
-                "• O escribe por mensaje: *'Sí'*, *'No'*, *'No sé'*, o *'volver'*.\n\n"
-            )
-            return _prompt_step_3(guia_error)
-
-        if sii == "no_sabe":
-            user["onboarding_step"] = "3_explicado"
-            save_user_fn(user["phone"], user)
-            return _prompt_step_3(SII_EXPLANATION)
-
-        return _finalize_onboarding(user, sii, save_user_fn)
-
-    # ── Paso 3b: ya vio la explicación de "inicio de actividades", espera respuesta real ──
-    if step == "3_explicado":
-        if is_back_command(message):
-            user["onboarding_step"] = 2
-            save_user_fn(user["phone"], user)
-            return _prompt_step_2("↩️ *Volviste a la Pregunta 2 (Comuna).*\n\n")
-
-        sii = detect_sii(message)
-        if sii is None:
-            guia_error = (
-                "⚠️ *Respuesta no comprendida.*\n"
-                "Necesitamos saber tu estado ante el Servicio de Impuestos Internos.\n\n"
-                "👉 *Ejemplos de respuesta:*\n"
-                "• Toca el botón *'Seleccionar estado'* y elige una opción de la lista.\n"
-                "• O escribe por mensaje: *'Sí'*, *'No'*, o *'volver'*.\n\n"
-            )
-            return _prompt_step_3(guia_error)
-
-        # Ya vio la explicación: si sigue sin saber, lo registramos como no formalizado en vez
-        # de dejarlo en un loop — el criterio de aceptación solo exige explicar antes de
-        # registrar, no obligar a que responda con certeza.
-        resolved_sii = "no" if sii == "no_sabe" else sii
-        return _finalize_onboarding(user, resolved_sii, save_user_fn)
-
-    return get_menu_widget(user)
+        saved = save_user_fn(user["phone"], changes)
+        if not isinstance(saved, dict) or not saved:
+            raise RuntimeError("No se confirmó el guardado del onboarding")
+    except Exception as error:
+        logger.error("No se pudo guardar el paso del onboarding (%s)", type(error).__name__)
+        return {
+            "type": "text",
+            "body": "No pude guardar tu respuesta en este momento. Conservamos tu progreso anterior. Vuelve a enviar tu respuesta para intentarlo otra vez.",
+        }
+    user.update(changes)
+    user.update(saved)
+    return response

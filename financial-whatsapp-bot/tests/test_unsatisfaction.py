@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from db.users import get_last_user_message
 from db.reminders import record_roadmap_activity
+from tests.profile_fixtures import COMPLETE_PROFILE
 from services.message_router import (
     detect_unsatisfaction,
     handle_unsatisfaction_choice,
@@ -107,6 +108,7 @@ class CompletedRoadmapReminderTests(unittest.TestCase):
         record_activity_mock,
     ):
         get_user_mock.return_value = {
+            **COMPLETE_PROFILE,
             "phone": "+56911111111",
             "onboarding_step": "done",
             "roadmap": [
@@ -133,6 +135,7 @@ class CompletedRoadmapReminderTests(unittest.TestCase):
         record_activity_mock,
     ):
         get_user_mock.return_value = {
+            **COMPLETE_PROFILE,
             "phone": "+56911111111",
             "onboarding_step": "done",
             "roadmap": [

@@ -1,7 +1,14 @@
 import logging
 
 from config import FINANCIAL_MOVEMENTS_ENABLED
-from db.users import get_user, reset_user_profile, save_user
+from db.users import (
+    UserPersistenceError,
+    create_user_profile,
+    get_user,
+    reset_user_profile,
+    save_user,
+    update_onboarding_profile,
+)
 from core.calendar_flow import (
     handle_calendar_message,
     is_calendar_entry_message,
@@ -32,7 +39,12 @@ from core.roadmaps import (
     HITO_VOLVER_ID,
     MENU_FINANCIAL_ID,
 )
-from core.onboarding import process_onboarding
+from core.onboarding import (
+    PROFILE_BACK_ID,
+    PROFILE_SKIP_ADDRESS_ID,
+    needs_onboarding,
+    process_onboarding,
+)
 from db.calendar import clear_calendar_session, get_calendar_session
 from db.fondos import (
     cancel_fund_session,
@@ -75,6 +87,10 @@ YA_LO_REALICE_TRIGGERS = [
 # routers/webhook.py para pedir confirmación cuando el comando llega
 # transcrito desde un audio (HdU11, AC3).
 RESET_COMMANDS = {"reiniciar", "reset", "empezar de nuevo", "menu_reiniciar"}
+PAUSE_REMINDERS_COMMANDS = {
+    "pausar recordatorios", "desactivar recordatorios", "no quiero recordatorios",
+    "menu_recordatorios_off",
+}
 
 # Frases de navegación al menú del bot. A propósito son frases completas y
 # no la palabra suelta "menú": muchos usuarios son emprendedores de comida
@@ -174,15 +190,21 @@ def route_message(
     msg_lower = message.lower()
 
     # Get or create user
-    user = get_user(phone)
+    try:
+        user = get_user(phone, strict=True)
+        if not user:
+            user = create_user_profile(phone)
+    except UserPersistenceError:
+        return "No pude consultar o guardar tu perfil en este momento. Inténtalo nuevamente más tarde."
 
-    if not user:
-        user = {"phone": phone, "onboarding_step": 0}
-        save_user(phone, user)
+    # Reiniciar y retirar los recordatorios siguen disponibles durante el registro.
+    bypass_onboarding = (
+        msg_lower in RESET_COMMANDS or msg_lower.rstrip(".") in PAUSE_REMINDERS_COMMANDS
+    )
 
     # ── Onboarding flow ──
-    if user.get("onboarding_step") != "done":
-        response = process_onboarding(user, message, save_user)
+    if user.get("onboarding_step") != "done" and not bypass_onboarding:
+        response = process_onboarding(user, message, update_onboarding_profile)
         if response:
             return response
 
@@ -192,6 +214,13 @@ def route_message(
     expert_response = handle_expert_message(user, message, RESET_COMMANDS, message_id)
     if expert_response is not None:
         return expert_response
+
+    # Los usuarios antiguos completan solo los datos faltantes. La conversación
+    # con un experto mantiene prioridad y su roadmap nunca se reinicia aquí.
+    if not bypass_onboarding and needs_onboarding(user):
+        return process_onboarding(user, message, update_onboarding_profile)
+    if msg_lower in {PROFILE_BACK_ID, PROFILE_SKIP_ADDRESS_ID}:
+        return get_menu_widget(user, prefix="✅ Tu perfil ya está completo. Ese botón corresponde a una pregunta anterior.\n\n")
 
     # Leer una sola vez el contexto de fondos, también antes de los comandos
     # que retornan temprano (reiniciar/recordatorios). Cancelar la sesión no
@@ -246,7 +275,7 @@ def route_message(
                 "No pude reiniciar tu perfil en este momento. "
                 "Inténtalo nuevamente más tarde."
             )
-        return process_onboarding(new_user, message, save_user)
+        return process_onboarding(new_user, message, update_onboarding_profile)
 
     activation_commands = {
         "activar recordatorios",
@@ -279,13 +308,7 @@ def route_message(
             "options": MENU_BUTTON,
         }
 
-    pause_commands = {
-        "pausar recordatorios",
-        "desactivar recordatorios",
-        "no quiero recordatorios",
-        "menu_recordatorios_off",
-    }
-    if msg_lower.rstrip(".") in pause_commands:
+    if msg_lower.rstrip(".") in PAUSE_REMINDERS_COMMANDS:
         _record_reply_safely(phone, reply_to_message_id)
         try:
             reminders_were_disabled = disable_reminders(phone)

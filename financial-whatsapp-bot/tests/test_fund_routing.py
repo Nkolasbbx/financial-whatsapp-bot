@@ -5,11 +5,13 @@ from unittest.mock import patch
 
 from core.financial_flow import FINANCIAL_PARSE_TASK
 from services import message_router
+from tests.profile_fixtures import COMPLETE_PROFILE
 
 
 class FundRoutingTests(unittest.TestCase):
     def setUp(self):
         self.user = {
+            **COMPLETE_PROFILE,
             "id": "user-1", "phone": "+56911111111",
             "onboarding_step": "done", "inicio_sii": "no", "reminder_count": 0,
             "roadmap": [{"title": "Primer paso", "done": False}],

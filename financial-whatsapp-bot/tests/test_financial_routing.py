@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from core.financial_flow import FINANCIAL_CONFIRM_ID, FINANCIAL_PARSE_TASK
 from services.message_router import route_message
+from tests.profile_fixtures import COMPLETE_PROFILE
 
 
 class FinancialRoutingTests(unittest.TestCase):
@@ -12,6 +13,7 @@ class FinancialRoutingTests(unittest.TestCase):
             mock.start()
             self.addCleanup(mock.stop)
         self.user = {
+            **COMPLETE_PROFILE,
             "id": "user-1",
             "phone": "+56911111111",
             "onboarding_step": "done",
