@@ -40,7 +40,7 @@ class OnboardingRoutingTests(unittest.TestCase):
         return message_router.route_message(self.user["phone"], text)
 
     def test_end_to_end_onboarding_reloads_saved_progress_for_each_message(self):
-        for text in ("hola", "Ana Pérez", "12345678-5", "ana@ejemplo.cl", "omitir", "rubro_textil", "comuna_el_bosque", "sii_no"):
+        for text in ("hola", "Ana Pérez", "12345678-5", "ana@ejemplo.cl", "rubro_textil", "comuna_el_bosque", "sii_no"):
             result = self.send(text)
             self.assertIsInstance(result, dict)
         self.assertEqual(self.user["onboarding_step"], "done")
@@ -49,6 +49,16 @@ class OnboardingRoutingTests(unittest.TestCase):
         self.assertTrue(self.user["roadmap"])
         self.mocks["get_active_fund_session"].assert_not_called()
         self.assertEqual(self.send("menu_panel_web"), "__WEB_PANEL_LINK__")
+
+    def test_pending_address_resumes_business_without_interpreting_old_answer(self):
+        self.user.update(COMPLETE_PROFILE, onboarding_step="0", rubro=None, comuna=None,
+                         inicio_sii=None, profile_completion_step="direccion_negocio")
+        result = self.send("Local de comida en Recoleta 123")
+        self.assertEqual(self.user["profile_completion_step"], "done")
+        self.assertEqual(self.user["onboarding_step"], "1")
+        self.assertIsNone(self.user["rubro"])
+        self.assertIsNone(self.user["direccion_negocio"])
+        self.assertIn("¿En qué rubro", result["body"])
 
     def test_old_user_is_prompted_without_executing_triggering_milestone_button(self):
         self.user.update(onboarding_step="done", rubro="alimentos", comuna="Recoleta", inicio_sii="no",

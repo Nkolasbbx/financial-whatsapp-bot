@@ -103,13 +103,12 @@ class ProfileOnboardingTests(unittest.TestCase):
             ("hola", "nombre_completo"),
             ("María González", "rut"),
             ("12.345.678-5", "email"),
-            ("maria@EJEMPLO.CL", "direccion_negocio"),
+            ("maria@EJEMPLO.CL", "done"),
         )
         for message, next_field in sequence:
             self.send(message)
             self.assertEqual(self.user["profile_completion_step"], next_field)
-        self.send("profile_skip_address")
-        self.assertIsNone(self.user["direccion_negocio"])
+        self.assertNotIn("direccion_negocio", self.user)
         self.assertEqual(self.user["onboarding_step"], "1")
         self.send("rubro_alimentos")
         self.send("comuna_recoleta")
@@ -149,9 +148,9 @@ class ProfileOnboardingTests(unittest.TestCase):
             conversation_history=[{"role": "user", "content": "Hola"}],
         )
         original = copy.deepcopy(self.user)
-        for text in ("mi roadmap", "Ana Pérez", "12345678-5", "ana@ejemplo.cl", "omitir"):
+        for text in ("mi roadmap", "Ana Pérez", "12345678-5", "ana@ejemplo.cl"):
             self.send(text)
-        allowed = {"nombre_completo", "rut", "email", "direccion_negocio", "profile_completion_step"}
+        allowed = {"nombre_completo", "rut", "email", "profile_completion_step"}
         for key, value in original.items():
             if key not in allowed:
                 self.assertEqual(self.user[key], value, key)
@@ -195,11 +194,24 @@ class ProfileOnboardingTests(unittest.TestCase):
         self.send("12345678-5")
         self.assertEqual(self.user["profile_completion_step"], "email")
 
-    def test_address_can_be_saved_and_is_not_required_after_skipping(self):
-        self.user = make_user(onboarding_step="done", inicio_sii="no", profile_completion_step="direccion_negocio")
-        self.send("Av. Recoleta 123")
-        self.assertEqual(self.user["direccion_negocio"], "Av. Recoleta 123")
-        self.assertFalse(needs_onboarding(self.user))
+    def test_legacy_address_step_is_skipped_and_existing_address_is_preserved(self):
+        for address in (None, "Dirección guardada anteriormente"):
+            with self.subTest(address=address):
+                self.user = make_user(onboarding_step="done", inicio_sii="no",
+                                      profile_completion_step="direccion_negocio", direccion_negocio=address)
+                self.assertTrue(needs_onboarding(self.user))
+                self.send("Av. Recoleta 123")
+                self.assertEqual(self.user["direccion_negocio"], address)
+                self.assertFalse(needs_onboarding(self.user))
+                self.assertNotIn("direccion_negocio", self.saved[-1])
+
+    def test_back_from_business_goes_to_email(self):
+        self.user = make_user(onboarding_step="1", rubro=None, comuna=None)
+        self.send("volver")
+        self.assertEqual(self.user["profile_completion_step"], "email")
+        self.send("nuevo@ejemplo.cl")
+        self.assertEqual(self.user["profile_completion_step"], "done")
+        self.assertEqual(self.user["onboarding_step"], "1")
 
     def test_missing_required_field_is_detected_even_if_completion_says_done(self):
         self.user = make_user(onboarding_step="done", inicio_sii="no", rut=None)

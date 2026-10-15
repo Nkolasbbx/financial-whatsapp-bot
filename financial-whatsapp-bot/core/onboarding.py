@@ -183,35 +183,31 @@ def _prompt_step_3(prefix: str = "") -> dict:
     return _list(body, "Seleccionar estado", SII_LIST_OPTIONS)
 
 
-PROFILE_FIELDS = ("nombre_completo", "rut", "email", "direccion_negocio")
+PROFILE_FIELDS = ("nombre_completo", "rut", "email")
 PROFILE_BACK_ID = "profile_back"
+# Se conserva el identificador para responder a botones de mensajes antiguos.
 PROFILE_SKIP_ADDRESS_ID = "profile_skip_address"
 PROFILE_BACK_OPTIONS = [(PROFILE_BACK_ID, "↩️ Volver")]
-_SKIP_ADDRESS = {PROFILE_SKIP_ADDRESS_ID, "omitir", "omitir dirección", "omitir direccion", "no tengo"}
 
 _PROFILE_QUESTIONS = {
     "nombre_completo": "¿Cuál es tu nombre completo?\nPor ejemplo: María González.",
     "rut": "¿Cuál es tu RUT personal?\nIncluye el dígito verificador, por ejemplo: 12.345.678-5.",
     "email": "¿Cuál es tu correo electrónico?\nPor ejemplo: nombre@ejemplo.cl.",
-    "direccion_negocio": (
-        "¿Cuál es la dirección de tu negocio?\n\n"
-        "Este dato es *opcional*. Si no tienes un lugar fijo o prefieres no indicarlo, "
-        "toca *Omitir dirección* o escribe *omitir*."
-    ),
 }
 
 
 def _next_profile_field(user: dict) -> str | None:
-    for field in PROFILE_FIELDS[:-1]:
+    for field in PROFILE_FIELDS:
         if not has_valid_profile_value(user, field):
             return field
-    if user.get("profile_completion_step") != "done" and not has_valid_profile_value(user, "direccion_negocio"):
-        return "direccion_negocio"
     return None
 
 
 def needs_profile_completion(user: dict) -> bool:
-    return user.get("profile_completion_step") in PROFILE_FIELDS or _next_profile_field(user) is not None
+    return (
+        user.get("profile_completion_step") in (*PROFILE_FIELDS, "direccion_negocio")
+        or _next_profile_field(user) is not None
+    )
 
 
 def _next_business_step(user: dict) -> str | None:
@@ -234,8 +230,6 @@ def needs_onboarding(user: dict) -> bool:
 
 def _profile_prompt(field: str, prefix: str = "") -> dict:
     options = [] if field == "nombre_completo" else list(PROFILE_BACK_OPTIONS)
-    if field == "direccion_negocio":
-        options.insert(0, (PROFILE_SKIP_ADDRESS_ID, "Omitir dirección"))
     body = prefix + "👤 *Completemos tu perfil*\n\n" + _PROFILE_QUESTIONS[field]
     return _buttons(body, options) if options else {"type": "text", "body": body}
 
@@ -304,21 +298,20 @@ def _process_profile_step(user: dict, message: str, field: str) -> dict:
         previous = PROFILE_FIELDS[index - 1]
         user["profile_completion_step"] = previous
         return _profile_prompt(previous, "↩️ Puedes corregir este dato.\n\n")
-    if field == "direccion_negocio" and message.lower() in _SKIP_ADDRESS:
-        user["direccion_negocio"] = None
-        user["profile_completion_step"] = "done"
-        return _continue_onboarding(user)
     try:
         user[field] = PROFILE_VALIDATORS[field](message)
     except ProfileValidationError as error:
         return _profile_prompt(field, f"⚠️ {error}\n\n")
-    if field == "direccion_negocio":
-        user["profile_completion_step"] = "done"
     return _continue_onboarding(user)
 
 
 def _advance_onboarding(user: dict, message: str) -> dict:
     field = user.get("profile_completion_step")
+    if field == "direccion_negocio":
+        # Retomar sesiones de la versión anterior sin guardar la respuesta a
+        # la dirección ni interpretarla como rubro, comuna u otro dato.
+        user["profile_completion_step"] = "done"
+        return _continue_onboarding(user, "La dirección ya no se solicita en el registro. Continuemos.\n\n")
     if field in PROFILE_FIELDS:
         return _process_profile_step(user, message, field)
 
@@ -337,8 +330,8 @@ def _advance_onboarding(user: dict, message: str) -> dict:
     if is_back_command(message):
         if step == "1":
             if user.get("profile_completion_step") == "done":
-                user["profile_completion_step"] = "direccion_negocio"
-                return _profile_prompt("direccion_negocio")
+                user["profile_completion_step"] = "email"
+                return _profile_prompt("email")
             return _prompt_step_1("Esta es la primera pregunta del negocio.\n\n")
         previous = "1" if step == "2" else "2"
         user["onboarding_step"] = previous
