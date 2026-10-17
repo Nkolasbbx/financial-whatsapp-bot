@@ -40,8 +40,8 @@ MENU_OPTIONS_NO_FORMALIZADO = [
     ("menu_fondo", "🎯 Postular a fondos"),
     ("menu_finances", "💰 Ingresos y gastos"),
     ("menu_calendar", "📅 Mi calendario"),
-    ("menu_recordatorios_on", "🔔 Activar recordatorios"),
-    ("menu_recordatorios_off", "🔕 Pausar recordatorios"),
+    ("menu_diagnostico", "📊 Diagnóstico económico"),
+    ("menu_recordatorios", "🔔 Mis recordatorios"),
     ("menu_panel_web", "📊 Ver mi panel web"),
     ("menu_experto", "🧑‍💼 Hablar con un experto"),
     ("menu_reiniciar", "🔄 Reiniciar"),
@@ -64,6 +64,9 @@ def get_menu_widget(user: dict | None = None, prefix: str = "") -> dict:
     user = user or {}
     es_formalizado = user.get("inicio_sii") == "si"
     opciones = MENU_OPTIONS_FORMALIZADO if es_formalizado else MENU_OPTIONS_NO_FORMALIZADO
+    from config import FORMALIZATION_DIAGNOSTICS_ENABLED
+    if not FORMALIZATION_DIAGNOSTICS_ENABLED:
+        opciones = [option for option in opciones if option[0] != "menu_diagnostico"]
 
     rubro = user.get("rubro", user.get("rubro_raw", "tu negocio")).capitalize()
     comuna = user.get("comuna", "tu comuna")

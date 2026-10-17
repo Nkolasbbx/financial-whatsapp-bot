@@ -8,3 +8,11 @@ local_testing/
 CLAUDE.md
 .CLAUDE
 .codex-doc-review/
+
+# Documentación local (no publicar)
+Documentos diagnostico/
+Documentos diagnóstico/
+docs/
+
+# Ignorar migraciones nuevas; Git conserva las que ya están versionadas.
+/supabase/migrations/

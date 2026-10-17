@@ -1,0 +1,93 @@
+{
+  "prepared_at": "2026-10-15",
+  "ingestion_executed": false,
+  "documents": [
+    {
+      "path": "nacional/01_inicio_sii_y_registro_sociedades.md",
+      "jurisdiction": "CL",
+      "source_urls": [
+        "https://www.sii.cl/destacados/minegociocumple/index.html",
+        "https://www.registrodeempresasysociedades.cl/PreguntasFrecuentes.aspx",
+        "https://www.registrodeempresasysociedades.cl/AyudaTarifasNotariasles.aspx"
+      ],
+      "sha256": "af5a525969c4825ebc6eff8b54c72dd0e0d86cfb10c53dbb83df0744e1ab193b"
+    },
+    {
+      "path": "nacional/02_microempresa_familiar.md",
+      "jurisdiction": "CL",
+      "source_urls": [
+        "https://www.sii.cl/portales/emprendedor/4puntos_claves.html",
+        "https://www.bcn.cl/leychile/navegar?idNorma=18967",
+        "https://www.sii.cl/preguntas_frecuentes/rut_inicio_actividades/001_105_2094.htm"
+      ],
+      "sha256": "99d6d2fa29bde9d623d987b7b8a9507d4dabd27c3fbcdba6c57a5dc13f26ca0d"
+    },
+    {
+      "path": "nacional/03_patente_municipal_marco_general.md",
+      "jurisdiction": "CL",
+      "source_urls": [
+        "https://www.bcn.cl/leychile/navegar?idNorma=18967"
+      ],
+      "sha256": "671661eed4ed875f5f0fa0777b12b84f22a4a4c8c979e21c60421ae175d3c976"
+    },
+    {
+      "path": "nacional/04_autorizacion_sanitaria_alimentos.md",
+      "jurisdiction": "CL",
+      "source_urls": [
+        "https://www.bcn.cl/leychile/navegar?idNorma=71271"
+      ],
+      "sha256": "0ddae1ae1d550b9d7ce6e63db193b5628e1d1d157a66eb907035e180431862d5"
+    },
+    {
+      "path": "nacional/05_aranceles_sanitarios_2026.md",
+      "jurisdiction": "CL",
+      "source_urls": [
+        "https://www.diariooficial.interior.gob.cl/publicaciones/2026/04/09/44420/01/2788376.pdf",
+        "https://www.bcn.cl/leychile/navegar?idNorma=275933"
+      ],
+      "sha256": "7077dd11dc2b6e4a2b8d1163077025cbfce3778f7f53f6004db35eb8dc5b2d41"
+    },
+    {
+      "path": "nacional/06_actividades_economicas_sii.md",
+      "jurisdiction": "CL",
+      "source_urls": [
+        "https://www.sii.cl/ayudas/ayudas_por_servicios/1956-codigos-1959.html"
+      ],
+      "sha256": "4411f0009bb5e695667b1ace37b02cd65840165f83e11e16d029e0b90d53a352"
+    },
+    {
+      "path": "nacional/07_pro_pyme_tasas_transitorias.md",
+      "jurisdiction": "CL",
+      "source_urls": [
+        "https://www.sii.cl/normativa_legislacion/circulares/2025/circu53.pdf"
+      ],
+      "sha256": "5c8b26538fe5c9669695928a35ed96bf464ab74c65e50d4418c1882fa611652c"
+    },
+    {
+      "path": "el_bosque/01_patentes_comerciales.md",
+      "jurisdiction": "CL-RM-EL_BOSQUE",
+      "source_urls": [
+        "https://www.municipalidadelbosque.cl/tramites-y-beneficios/patentes-comerciales/"
+      ],
+      "sha256": "98267b375074ccd66e9d677d2d4ac565c229397e8073d0c36f78d2641380ea73"
+    },
+    {
+      "path": "recoleta/01_alcance_normativa_nacional.md",
+      "jurisdiction": "CL-RM-RECOLETA",
+      "source_urls": [
+        "https://www.sii.cl/portales/emprendedor/4puntos_claves.html"
+      ],
+      "sha256": "e64e158161265648d4ef8bc62ec8fc00756a75cf597785885800fc6d95354227"
+    }
+  ],
+  "exclude_from_ingestion": [
+    "README.md",
+    "_control/**",
+    "fuentes/**"
+  ],
+  "source_pdf_to_move": {
+    "from": "fuentes_locales/minsal_aranceles_res_331_2026.pdf",
+    "to": "ingesta_pos/fuentes/minsal_aranceles_res_331_2026.pdf",
+    "sha256": "56b89573b8803d0f44b141d7f903a457fca56e364f4174e02de3e62705911974"
+  }
+}

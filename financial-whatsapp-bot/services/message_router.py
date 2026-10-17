@@ -1,6 +1,11 @@
 import logging
 
-from config import FINANCIAL_MOVEMENTS_ENABLED
+from config import FINANCIAL_MOVEMENTS_ENABLED, FORMALIZATION_DIAGNOSTICS_ENABLED
+from core.formalization_flow import (
+    PASS_TO_AI as DIAGNOSTIC_PASS_TO_AI,
+    handle_diagnostic_message,
+    is_diagnostic_entry,
+)
 from db.users import (
     UserPersistenceError,
     create_user_profile,
@@ -114,7 +119,9 @@ def _mentions_menu(msg_lower: str) -> bool:
 def _is_explicit_other_module_action(message: str) -> bool:
     """Permite navegar sin confundir preguntas con acciones sobre el roadmap."""
     raw = message.strip().lower()
-    if raw.startswith(("menu_", "calendar_", "finance_", "hito_", "unsatisfied_")):
+    if raw.startswith(("menu_", "calendar_", "finance_", "hito_", "unsatisfied_", "diag:", "fund_")):
+        return True
+    if is_diagnostic_entry(message) or is_fund_entry_message(message):
         return True
     if is_calendar_entry_message(message):
         return True
@@ -213,6 +220,10 @@ def route_message(
     # emprendedor, el asistente de IA queda en pausa para él.
     expert_response = handle_expert_message(user, message, RESET_COMMANDS, message_id)
     if expert_response is not None:
+        if FORMALIZATION_DIAGNOSTICS_ENABLED:
+            # El relé humano mantiene prioridad y no deja una pregunta numérica
+            # del diagnóstico activa para cuando termine la conversación.
+            handle_diagnostic_message(user, "menu_experto", external_action=True)
         return expert_response
 
     # Los usuarios antiguos completan solo los datos faltantes. La conversación
@@ -221,6 +232,24 @@ def route_message(
         return process_onboarding(user, message, update_onboarding_profile)
     if msg_lower in {PROFILE_BACK_ID, PROFILE_SKIP_ADDRESS_ID}:
         return get_menu_widget(user, prefix="✅ Tu perfil ya está completo. Ese botón corresponde a una pregunta anterior.\n\n")
+
+    # El diagnóstico corre en el mismo threadpool del router, sin IA ni nuevas
+    # tareas de Redis. Debe poder salir antes de los triggers del roadmap y de
+    # las sesiones de otros módulos (también de sus botones hardcodeados).
+    if FORMALIZATION_DIAGNOSTICS_ENABLED:
+        diagnostic_response = handle_diagnostic_message(
+            user, message, external_action=_is_explicit_other_module_action(message),
+            message_id=message_id,
+        )
+        if diagnostic_response is not None:
+            if is_diagnostic_entry(message):
+                _clear_calendar_session_safely(user.get("id"))
+                _clear_financial_session_safely(user.get("id"))
+                try:
+                    cancel_fund_session(user["id"])
+                except Exception:
+                    logger.exception("No se pudo cerrar fondos al abrir el diagnóstico")
+            return "__AI_QUERY__" if diagnostic_response == DIAGNOSTIC_PASS_TO_AI else diagnostic_response
 
     # Leer una sola vez el contexto de fondos, también antes de los comandos
     # que retornan temprano (reiniciar/recordatorios). Cancelar la sesión no
@@ -276,6 +305,10 @@ def route_message(
                 "Inténtalo nuevamente más tarde."
             )
         return process_onboarding(new_user, message, update_onboarding_profile)
+
+    if msg_lower == "menu_recordatorios":
+        return {"type": "buttons", "body": "¿Qué quieres hacer con tus recordatorios?",
+                "options": [("menu_recordatorios_on", "Activar"), ("menu_recordatorios_off", "Pausar"), *MENU_BUTTON]}
 
     activation_commands = {
         "activar recordatorios",
