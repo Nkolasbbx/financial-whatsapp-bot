@@ -237,8 +237,14 @@ def route_message(
     # tareas de Redis. Debe poder salir antes de los triggers del roadmap y de
     # las sesiones de otros módulos (también de sus botones hardcodeados).
     if FORMALIZATION_DIAGNOSTICS_ENABLED:
+        # diag: es navegación para los otros módulos, pero una respuesta interna
+        # para el diagnóstico. No pausar su sesión ni enviar ese ID a la IA.
+        external_action = (
+            not message.strip().startswith("diag:")
+            and _is_explicit_other_module_action(message)
+        )
         diagnostic_response = handle_diagnostic_message(
-            user, message, external_action=_is_explicit_other_module_action(message),
+            user, message, external_action=external_action,
             message_id=message_id,
         )
         if diagnostic_response is not None:

@@ -1,5 +1,6 @@
 """Regresión: el diagnóstico no bloquea botones ni otras funcionalidades."""
 
+import copy
 import unittest
 from unittest.mock import patch
 
@@ -36,12 +37,93 @@ class DiagnosticRoutingTests(unittest.TestCase):
     def route(self, message):
         return message_router.route_message(self.user["phone"], message)
 
+    def press(self, prompt, action):
+        """Reenvía el ID real del botón, igual que el webhook de WhatsApp."""
+        button_id = next(key for key, _ in prompt["options"] if key.rsplit(":", 1)[-1] == action)
+        result = self.route(button_id)
+        self.assertNotEqual(result, "__AI_QUERY__", "Un botón del diagnóstico no debe enviarse a IA")
+        return result
+
+    def router_to_costs(self):
+        prompt = self.route("menu_diagnostico")
+        prompt = self.press(prompt, "local")
+        prompt = self.press(prompt, "yes")
+        prompt = self.press(prompt, "yes")
+        prompt = self.press(prompt, "yes")
+        for text in ("1500000", "100000", "0"):
+            prompt = self.route(text)
+        prompt = self.press(prompt, "yes")
+        self.route("2026-11")
+        prompt = self.route("0")
+        prompt = self.press(prompt, "yes")
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "costs")
+        return prompt
+
     def test_entry_exits_funds_finances_and_calendar(self):
         self.mocks["get_active_fund_session"].return_value = {"status": "selecting"}
         self.assertIn("Diagnóstico", self.route("menu_diagnostico")["body"])
         self.mocks["cancel_fund_session"].assert_called_once_with(USER["id"])
         self.mocks["clear_calendar_session"].assert_called_once_with(USER["id"])
         self.mocks["clear_financial_session"].assert_called_once_with(USER["id"])
+
+    def test_location_buttons_advance_without_pausing_or_sending_to_ai(self):
+        for action in ("vivienda", "local", "otra"):
+            with self.subTest(action=action):
+                self.repo.data = {"diagnostic": None, "items": []}
+                prompt = self.route("menu_diagnostico")
+                result = self.press(prompt, action)
+                d = self.repo.data["diagnostic"]
+                self.assertEqual(d["location_type"], action)
+                self.assertEqual(d["current_step"], "period")
+                self.assertEqual(d["conversation_status"], "active")
+                self.assertIn("mes observado", result["body"])
+
+    def test_full_router_flow_confirms_without_sending_button_ids_to_ai(self):
+        prompt = self.router_to_costs()
+        prompt = self.press(prompt, "cost_C01")
+        prompt = self.press(prompt, "yes")
+        prompt = self.press(prompt, "costs_done")
+        result = self.press(prompt, "confirm")
+        self.assertIn("Parcial", result["body"])
+        self.assertEqual(self.repo.data["diagnostic"]["workflow_status"], "confirmed")
+        self.assertEqual(len(self.repo.revisions), 1)
+
+    def test_result_buttons_show_details_sources_and_reopen_selected_field(self):
+        prompt = self.router_to_costs()
+        prompt = self.press(prompt, "costs_done")
+        result = self.press(prompt, "confirm")
+        self.assertIn("Costos iniciales", self.press(result, "details")["body"])
+        self.assertIn("Fuentes del catálogo", self.press(result, "sources")["body"])
+        previous = copy.deepcopy(self.repo.data["diagnostic"]["answers"])
+        prompt = self.press(result, "edit")
+        self.press(prompt, "edit_cash")
+        self.route("2000000")
+        d = self.repo.data["diagnostic"]
+        self.assertEqual(d["current_step"], "review")
+        self.assertEqual(d["answers"]["available_cash"], 2000000)
+        self.assertEqual(d["answers"]["income_total"], previous["income_total"])
+        self.assertEqual(d["answers"]["expenses_total"], previous["expenses_total"])
+        self.assertEqual(len(self.repo.revisions), 1)
+
+    def test_pause_button_stays_in_diagnostic_and_entry_resumes_same_step(self):
+        prompt = self.route("menu_diagnostico")
+        prompt = self.press(prompt, "local")
+        self.assertIn("Conservé tu borrador", self.press(prompt, "pause"))
+        self.assertEqual(self.repo.data["diagnostic"]["conversation_status"], "paused")
+        self.route("retomar diagnóstico")
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "period")
+        self.assertEqual(self.repo.data["diagnostic"]["conversation_status"], "active")
+
+    def test_old_button_is_rejected_without_mutating_current_question(self):
+        prompt = self.route("menu_diagnostico")
+        self.press(prompt, "local")
+        previous = copy.deepcopy(self.repo.data)
+        self.assertIn("otra pregunta", self.press(prompt, "vivienda"))
+        self.assertEqual(self.repo.data, previous)
+
+    def test_diagnostic_ids_remain_navigation_for_other_modules(self):
+        prompt = self.route("menu_diagnostico")
+        self.assertTrue(message_router._is_explicit_other_module_action(prompt["options"][0][0]))
 
     def test_hardcoded_buttons_reach_original_handlers(self):
         self.start()
