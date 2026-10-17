@@ -27,6 +27,10 @@ class FormalizationPersistenceError(RuntimeError):
     """No se pudo acceder al almacenamiento; no equivale a datos vacíos."""
 
 
+class FormalizationConnectionError(FormalizationPersistenceError):
+    """El pool no está disponible o no pudo entregar una conexión."""
+
+
 class FormalizationConflictError(FormalizationPersistenceError):
     """Borrador, fuentes o solicitud cambiaron: recargar antes de continuar."""
 
@@ -39,7 +43,7 @@ def _get_pool():
     import dependencies
 
     if dependencies.db_pool is None:
-        raise FormalizationPersistenceError(
+        raise FormalizationConnectionError(
             "El diagnóstico requiere el pool PostgreSQL existente. Revisa DB_DSN; "
             "no se guardará mediante escrituras REST parciales."
         )
@@ -52,7 +56,10 @@ def _transaction(*, readonly: bool = False):
     from psycopg2.extras import RealDictCursor
 
     pool = _get_pool()
-    conn = pool.getconn()
+    try:
+        conn = pool.getconn()
+    except Exception as error:
+        raise FormalizationConnectionError("No se pudo obtener una conexión PostgreSQL") from error
     previous = (conn.isolation_level, conn.readonly, conn.autocommit)
     discard = False
     try:

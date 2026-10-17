@@ -8,6 +8,7 @@ from datetime import date
 
 from core import formalization_flow as flow
 from schemas.formalization_diagnostics import FormalizationDraftPatch, FormalizationItemInput
+from db.formalization_diagnostics import FormalizationConnectionError
 
 
 USER = {"id": "11111111-1111-4111-8111-111111111111", "rubro": "alimentos", "comuna": "Recoleta", "inicio_sii": "no"}
@@ -213,7 +214,62 @@ class FlowTests(unittest.TestCase):
 
     def test_explicit_database_failure_is_not_reported_as_empty_history(self):
         with patch.object(flow, "get_formalization_context", side_effect=RuntimeError("unavailable")), self.assertLogs("financial", level="ERROR"):
-            self.assertIn("No pude consultar", self.send("mi diagnóstico"))
+            response = self.send("mi diagnóstico")
+        self.assertIn("No pude consultar", response)
+        self.assertIn("DIAG_INTERNAL", response)
+
+    def test_connection_failure_returns_safe_reference_without_credential(self):
+        error = FormalizationConnectionError("postgresql://usuario:SECRETO@host/db")
+        with patch.object(flow, "get_formalization_context", side_effect=error), self.assertLogs("financial", level="ERROR") as logs:
+            response = self.send("mi diagnóstico")
+        self.assertIn("Código: DIAG_CONNECTION", response)
+        self.assertIn("Etapa: lectura del diagnóstico", response)
+        self.assertNotIn("SECRETO", response)
+        self.assertNotIn("SECRETO", "\n".join(logs.output))
+        self.assertNotIn("postgresql://", "\n".join(logs.output))
+
+    def test_initial_creation_failure_identifies_stage_and_sqlstate(self):
+        error = RuntimeError("Failing row contains DATOS_PERSONALES")
+        error.pgcode = "23514"
+        with patch.object(flow, "save_formalization_draft", side_effect=error), self.assertLogs("financial", level="ERROR") as logs:
+            response = self.send("diagnóstico de formalización")
+        self.assertIn("Código: DIAG_CONSTRAINT", response)
+        self.assertIn("SQLSTATE: 23514", response)
+        self.assertIn("Etapa: inicio del diagnóstico", response)
+        self.assertNotIn("DATOS_PERSONALES", response)
+        self.assertNotIn("DATOS_PERSONALES", "\n".join(logs.output))
+
+    def test_resume_error_not_mislabeled_as_initial_read(self):
+        self.start()
+        error = RuntimeError("permission SELECT secret")
+        error.pgcode = "42501"
+        with patch.object(flow, "save_formalization_draft", side_effect=error), self.assertLogs("financial", level="ERROR"):
+            response = self.send("retomar diagnóstico")
+        self.assertIn("DIAG_PERMISSION", response)
+        self.assertIn("Etapa: reanudación", response)
+
+    def test_confirm_error_identifies_confirmation_stage(self):
+        self.to_costs()
+        self.button("costs_done")
+        error = RuntimeError("missing column SELECT private")
+        error.pgcode = "42703"
+        with patch.object(flow, "confirm_formalization_revision", side_effect=error), self.assertLogs("financial", level="ERROR"):
+            response = self.button("confirm")
+        self.assertIn("DIAG_SCHEMA", response)
+        self.assertIn("SQLSTATE: 42703", response)
+        self.assertIn("Etapa: confirmación", response)
+
+    def test_validation_failure_does_not_echo_exception_or_pydantic_inputs(self):
+        self.start()
+        with patch.object(flow, "_amount", side_effect=ValueError("input_value=SECRETO")):
+            response = self.send("arriendo=1; insumos=0; servicios=0; transporte=0; otros=0")
+        self.assertIn("Código: DIAG_VALIDATION", response["body"])
+        self.assertNotIn("SECRETO", response["body"])
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "expenses")
+
+    def test_other_module_query_is_not_replaced_by_background_connection_error(self):
+        with patch.object(flow, "get_formalization_context", side_effect=FormalizationConnectionError("hidden")), self.assertLogs("financial", level="ERROR"):
+            self.assertIsNone(self.send("¿Cómo puedo mejorar mis ventas?"))
 
     def test_reset_also_closes_paused_and_confirmed_diagnoses(self):
         self.start()

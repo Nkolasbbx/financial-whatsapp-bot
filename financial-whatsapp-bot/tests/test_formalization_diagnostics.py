@@ -359,6 +359,7 @@ class TransactionTests(unittest.TestCase):
                                                "psycopg2.extras": self.psycopg_extras})
         self.modules.start()
         self.addCleanup(self.modules.stop)
+        self.original_get_pool = db._get_pool
         self.pool_patch = patch.object(db, "_get_pool", return_value=self.pool)
         self.pool_patch.start()
         self.addCleanup(self.pool_patch.stop)
@@ -398,6 +399,21 @@ class TransactionTests(unittest.TestCase):
         with db._transaction():
             pass
         self.pool.putconn.assert_called_once_with(self.conn, close=True)
+
+    def test_pool_exhaustion_has_explicit_connection_error(self):
+        original = RuntimeError("connection pool exhausted")
+        self.pool.getconn.side_effect = original
+        with self.assertRaises(db.FormalizationConnectionError) as raised:
+            with db._transaction():
+                self.fail("No debería abrir la transacción")
+        self.assertIs(raised.exception.__cause__, original)
+        self.pool.putconn.assert_not_called()
+
+    def test_missing_pool_has_explicit_connection_error(self):
+        dependencies = types.ModuleType("dependencies")
+        dependencies.db_pool = None
+        with patch.dict(sys.modules, {"dependencies": dependencies}), self.assertRaises(db.FormalizationConnectionError):
+            self.original_get_pool()
 
 
 if __name__ == "__main__":

@@ -18,6 +18,9 @@ from zoneinfo import ZoneInfo
 from core.formalization_engine import (
     RULES_CONFIG, RULES_VERSION, catalog_applicability, convert_clp, evaluate_diagnostic, month_after,
 )
+from core.formalization_errors import (
+    formalization_error_code, formalization_error_message, safe_sqlstate,
+)
 from db.formalization_diagnostics import (
     FormalizationConflictError, confirm_formalization_revision,
     get_formalization_context, save_formalization_draft,
@@ -410,11 +413,13 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
     """
     entry, raw = is_diagnostic_entry(message), message.strip()
     diagnostic_button = raw.startswith("diag:")
+    stage = "load"
     try:
         # Existing route tests and legacy callers sometimes supply non-UUID IDs.
         UUID(str(user.get("id")))
         context = get_formalization_context(user["id"])
         d = context.get("diagnostic")
+        stage = "flow"
         action = normalize(raw)
         if diagnostic_button:
             parts = raw.split(":", 3)
@@ -423,12 +428,14 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             action = parts[3]
         if entry:
             if not d or d["workflow_status"] in {"cancelled", "archived"}:
+                stage = "create"
                 context = _new(user)
             elif d["workflow_status"] == "confirmed":
                 if normalize(raw) != "rehacer diagnostico":
                     return _result_widget(context)
                 context = _set_step(user, context, "edit")
             else:
+                stage = "resume"
                 context = _save(user, context, {"conversation_status": "active"})
             return _prompt(context)
         if not d:
@@ -585,27 +592,39 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return _prompt(_save(user, context, {"current_step": "costs", "pending_field": "costs", "answers": a}, items=[values]))
         if step == "review" and action == "confirm":
             context = _save_budgets(user, context)
+            stage = "calculate"
             assessment = evaluate_diagnostic(context)
             d = context["diagnostic"]
             request_id = uuid5(UUID(d["id"]), "confirm:" + (message_id or str(d["lock_version"])))
+            stage = "confirm"
             saved = confirm_formalization_revision(user["id"], d["id"], d["lock_version"], str(request_id), assessment)
             if saved.get("replayed"):
                 return _result_widget(get_formalization_context(user["id"], d["id"]))
             return _result_widget({**context, "diagnostic": saved["diagnostic"]})
         return _prompt(context)
-    except FormalizationConflictError:
+    except FormalizationConflictError as error:
         return ("El diagnóstico o sus fuentes cambiaron. Escribe 'mi diagnóstico', elige Cambiar datos y "
-                "Actualizar registros para revisar nuevamente el mes, sin perder las versiones anteriores.")
+                "Actualizar registros para revisar nuevamente el mes, sin perder las versiones anteriores.\n\n"
+                "Código: " + formalization_error_code(error))
     except ValueError as error:
         if not entry and not diagnostic_button and not locals().get("d"):
             return None
+        public_message = formalization_error_message(error, stage)
         if locals().get("context", {}).get("diagnostic"):
-            prompt = _prompt(context)
-            # Return a text message to avoid overflowing interactive body limits.
-            return {"type": "text", "body": f"No guardé esa respuesta: {error}\n\n{prompt['body']}"}
-        return "No pude iniciar el diagnóstico con tu perfil actual. Revisa que el registro esté completo."
-    except Exception:
-        logger.exception("No se pudo procesar el diagnóstico económico")
+            try:
+                prompt = _prompt(context)
+            except Exception:
+                # A malformed draft must not make the error handler fail too.
+                return public_message
+            # No raw exception/Pydantic payload is sent to WhatsApp. The prompt
+            # only repeats the current question through its existing renderer.
+            return {"type": "text", "body": public_message + "\n\n" + prompt["body"]}
+        return public_message
+    except Exception as error:
+        # Do not log str(error) or exc_info: a driver error may include SQL,
+        # failing rows, connection strings or the user's financial information.
+        logger.error("No se pudo procesar el diagnóstico económico [%s] etapa=%s tipo=%s sqlstate=%s",
+                     formalization_error_code(error), stage, type(error).__name__, safe_sqlstate(error))
         if entry or diagnostic_button or (locals().get("d") or {}).get("conversation_status") == "active":
-            return "No pude consultar o guardar el diagnóstico. No interpretaré el error como datos vacíos. Inténtalo más tarde."
+            return formalization_error_message(error, stage)
         return None
