@@ -127,8 +127,9 @@ INGESTION_ENABLE_CONTEXTUAL = (
     os.getenv("INGESTION_ENABLE_CONTEXTUAL", "false").strip().lower() == "true"
 )
 
-# HDU017 reutiliza DB_DSN y el pool existente. Permite desactivar la nueva
-# entrada sin eliminar borradores ni afectar el resto del asistente.
+# HDU017 usa supabase_admin del Supabase de usuarios, no DB_DSN (RAG).
+# La bandera permite desactivar la entrada sin eliminar borradores ni afectar
+# el resto del asistente.
 FORMALIZATION_DIAGNOSTICS_ENABLED = (
     os.getenv("FORMALIZATION_DIAGNOSTICS_ENABLED", "true").strip().lower() == "true"
 )

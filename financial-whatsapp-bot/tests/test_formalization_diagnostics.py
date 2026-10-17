@@ -1,15 +1,16 @@
-"""Pruebas sin credenciales ni Supabase. SQL real se valida en entorno de pruebas."""
+"""Contratos y transporte RPC, sin credenciales, red ni conexiones del RAG.
 
-import json
+La semántica SQL se prueba aparte en local_testing/check_formalization_rpc.sql;
+un cliente simulado no demuestra que la función se haya instalado en Supabase.
+"""
+
 import math
 import sys
 import types
 import unittest
-from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
-from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -18,25 +19,11 @@ from schemas.formalization_diagnostics import (
     FormalizationAssessmentInput, FormalizationDraftPatch, FormalizationItemInput,
 )
 
-
 USER = "11111111-1111-4111-8111-111111111111"
-OTHER = "22222222-2222-4222-8222-222222222222"
 DIAG = "33333333-3333-4333-8333-333333333333"
 REQUEST = "44444444-4444-4444-8444-444444444444"
 CATALOG = "55555555-5555-4555-8555-555555555555"
 DAY = date(2026, 10, 16)
-
-
-def diagnostic(**changes):
-    return dict({
-        "id": DIAG, "user_id": USER, "lock_version": 3, "workflow_status": "draft",
-        "period_start": date(2026, 9, 1), "period_end": date(2026, 10, 1),
-        "projection_start": date(2026, 11, 1), "activity_code": "alimentos_elaboracion",
-        "comuna_code": "recoleta", "location_type": "vivienda",
-        "answers": {}, "profile_snapshot": {}, "financial_snapshot": {},
-        "rules_version": "test-v1", "rules_config": {}, "technical_status": "not_reviewed",
-        "source_fingerprint": "a" * 64, "catalog_fingerprint": "b" * 64,
-    }, **changes)
 
 
 def item(**changes):
@@ -46,26 +33,12 @@ def item(**changes):
     }, **changes))
 
 
-def stored_item(key="rent", **changes):
-    model = item(item_key=key)
-    return dict({
-        **model.model_dump(exclude={"replaces_item_key"}),
-        "id": str(UUID(int=100 + len(key))), "diagnostic_id": DIAG,
-        "catalog_snapshot": {}, "replaces_item_id": None,
-    }, **changes)
+def context():
+    return {"diagnostic": {"id": DIAG, "user_id": USER, "lock_version": 3}, "items": []}
 
 
-def sources(**changes):
-    return dict({
-        "profile_snapshot": {"id": USER}, "financial_snapshot": {"loaded": True},
-        "source_fingerprint": "a" * 64, "catalog_fingerprint": "b" * 64,
-        "catalog": [], "source_checked_at": datetime(2026, 10, 16, tzinfo=timezone.utc),
-    }, **changes)
-
-
-@contextmanager
-def transaction_with(cursor):
-    yield cursor
+def assessment():
+    return {"assessment_status": "partial", "result": {"pending": True}}
 
 
 class SchemaTests(unittest.TestCase):
@@ -92,10 +65,9 @@ class SchemaTests(unittest.TestCase):
             {"amount_clp_min": 1.5, "amount_clp_max": 2},
             {"amount_clp_min": -1, "amount_clp_max": 2},
             {"amount_clp_min": 0, "amount_clp_max": 2, "amount_paid_clp": 3},
-            {"amount_original": "NaN", "unit": "UF"},
-            {"amount_original": "Infinity", "unit": "UF"},
-            {"amount_original": "0.1234567", "unit": "UF"},
-            {"amount_original": "0.26"}, {"amount_state": "quoted"},
+            {"amount_original": "NaN", "unit": "UF"}, {"amount_original": "Infinity", "unit": "UF"},
+            {"amount_original": "0.1234567", "unit": "UF"}, {"amount_original": "0.26"},
+            {"amount_state": "quoted"},
         ]
         for example in examples:
             with self.subTest(example=example), self.assertRaises(ValidationError):
@@ -111,8 +83,7 @@ class SchemaTests(unittest.TestCase):
                 item(**example)
 
     def test_assessment_capacity_contract(self):
-        self.assertIsNone(FormalizationAssessmentInput(
-            assessment_status="partial", result={"reason": "missing_cost"}).capacity)
+        self.assertIsNone(FormalizationAssessmentInput(**assessment()).capacity)
         for example in (
             {"assessment_status": "partial", "capacity": "alta"},
             {"assessment_status": "complete"},
@@ -122,298 +93,196 @@ class SchemaTests(unittest.TestCase):
                 FormalizationAssessmentInput(result={"reason": "test"}, **example)
 
 
-class HelperTests(unittest.TestCase):
-    def test_hash_is_stable_and_json_is_finite(self):
-        self.assertEqual(db._hash({"b": 2, "a": 1}), db._hash({"a": 1, "b": 2}))
-        self.assertEqual(len(db._hash({})), 64)
-        with self.assertRaises(ValueError):
-            db._dumps({"income": math.nan})
-
-    def test_period_checks(self):
-        db._validate_period(None, None)
-        db._validate_period(date(2026, 9, 1), date(2026, 10, 1))
-        for start, end in ((DAY, None), (None, DAY), (DAY, DAY), (DAY, date(2020, 1, 1)),
-                           (date(2020, 1, 1), DAY)):
-            with self.subTest(start=start, end=end), self.assertRaises(ValueError):
-                db._validate_period(start, end)
-
-    def test_new_item_id_stable_and_bound_to_diagnostic(self):
-        a = db._prepare_items(DIAG, [], [item()], set(), {})[0]
-        b = db._prepare_items(DIAG, [], [item()], set(), {})[0]
-        c = db._prepare_items(OTHER, [], [item()], set(), {})[0]
-        self.assertEqual(a["id"], b["id"])
-        self.assertNotEqual(a["id"], c["id"])
-
-    def test_replacements_order_target_first(self):
-        rows = db._prepare_items(DIAG, [], [item(item_key="future", replaces_item_key="rent"), item()], set(), {})
-        self.assertEqual([r["item_key"] for r in rows], ["rent", "future"])
-        self.assertEqual(rows[1]["replaces_item_id"], rows[0]["id"])
-
-    def test_long_replacement_chain_does_not_use_python_recursion(self):
-        inputs = [item(item_key=f"line-{n}", replaces_item_key=f"line-{n+1}" if n < 1100 else None)
-                  for n in range(1101)]
-        rows = db._prepare_items(DIAG, [], inputs, set(), {})
-        self.assertEqual(rows[0]["item_key"], "line-1100")
-        self.assertEqual(rows[-1]["item_key"], "line-0")
-
-    def test_missing_or_cyclic_replacements_rejected(self):
-        for inputs in ([item(replaces_item_key="missing")],
-                       [item(replaces_item_key="future"), item(item_key="future", replaces_item_key="rent")]):
-            with self.subTest(inputs=inputs), self.assertRaises(ValueError):
-                db._prepare_items(DIAG, [], inputs, set(), {})
-
-    def test_cannot_delete_target_that_is_still_referenced(self):
-        target = stored_item("rent")
-        future = stored_item("future", replaces_item_id=target["id"])
-        with self.assertRaises(ValueError):
-            db._prepare_items(DIAG, [target, future], [], {"rent"}, {})
-
-    def test_catalog_snapshot_not_from_caller(self):
-        concept = {"id": CATALOG, "active": True, "title": "Verified record"}
-        output = db._prepare_items(DIAG, [], [item(catalog_version_id=CATALOG)], set(), {CATALOG: concept})
-        self.assertEqual(output[0]["catalog_snapshot"], concept)
-        with self.assertRaises(ValueError):
-            db._prepare_items(DIAG, [], [item(catalog_version_id=CATALOG)], set(), {})
-
-    def test_old_catalog_snapshot_preserved_for_same_version(self):
-        existing = stored_item(catalog_version_id=CATALOG, catalog_snapshot={"version": 1})
-        row = db._prepare_items(DIAG, [existing], [item(catalog_version_id=CATALOG)], set(), {})[0]
-        self.assertEqual(row["catalog_snapshot"], {"version": 1})
-
-    def test_complete_rejects_unknown_costs_and_empty_items(self):
-        for records in ([], [stored_item()], [stored_item(applicability="applies")]):
-            with self.subTest(records=records), self.assertRaises(ValueError):
-                db._validate_complete(diagnostic(), records, sources())
-
-    def test_complete_allows_documented_quote_but_not_unreviewed_tariff(self):
-        row = stored_item(applicability="applies", amount_state="quoted", amount_clp_min=100,
-                          amount_clp_max=200, evidence={"quote": "test"}, catalog_version_id=CATALOG)
-        source = sources(catalog=[{"id": CATALOG, "pricing_method": "quote", "review_status": "pending"}])
-        db._validate_complete(diagnostic(), [row], source)
-        source["catalog"][0]["pricing_method"] = "formula"
-        with self.assertRaises(ValueError):
-            db._validate_complete(diagnostic(), [row], source)
-        with self.assertRaises(db.FormalizationConflictError):
-            db._validate_complete(diagnostic(), [row], sources())
-
-
-class DatabaseTests(unittest.TestCase):
+class RpcTests(unittest.TestCase):
     def setUp(self):
-        self.cursor = MagicMock()
-        self.tx = patch.object(db, "_transaction", side_effect=lambda **kwargs: transaction_with(self.cursor))
-        self.tx.start()
-        self.addCleanup(self.tx.stop)
+        self.client = MagicMock()
+        self.client.rpc.return_value.execute.return_value.data = context()
+        self.deps = types.ModuleType("dependencies")
+        self.deps.supabase_admin = self.client
+        # Cualquier acceso a la conexión RAG o al cliente sin privilegios falla.
+        def forbidden(name):
+            raise AssertionError(f"El diagnóstico no debe consultar dependencies.{name}")
+        self.deps.__getattr__ = forbidden
+        modules = patch.dict(sys.modules, {"dependencies": self.deps})
+        modules.start()
+        self.addCleanup(modules.stop)
 
-    def test_get_context_without_refresh_does_not_query_finances(self):
-        self.cursor.fetchone.return_value = {**diagnostic(), "_items": []}
-        with patch.object(db, "_load_sources") as load:
-            result = db.get_formalization_context(USER, DIAG)
-        load.assert_not_called()
-        self.cursor.execute.assert_called_once()
-        self.assertEqual(result["diagnostic"]["id"], DIAG)
-        self.assertNotIn("_items", result["diagnostic"])
+    def get(self, **kwargs):
+        return db.get_formalization_context(USER, DIAG, as_of=DAY, **kwargs)
 
-    def test_context_scope_and_missing_record(self):
-        self.cursor.fetchone.return_value = None
-        with self.assertRaises(db.FormalizationNotFoundError):
-            db.get_formalization_context(USER, DIAG)
-        self.assertEqual(self.cursor.execute.call_args.args[1], (USER, DIAG, DIAG))
+    def save(self, patch_value=None, **kwargs):
+        return db.save_formalization_draft(USER, DIAG, 3, patch_value, as_of=DAY, **kwargs)
 
-    def test_refresh_is_returned_not_saved(self):
-        self.cursor.fetchone.return_value = {**diagnostic(), "_items": []}
-        with patch.object(db, "_load_sources", return_value=sources()) as load:
-            result = db.get_formalization_context(USER, DIAG, refresh_sources=True, as_of=DAY)
-        load.assert_called_once()
-        self.assertIn("fresh_sources", result)
-        self.assertEqual(self.cursor.execute.call_count, 1)
+    def confirm(self, **kwargs):
+        self.client.rpc.return_value.execute.return_value.data = {
+            "diagnostic": context()["diagnostic"], "revision": {"id": REQUEST}, "replayed": False,
+        }
+        return db.confirm_formalization_revision(USER, DIAG, 3, REQUEST, assessment(), as_of=DAY, **kwargs)
 
-    def test_source_hash_changes_when_ledger_changes(self):
-        raw = {"profile": {"id": USER}, "financial": {"income_total": 0},
-               "catalog": [], "source_checked_at": "now", "movements_hash": "first"}
-        self.cursor.fetchone.return_value = raw
-        first = db._load_sources(self.cursor, USER, diagnostic(), DAY)
-        raw["movements_hash"] = "changed-after-edit-or-delete"
-        second = db._load_sources(self.cursor, USER, diagnostic(), DAY)
-        self.assertNotEqual(first["source_fingerprint"], second["source_fingerprint"])
-        self.assertEqual(first["catalog_fingerprint"], second["catalog_fingerprint"])
-        self.assertNotIn("limit 3", db._SOURCES_SQL.lower())
-        self.assertIn("aportes_capital", db._SOURCES_SQL)
+    def test_get_uses_exactly_one_admin_rpc_without_reading_rag(self):
+        self.assertEqual(self.get(), context())
+        self.client.rpc.assert_called_once_with("get_formalization_context_v1", {
+            "p_user_id": USER, "p_diagnostic_id": DIAG, "p_refresh_sources": False,
+            "p_period_start": None, "p_period_end": None, "p_as_of": "2026-10-16",
+        })
+        self.client.rpc.return_value.execute.assert_called_once()
+        self.client.table.assert_not_called()
 
-    def test_source_failure_is_not_empty_movements(self):
-        self.cursor.execute.side_effect = RuntimeError("connection failed")
-        with self.assertRaises(RuntimeError):
-            db._load_sources(self.cursor, USER, diagnostic(), DAY)
+    def test_new_profile_can_have_no_diagnostic(self):
+        self.client.rpc.return_value.execute.return_value.data = {"diagnostic": None, "items": []}
+        result = db.get_formalization_context(USER, as_of=DAY)
+        self.assertIsNone(result["diagnostic"])
+        self.assertIsNone(self.client.rpc.call_args.args[1]["p_diagnostic_id"])
 
-    def test_stale_draft_and_foreign_owner_rejected_before_write(self):
-        for current in (diagnostic(lock_version=4), diagnostic(user_id=OTHER)):
-            self.cursor.reset_mock()
-            self.cursor.fetchone.return_value = {**current, "_items": []}
-            with self.subTest(current=current), self.assertRaises(db.FormalizationPersistenceError):
-                db.save_formalization_draft(USER, DIAG, 3, {"current_step": "expenses"}, as_of=DAY)
-            self.assertEqual(self.cursor.execute.call_count, 1)
+    def test_one_element_response_wrapper_is_supported(self):
+        self.client.rpc.return_value.execute.return_value.data = [context()]
+        self.assertEqual(self.get(), context())
 
-    def test_confirmed_requires_explicit_reopen(self):
-        self.cursor.fetchone.return_value = {**diagnostic(workflow_status="confirmed"), "_items": []}
-        with self.assertRaises(db.FormalizationConflictError):
-            db.save_formalization_draft(USER, DIAG, 3, {}, as_of=DAY)
+    def test_bad_context_never_becomes_an_empty_success(self):
+        for bad in (None, [], [{}, {}], "ok", {}, {"items": []},
+                    {"diagnostic": {}, "items": None}, {"diagnostic": {}, "items": [None]},
+                    {"diagnostic": "bad", "items": []}, {**context(), "fresh_sources": None}):
+            with self.subTest(bad=bad), self.assertRaises(db.FormalizationPersistenceError):
+                self.client.rpc.return_value.execute.return_value.data = bad
+                self.get()
 
-    def test_reopen_clears_current_result_but_does_not_delete_history(self):
-        self.cursor.fetchone.return_value = diagnostic(workflow_status="confirmed")
-        with patch.object(db, "_read_context", return_value={"diagnostic": diagnostic(workflow_status="confirmed"), "items": []}), \
-             patch.object(db, "_update_header", return_value=diagnostic()) as update:
-            db.save_formalization_draft(USER, DIAG, 3, {}, reopen=True, as_of=DAY)
-        fields = update.call_args.args[3]
-        self.assertIsNone(fields["result"])
-        self.assertIsNone(fields["capacity"])
-        self.assertEqual(fields["assessment_status"], "partial")
-        self.assertNotIn("latest_revision_id", fields)
+    def test_refresh_remains_explicit_and_read_only(self):
+        self.client.rpc.return_value.execute.return_value.data = {**context(), "fresh_sources": {"catalog": []}}
+        self.get(refresh_sources=True, period_start=date(2026, 9, 1), period_end=date(2026, 10, 1))
+        params = self.client.rpc.call_args.args[1]
+        self.assertTrue(params["p_refresh_sources"])
+        self.assertEqual(params["p_period_start"], "2026-09-01")
+        self.assertEqual(self.client.rpc.call_count, 1)
+        self.client.table.assert_not_called()
 
-    def test_save_normal_reply_does_not_refresh_sources(self):
-        self.cursor.fetchone.return_value = diagnostic()
-        context = {"diagnostic": diagnostic(), "items": []}
-        with patch.object(db, "_read_context", return_value=context), \
-             patch.object(db, "_update_header", return_value=diagnostic(lock_version=4)) as update, \
-             patch.object(db, "_load_sources") as load:
-            result = db.save_formalization_draft(USER, DIAG, 3, {"current_step": "expenses"}, as_of=DAY)
-        load.assert_not_called()
-        self.assertEqual(update.call_count, 1)
-        self.assertEqual(result["diagnostic"]["lock_version"], 4)
+    def test_bad_or_implicit_period_fails_before_network(self):
+        for values in ({"period_start": DAY}, {"period_end": DAY},
+                       {"period_start": DAY, "period_end": DAY, "refresh_sources": True},
+                       {"period_start": date(2020, 1, 1), "period_end": DAY, "refresh_sources": True},
+                       {"period_start": date(2026, 9, 1), "period_end": date(2026, 10, 1)}):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                self.get(**values)
+        self.client.rpc.assert_not_called()
 
-    def test_normal_reply_uses_two_sql_statements_not_catalog_or_ledger(self):
-        self.cursor.fetchone.side_effect = [{**diagnostic(), "_items": []}, diagnostic(lock_version=4)]
-        with patch.object(db, "_load_sources") as load:
-            result = db.save_formalization_draft(USER, DIAG, 3, {"current_step": "expenses"}, as_of=DAY)
-        self.assertEqual(self.cursor.execute.call_count, 2)
-        self.assertEqual(result["diagnostic"]["lock_version"], 4)
-        load.assert_not_called()
+    def test_save_preserves_omitted_fields_and_explicit_null(self):
+        self.save({"current_step": "expenses", "pending_field": None})
+        name, params = self.client.rpc.call_args.args
+        self.assertEqual(name, "save_formalization_draft_v1")
+        self.assertEqual(params["p_patch"], {"current_step": "expenses", "pending_field": None})
+        self.assertEqual(params["p_expected_lock_version"], 3)
+        self.assertFalse(params["p_refresh_sources"])
+        self.assertFalse(params["p_reopen"])
+        self.assertEqual(self.client.rpc.call_count, 1)
 
-    def test_scope_change_refreshes_once(self):
-        self.cursor.fetchone.return_value = diagnostic()
-        with patch.object(db, "_read_context", return_value={"diagnostic": diagnostic(), "items": []}), \
-             patch.object(db, "_update_header", return_value=diagnostic()) as update, \
-             patch.object(db, "_load_sources", return_value=sources()) as load:
-            db.save_formalization_draft(USER, DIAG, 3, {"location_type": "local"}, as_of=DAY)
-        load.assert_called_once()
-        self.assertEqual(update.call_count, 2)
+    def test_save_serializes_batch_dates_and_decimal_without_float(self):
+        self.save(FormalizationDraftPatch(period_start=date(2026, 9, 1), period_end=date(2026, 10, 1)),
+                  items=[item(amount_original="0.260001", unit="UF", due_date=DAY)],
+                  delete_item_keys=["old"], reopen=True)
+        params = self.client.rpc.call_args.args[1]
+        self.assertEqual(params["p_items"][0]["amount_original"], "0.260001")
+        self.assertEqual(params["p_items"][0]["due_date"], "2026-10-16")
+        self.assertEqual(params["p_delete_item_keys"], ["old"])
+        self.assertTrue(params["p_reopen"])
+        self.assertNotIn("catalog_snapshot", params["p_items"][0])
+        self.assertEqual(self.client.rpc.call_count, 1)
+        self.client.table.assert_not_called()
 
-    def test_bulk_items_use_one_parameterized_statement(self):
-        rows = db._prepare_items(DIAG, [], [item(), item(item_key="transport")], set(), {})
-        db._upsert_items(self.cursor, rows)
-        self.cursor.execute.assert_called_once()
-        sql, params = self.cursor.execute.call_args.args
-        self.assertIn("jsonb_array_elements(%s::jsonb)", sql)
-        self.assertEqual(len(json.loads(params[0])), 2)
-        self.assertNotIn("Arriendo", sql)
+    def test_missing_saved_header_is_an_error(self):
+        self.client.rpc.return_value.execute.return_value.data = {"diagnostic": None, "items": []}
+        with self.assertRaises(db.FormalizationPersistenceError):
+            self.save()
 
-    def test_confirm_checks_freshness_before_inserting(self):
-        self.cursor.fetchone.return_value = None  # no previous request
-        with patch.object(db, "_read_context", return_value={"diagnostic": diagnostic(), "items": []}), \
-             patch.object(db, "_load_sources", return_value=sources(source_fingerprint="c" * 64)):
-            with self.assertRaises(db.FormalizationConflictError):
-                db.confirm_formalization_revision(USER, DIAG, 3, REQUEST,
-                    {"assessment_status": "partial", "result": {"pending": True}}, as_of=DAY)
-        self.assertEqual(self.cursor.execute.call_count, 1)
+    def test_bad_version_is_rejected_before_request(self):
+        for value in (-1, True, 1.5, "3", 2**63):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                db.save_formalization_draft(USER, DIAG, value)
+        self.client.rpc.assert_not_called()
 
-    def test_confirm_partial_inserts_revision_then_updates_only_derived_fields(self):
-        self.cursor.fetchone.side_effect = [None, {"id": REQUEST, "revision_number": 1}]
-        with patch.object(db, "_read_context", return_value={"diagnostic": diagnostic(), "items": []}), \
-             patch.object(db, "_load_sources", return_value=sources()), \
-             patch.object(db, "_update_header", return_value=diagnostic(workflow_status="confirmed")) as update:
-            result = db.confirm_formalization_revision(USER, DIAG, 3, REQUEST,
-                {"assessment_status": "partial", "result": {"pending": True}}, as_of=DAY)
+    def test_invalid_batch_is_rejected_before_request(self):
+        for values in ({"items": [item(), item()]}, {"items": [item()] * 201},
+                       {"delete_item_keys": ["x"] * 201}, {"delete_item_keys": ["x", "x"]},
+                       {"delete_item_keys": [""]}, {"delete_item_keys": [None]},
+                       {"items": [item()], "delete_item_keys": ["rent"]}):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                self.save(**values)
+        self.client.rpc.assert_not_called()
+
+    def test_nested_non_finite_numbers_are_not_sent(self):
+        for value in (math.nan, math.inf, -math.inf):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.save({"answers": {"income": value}})
+        with self.assertRaises(ValueError):
+            self.save(items=[item(evidence={"cost": math.nan})])
+        self.client.rpc.assert_not_called()
+
+    def test_invalid_uuid_fails_before_network(self):
+        with self.assertRaises(ValueError):
+            db.get_formalization_context("not-a-uuid")
+        self.client.rpc.assert_not_called()
+
+    def test_confirm_uses_one_rpc_and_keeps_server_revision(self):
+        result = self.confirm()
         self.assertFalse(result["replayed"])
-        self.assertEqual(result["revision"]["revision_number"], 1)
-        self.assertNotIn("answers", update.call_args.args[3])
-        self.assertNotIn("source_fingerprint", update.call_args.args[3])
-        self.assertIn("INSERT INTO public.formalization_diagnostic_revisions", self.cursor.execute.call_args_list[1].args[0])
+        self.assertEqual(result["revision"]["id"], REQUEST)
+        name, params = self.client.rpc.call_args.args
+        self.assertEqual(name, "confirm_formalization_revision_v1")
+        self.assertEqual(params["p_request_id"], REQUEST)
+        self.assertEqual(params["p_assessment"]["missing_fields"], [])
+        self.assertEqual(self.client.rpc.call_count, 1)
+        self.client.table.assert_not_called()
 
-    def test_identical_confirmation_replays_before_freshness_checks(self):
-        assessment = {"assessment_status": "partial", "result": {"pending": True},
-                      "capacity": None, "missing_fields": []}
-        request_hash = db._hash({"user_id": USER, "diagnostic_id": DIAG, "lock_version": 3, "assessment": assessment})
-        self.cursor.fetchone.return_value = {"id": REQUEST, "request_hash": request_hash, "snapshot": {"old": True}}
-        with patch.object(db, "_read_context", return_value={"diagnostic": diagnostic(lock_version=99), "items": []}), \
-             patch.object(db, "_load_sources") as load:
-            result = db.confirm_formalization_revision(USER, DIAG, 3, REQUEST, assessment, as_of=DAY)
-        self.assertTrue(result["replayed"])
-        load.assert_not_called()
-        self.assertEqual(self.cursor.execute.call_count, 1)
+    def test_confirmation_replay_needs_no_second_read(self):
+        expected = {"revision": {"snapshot": {"original": True}}, "replayed": True}
+        self.client.rpc.return_value.execute.return_value.data = expected
+        result = db.confirm_formalization_revision(USER, DIAG, 3, REQUEST, assessment(), as_of=DAY)
+        self.assertEqual(result, expected)
+        self.assertEqual(self.client.rpc.call_count, 1)
 
-    def test_confirmation_request_cannot_be_reused_for_changed_payload(self):
-        self.cursor.fetchone.return_value = {"request_hash": "wrong"}
-        with patch.object(db, "_read_context", return_value={"diagnostic": diagnostic(), "items": []}):
-            with self.assertRaises(db.FormalizationConflictError):
-                db.confirm_formalization_revision(USER, DIAG, 3, REQUEST,
-                    {"assessment_status": "partial", "result": {"pending": True}}, as_of=DAY)
+    def test_bad_confirmation_fails_closed(self):
+        for bad in ({}, {"revision": {}, "replayed": "true"}, {"revision": None, "replayed": True},
+                    {"revision": {}, "replayed": False}, {"revision": {}, "replayed": False, "diagnostic": None}):
+            self.client.rpc.return_value.execute.return_value.data = bad
+            with self.subTest(bad=bad), self.assertRaises(db.FormalizationPersistenceError):
+                db.confirm_formalization_revision(USER, DIAG, 3, REQUEST, assessment(), as_of=DAY)
 
+    def test_oversized_confirmation_is_not_sent(self):
+        with self.assertRaises(ValueError):
+            db.confirm_formalization_revision(USER, DIAG, 3, REQUEST,
+                {"assessment_status": "partial", "result": {"text": "x" * 512000}}, as_of=DAY)
+        self.client.rpc.assert_not_called()
 
-class TransactionTests(unittest.TestCase):
-    def setUp(self):
-        self.pool = MagicMock()
-        self.conn = self.pool.getconn.return_value
-        self.conn.isolation_level, self.conn.readonly, self.conn.autocommit = 1, False, False
-        self.cursor = self.conn.cursor.return_value.__enter__.return_value
-        self.psycopg_extras = types.ModuleType("psycopg2.extras")
-        self.psycopg_extras.RealDictCursor = object()
-        self.modules = patch.dict(sys.modules, {"psycopg2": types.ModuleType("psycopg2"),
-                                               "psycopg2.extras": self.psycopg_extras})
-        self.modules.start()
-        self.addCleanup(self.modules.stop)
-        self.original_get_pool = db._get_pool
-        self.pool_patch = patch.object(db, "_get_pool", return_value=self.pool)
-        self.pool_patch.start()
-        self.addCleanup(self.pool_patch.stop)
+    def test_database_conflicts_keep_cause_without_retry(self):
+        for code in ("40001", "40P01", "23505"):
+            original = RuntimeError("private database details")
+            original.code = code
+            self.client.rpc.return_value.execute.side_effect = original
+            with self.subTest(code=code), self.assertRaises(db.FormalizationConflictError) as raised:
+                self.get()
+            self.assertIs(raised.exception.__cause__, original)
+        self.assertEqual(self.client.rpc.call_count, 3)
 
-    def test_success_commits_and_restores_connection_settings(self):
-        with db._transaction(readonly=True) as cursor:
-            self.assertIs(cursor, self.cursor)
-        self.conn.commit.assert_called_once()
-        self.assertEqual(self.conn.set_session.call_args.kwargs,
-                         {"isolation_level": 1, "readonly": False, "autocommit": False})
-        self.pool.putconn.assert_called_once_with(self.conn, close=False)
-
-    def test_server_defaults_are_restored_explicitly_not_left_readonly(self):
-        self.conn.isolation_level, self.conn.readonly = None, None
-        with db._transaction(readonly=True):
-            pass
-        self.assertEqual(self.conn.set_session.call_args.kwargs,
-                         {"isolation_level": "DEFAULT", "readonly": "DEFAULT", "autocommit": False})
-
-    def test_failure_rolls_back_and_returns_connection(self):
-        with self.assertRaisesRegex(RuntimeError, "injected"):
-            with db._transaction():
-                raise RuntimeError("injected failure")
-        self.conn.commit.assert_not_called()
-        self.assertEqual(self.conn.rollback.call_count, 2)
-        self.pool.putconn.assert_called_once()
-
-    def test_serialization_failure_is_a_conflict_not_silent_retry(self):
-        error = RuntimeError("serialization")
-        error.pgcode = "40001"
-        with self.assertRaises(db.FormalizationConflictError):
-            with db._transaction():
-                raise error
-
-    def test_failed_cleanup_discards_connection(self):
-        self.conn.set_session.side_effect = [None, RuntimeError("cleanup")]
-        with db._transaction():
-            pass
-        self.pool.putconn.assert_called_once_with(self.conn, close=True)
-
-    def test_pool_exhaustion_has_explicit_connection_error(self):
-        original = RuntimeError("connection pool exhausted")
-        self.pool.getconn.side_effect = original
-        with self.assertRaises(db.FormalizationConnectionError) as raised:
-            with db._transaction():
-                self.fail("No debería abrir la transacción")
+    def test_not_found_keeps_cause(self):
+        original = RuntimeError("private database details")
+        original.code = "P0002"
+        self.client.rpc.return_value.execute.side_effect = original
+        with self.assertRaises(db.FormalizationNotFoundError) as raised:
+            self.get()
         self.assertIs(raised.exception.__cause__, original)
-        self.pool.putconn.assert_not_called()
 
-    def test_missing_pool_has_explicit_connection_error(self):
-        dependencies = types.ModuleType("dependencies")
-        dependencies.db_pool = None
-        with patch.dict(sys.modules, {"dependencies": dependencies}), self.assertRaises(db.FormalizationConnectionError):
-            self.original_get_pool()
+    def test_other_api_failures_are_not_treated_as_empty_data(self):
+        for code in ("42P01", "PGRST202", "42501", "23514"):
+            original = RuntimeError("private database details")
+            original.code = code
+            self.client.rpc.return_value.execute.side_effect = original
+            with self.subTest(code=code), self.assertRaises(RuntimeError) as raised:
+                self.get()
+            self.assertIs(raised.exception, original)
+
+    def test_missing_admin_never_falls_back_to_other_client_or_rag(self):
+        self.deps.supabase_admin = None
+        with self.assertRaises(db.FormalizationConnectionError):
+            self.get()
+        self.client.rpc.assert_not_called()
 
 
 if __name__ == "__main__":

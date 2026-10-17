@@ -93,6 +93,40 @@ class FormalizationErrorTests(unittest.TestCase):
         self.assertEqual(formalization_error_code(first), "DIAG_CONSTRAINT")
         self.assertEqual(safe_sqlstate(first), "23514")
 
+    def test_postgrest_sqlstate_uses_code_attribute_without_raw_details(self):
+        for code, expected in (("42P01", "DIAG_SCHEMA"), ("42501", "DIAG_PERMISSION"),
+                               ("23514", "DIAG_CONSTRAINT"), ("40001", "DIAG_CONFLICT")):
+            error = UnsafeError("SECRETO SELECT DATOS_PERSONALES")
+            error.code = code
+            with self.subTest(code=code):
+                self.assertEqual(formalization_error_code(error), expected)
+                self.assertEqual(safe_sqlstate(error), code)
+                self.assertNotIn("SECRETO", formalization_error_message(error))
+
+    def test_postgrest_transport_auth_and_schema_cache_codes(self):
+        cases = {"PGRST000": "DIAG_CONNECTION", "PGRST001": "DIAG_CONNECTION",
+                 "PGRST002": "DIAG_CONNECTION", "PGRST003": "DIAG_TIMEOUT",
+                 "PGRST200": "DIAG_SCHEMA", "PGRST202": "DIAG_SCHEMA", "PGRST204": "DIAG_SCHEMA",
+                 "PGRST205": "DIAG_SCHEMA", "PGRST301": "DIAG_PERMISSION", "PGRST303": "DIAG_PERMISSION"}
+        for code, expected in cases.items():
+            error = UnsafeError("SECRETO")
+            error.code = code
+            with self.subTest(code=code):
+                self.assertEqual(formalization_error_code(error), expected)
+                self.assertIsNone(safe_sqlstate(error))
+                self.assertNotIn("SECRETO", formalization_error_message(error))
+
+    def test_missing_rpc_has_specific_safe_hint(self):
+        error = UnsafeError()
+        error.code = "PGRST202"
+        text = formalization_error_message(error)
+        self.assertIn("Faltan las funciones del diagnóstico", text)
+
+    def test_httpx_timeout_and_connection_without_importing_httpx(self):
+        for name, expected in (("TimeoutException", "DIAG_TIMEOUT"), ("NetworkError", "DIAG_CONNECTION")):
+            cls = type(name, (Exception,), {"__module__": "httpx"})
+            self.assertEqual(formalization_error_code(cls()), expected)
+
 
 if __name__ == "__main__":
     unittest.main()
