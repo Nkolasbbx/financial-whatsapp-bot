@@ -57,7 +57,11 @@ class DiagnosticRoutingTests(unittest.TestCase):
         self.route("2026-11")
         prompt = self.route("0")
         prompt = self.press(prompt, "yes")
-        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "costs")
+        for _ in range(30):
+            if self.repo.data["diagnostic"]["current_step"] != "estimate_needs":
+                break
+            prompt = self.route("no sé")
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "estimate_costs")
         return prompt
 
     def test_entry_exits_funds_finances_and_calendar(self):
@@ -81,11 +85,12 @@ class DiagnosticRoutingTests(unittest.TestCase):
 
     def test_full_router_flow_confirms_without_sending_button_ids_to_ai(self):
         prompt = self.router_to_costs()
-        prompt = self.press(prompt, "cost_C01")
+        prompt = self.press(prompt, "gcost_C01")
+        prompt = self.press(prompt, "gaccept")
+        prompt = self.press(prompt, "gdone")
         prompt = self.press(prompt, "yes")
-        prompt = self.press(prompt, "costs_done")
         result = self.press(prompt, "confirm")
-        self.assertIn("Parcial", result["body"])
+        self.assertIn("faltan datos", result["body"])
         self.assertEqual(self.repo.data["diagnostic"]["workflow_status"], "confirmed")
         self.assertEqual(len(self.repo.revisions), 1)
 
@@ -158,10 +163,11 @@ class DiagnosticRoutingTests(unittest.TestCase):
 
     def test_result_buttons_show_details_sources_and_reopen_selected_field(self):
         prompt = self.router_to_costs()
-        prompt = self.press(prompt, "costs_done")
+        prompt = self.press(prompt, "gdone")
+        prompt = self.press(prompt, "yes")
         result = self.press(prompt, "confirm")
-        self.assertIn("Costos iniciales", self.press(result, "details")["body"])
-        self.assertIn("Fuentes del catálogo", self.press(result, "sources")["body"])
+        self.assertIn("Costos y próximos pasos", self.press(result, "details")["body"])
+        self.assertIn("Fuentes y supuestos", self.press(result, "sources")["body"])
         previous = copy.deepcopy(self.repo.data["diagnostic"]["answers"])
         prompt = self.press(result, "edit")
         self.press(prompt, "edit_cash")

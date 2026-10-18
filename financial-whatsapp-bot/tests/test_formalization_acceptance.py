@@ -6,7 +6,6 @@ Los importes pequeños del catálogo sintético son datos de prueba, no tarifas.
 """
 import copy
 import itertools
-import types
 import unittest
 from datetime import date
 from unittest.mock import patch
@@ -313,28 +312,24 @@ class PilotAcceptanceTests(unittest.TestCase):
 
 class CatalogLaunchTests(unittest.TestCase):
     def setUp(self):
-        self.config = types.ModuleType("config")
-        self.config.FORMALIZATION_ESTIMATE_PREVIEW_VERSION = ""
-        patcher = patch.dict("sys.modules", {"config": self.config})
-        patcher.start()
-        self.addCleanup(patcher.stop)
         patcher = patch.object(flow, "_today", return_value=date(2026, 10, 18))
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_default_reads_only_active_catalog_and_preview_is_explicit(self):
+    def test_active_catalog_has_priority_without_environment_selection(self):
         with patch.object(flow, "get_formalization_estimate_catalog", return_value=catalog_row()) as read:
             flow._load_estimates()
-            read.assert_called_once_with(version=None, include_inactive=False)
-            self.config.FORMALIZATION_ESTIMATE_PREVIEW_VERSION = "test-v1"
-            flow._load_estimates()
-            read.assert_called_with(version="test-v1", include_inactive=True)
+            read.assert_called_once_with()
 
-    def test_no_active_catalog_keeps_legacy_but_missing_preview_fails(self):
+    def test_no_active_catalog_uses_only_explicit_release_default(self):
+        with patch.object(flow, "get_formalization_estimate_catalog", side_effect=[None, catalog_row()]) as read:
+            self.assertEqual(flow._load_estimates()["version"], "test-v1")
+            self.assertEqual(read.call_count, 2)
+            read.assert_called_with(version=flow.DEFAULT_ESTIMATE_VERSION, include_inactive=True)
+
+    def test_missing_catalog_fails_instead_of_starting_legacy_flow(self):
         with patch.object(flow, "get_formalization_estimate_catalog", return_value=None):
-            self.assertIsNone(flow._load_estimates())
-            self.config.FORMALIZATION_ESTIMATE_PREVIEW_VERSION = "missing"
-            with self.assertRaises(ValueError):
+            with self.assertRaises(flow.EstimateCatalogUnavailable):
                 flow._load_estimates()
 
     def test_expired_catalog_is_not_used_for_a_new_diagnosis(self):

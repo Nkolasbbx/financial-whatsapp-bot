@@ -18,10 +18,25 @@ CATALOG = [{"id": "22222222-2222-4222-8222-222222222222", "code": "C01", "versio
             "unit": "CLP", "amount_min": "0.000000", "amount_max": "0.000000", "review_status": "reviewed"}]
 
 
+def guided_catalog():
+    from tests.test_formalization_estimates import small_catalog
+    return {"id": "33333333-3333-4333-8333-333333333333", "version": "test-v1",
+            "document": small_catalog(), "review_by": "2026-11-16", "active": False}
+
+
+def finish_needs(case):
+    for _ in range(30):
+        if case.repo.data["diagnostic"]["current_step"] != "estimate_needs":
+            break
+        case.send("no sé")
+    case.assertEqual(case.repo.data["diagnostic"]["current_step"], "estimate_costs")
+
+
 class MemoryRepository:
     def __init__(self):
         self.data = {"diagnostic": None, "items": []}
         self.revisions = []
+        self.closed_diagnostics = []
         self.refreshes = 0
 
     def get(self, *args, **kwargs):
@@ -33,6 +48,7 @@ class MemoryRepository:
         if created:
             if self.data["diagnostic"]:
                 assert self.data["diagnostic"]["workflow_status"] in {"cancelled", "archived"}
+                self.closed_diagnostics.append(copy.deepcopy(self.data))
             self.data["items"] = []
             self.data["diagnostic"] = {"id": diagnostic_id, "user_id": user_id, "workflow_status": "draft",
                                        "answers": {}, "lock_version": 0, "conversation_status": "paused"}
@@ -80,7 +96,7 @@ class FlowTests(unittest.TestCase):
     def setUp(self):
         self.repo = MemoryRepository()
         for name, replacement in (("get_formalization_context", self.repo.get),
-                                  ("_load_estimates", lambda: None),
+                                  ("_load_estimates", guided_catalog),
                                   ("save_formalization_draft", self.repo.save),
                                   ("confirm_formalization_revision", self.repo.confirm),
                                   ("_today", lambda: date(2026, 10, 16))):
@@ -109,15 +125,16 @@ class FlowTests(unittest.TestCase):
         self.start()
         for text in ("sí", "0", "sí", "1500000", "100000", "0", "sí", "2026-11", "0", "sí"):
             self.send(text)
-        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "costs")
+        finish_needs(self)
 
     def test_full_partial_flow_persists_and_separates_money(self):
         self.to_costs()
-        self.button("cost_C01")
+        self.button("gcost_C01")
+        self.button("gaccept")
+        self.button("gdone")
         self.button("yes")
-        self.button("costs_done")
         result = self.button("confirm")
-        self.assertIn("Parcial", result["body"])
+        self.assertIn("faltan datos", result["body"])
         self.assertIsNone(self.repo.data["diagnostic"]["capacity"])
         self.assertEqual(len(self.repo.revisions), 1)
         self.assertEqual(self.repo.revisions[0]["result"]["current_income"], 500000)
@@ -248,7 +265,8 @@ class FlowTests(unittest.TestCase):
 
     def test_reopen_changes_only_selected_values_and_preserves_revision(self):
         self.to_costs()
-        self.button("costs_done")
+        self.button("gdone")
+        self.button("yes")
         self.button("confirm")
         original = copy.deepcopy(self.repo.data["diagnostic"]["answers"])
         self.send("rehacer diagnóstico")
@@ -264,12 +282,10 @@ class FlowTests(unittest.TestCase):
 
     def test_catalog_long_list_is_paginated_under_meta_limit(self):
         self.to_costs()
-        template = copy.deepcopy(self.repo.data["items"][0])
-        self.repo.data["items"] = [{**template, "item_key": f"catalog:C{i:02}"} for i in range(1, 14)]
         self.send("retomar diagnóstico")
-        self.button("next_costs")
-        self.button("previous_costs")
-        self.assertEqual(self.repo.data["diagnostic"]["answers"]["cost_page"], 0)
+        self.button("gnextpage")
+        self.button("gprev")
+        self.assertEqual(self.repo.data["diagnostic"]["answers"]["estimate_page"], 0)
 
     def test_no_context_does_not_consume_general_queries(self):
         self.assertIsNone(self.send("¿Cómo vendo más?"))
@@ -312,7 +328,8 @@ class FlowTests(unittest.TestCase):
 
     def test_confirm_error_identifies_confirmation_stage(self):
         self.to_costs()
-        self.button("costs_done")
+        self.button("gdone")
+        self.button("yes")
         error = RuntimeError("missing column SELECT private")
         error.pgcode = "42703"
         with patch.object(flow, "confirm_formalization_revision", side_effect=error), self.assertLogs("financial", level="ERROR"):
@@ -340,7 +357,8 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.repo.data["diagnostic"]["workflow_status"], "cancelled")
         self.repo.data = {"diagnostic": None, "items": []}
         self.to_costs()
-        self.button("costs_done")
+        self.button("gdone")
+        self.button("yes")
         self.button("confirm")
         self.send("menu_reiniciar", external_action=True)
         self.assertEqual(self.repo.data["diagnostic"]["workflow_status"], "archived")
@@ -348,7 +366,8 @@ class FlowTests(unittest.TestCase):
 
     def test_income_edit_keeps_expenses_but_reconfirms_projection(self):
         self.to_costs()
-        self.button("costs_done")
+        self.button("gdone")
+        self.button("yes")
         self.button("confirm")
         self.send("rehacer diagnóstico")
         self.button("edit_income")
@@ -360,32 +379,30 @@ class FlowTests(unittest.TestCase):
 
     def test_cost_details_keep_confirmed_quote_without_claiming_tax_validation(self):
         self.to_costs()
-        item = self.repo.data["items"][0]
-        item["catalog_snapshot"].update(pricing_method="formula", review_status="pending")
-        self.button("cost_C01")
-        self.button("yes")
-        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "cost_amount")
-        self.send("monto=50000; pagado=10000; fecha=2026-10-25; frecuencia=unico; incluido=no; respaldo=https://proveedor.cl/CotizacionABC")
-        item = next(i for i in self.repo.data["items"] if i["item_key"] == "catalog:C01")
+        self.button("gcost_C01")
+        self.button("gmanual")
+        self.send("50000")
+        self.button("gquote")
+        self.send("10000")
+        self.send("25/10/2026")
+        item = next(i for i in self.repo.data["items"] if i["item_key"] == "estimate:C01")
         self.assertEqual(item["amount_clp_max"], 50000)
         self.assertEqual(item["amount_paid_clp"], 10000)
         self.assertTrue(item["evidence"])
-        self.assertIn("CotizacionABC", item["evidence"]["description"])
+        self.assertIn("cotización", item["evidence"]["origin"])
 
     def test_unknown_cost_is_not_saved_as_zero(self):
         self.to_costs()
-        item = self.repo.data["items"][0]
-        item["catalog_snapshot"].update(pricing_method="formula", review_status="pending")
-        self.button("cost_C01")
-        self.button("yes")
-        self.button("unknown")
-        item = self.repo.data["items"][0]
+        self.button("gcost_C07")
+        self.button("gskip")
+        item = next(i for i in self.repo.data["items"] if i["item_key"] == "estimate:C07")
         self.assertIsNone(item["amount_clp_min"])
         self.assertEqual(item["amount_state"], "pending")
 
     def test_refresh_is_explicit_and_preserves_quotes_when_catalog_unchanged(self):
         self.to_costs()
-        self.button("costs_done")
+        self.button("gdone")
+        self.button("yes")
         self.button("confirm")
         self.send("rehacer diagnóstico")
         self.button("edit_refresh")

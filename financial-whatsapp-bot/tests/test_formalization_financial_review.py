@@ -87,7 +87,9 @@ class FinancialReviewTests(unittest.TestCase):
         self.send("50000")
         for text in ("sí", "1500000", "0", "0", "sí", "2026-11", "0", "sí"):
             self.send(text)
-        self.button("costs_done")
+        helpers.finish_needs(self)
+        self.button("gdone")
+        self.button("yes")
         self.button("confirm")
         result = self.repo.revisions[0]["result"]
         self.assertEqual(result["current_expenses"], 200000)
@@ -149,7 +151,9 @@ class FinancialReviewTests(unittest.TestCase):
         self.income()
         for text in ("sí", "1000000", "0", "0", "sí", "2026-11", "0", "sí"):
             self.send(text)
-        self.button("costs_done")
+        helpers.finish_needs(self)
+        self.button("gdone")
+        self.button("yes")
         self.button("confirm")
         self.send("rehacer diagnóstico")
         prompt = self.button("edit_expenses")

@@ -133,8 +133,6 @@ INGESTION_ENABLE_CONTEXTUAL = (
 FORMALIZATION_DIAGNOSTICS_ENABLED = (
     os.getenv("FORMALIZATION_DIAGNOSTICS_ENABLED", "true").strip().lower() == "true"
 )
-# Solo para probar una versión inactiva; vacío utiliza únicamente la activa.
-FORMALIZATION_ESTIMATE_PREVIEW_VERSION = os.getenv("FORMALIZATION_ESTIMATE_PREVIEW_VERSION", "").strip()
 
 # Cuentas del panel municipal (InnovaRecoleta, El Bosque). Hardcodeadas a
 # propósito: solo hay 2 municipalidades clientes por ahora, no se justifica

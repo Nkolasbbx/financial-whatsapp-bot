@@ -11,7 +11,6 @@ import logging
 import re
 import unicodedata
 from datetime import date, datetime
-from decimal import Decimal
 from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
@@ -19,7 +18,7 @@ from core import formalization_cost_guide as cost_guide
 from core import formalization_presentation as presentation
 
 from core.formalization_engine import (
-    RULES_CONFIG, RULES_VERSION, catalog_applicability, convert_clp, evaluate_diagnostic, month_after,
+    RULES_CONFIG, RULES_VERSION, evaluate_diagnostic, month_after,
 )
 from core.formalization_errors import (
     formalization_error_code, formalization_error_message, safe_sqlstate,
@@ -38,6 +37,14 @@ from schemas.formalization_diagnostics import FormalizationItemInput
 logger = logging.getLogger("financial")
 ENTRY_ID = "menu_diagnostico"
 PASS_TO_AI = "__DIAGNOSTIC_AI__"
+# Explicit release default, not an arbitrary inactive/draft catalog.
+DEFAULT_ESTIMATE_VERSION = "financial-estimates-2026-10-17-v1"
+
+
+class EstimateCatalogUnavailable(ValueError):
+    """The guided flow must never fall back to the retired technical wizard."""
+
+
 _ENTRY = {"diagnostico de formalizacion", "diagnostico economico", "mi diagnostico",
           "retomar diagnostico", "rehacer diagnostico", "diagnostico", "nuevo diagnostico"}
 _EXPENSE_KEYS = ("arriendo", "insumos", "servicios", "transporte", "otros")
@@ -132,47 +139,6 @@ def _input(item, **changes):
     return {**data, **changes}
 
 
-def _seed_catalog(user, context):
-    """Se carga una vez por alcance; las siguientes respuestas usan el snapshot."""
-    candidates = context.get("fresh_sources", {}).get("catalog", [])
-    # Choose the most specific version per concept. Equal-specificity conflicting
-    # tariffs remain unknown rather than arbitrarily selecting a price.
-    grouped = {}
-    for row in candidates:
-        grouped.setdefault(row["code"], []).append(row)
-    items = []
-    for code, rows in grouped.items():
-        score = lambda row: sum(row.get(key) is not None for key in ("activity_code", "comuna_code", "location_type"))
-        best = max(map(score, rows))
-        top = [row for row in rows if score(row) == best]
-        row = sorted(top, key=lambda r: str(r["id"]))[0]
-        facts = _profile_facts(context)
-        applies = catalog_applicability(row, facts)
-        items.append({"item_key": "catalog:" + code, "catalog_version_id": row["id"],
-                      "label": row["title"], "item_kind": "future_operating" if row["frequency"] == "monthly" else "initial_payment",
-                      "economic_nature": {"investment": "investment", "tax": "tax", "guarantee": "guarantee"}.get(row["cost_nature"], "expense"),
-                      "cash_direction": "outflow", "source_type": "catalog", "frequency": row["frequency"],
-                      "applicability": "not_applicable" if applies == "not_applicable" else "to_confirm",
-                      "applicability_reason": "Condiciones del catálogo contrastadas con el perfil; lo desconocido queda pendiente",
-                      "metadata": {"ambiguous_scope": len(top) > 1}})
-    keys = {item["item_key"] for item in items}
-    retired = [item["item_key"] for item in _catalog_items(context) if item["item_key"] not in keys]
-    if not items and not retired:
-        return context
-    return _save(user, context, items=items, delete=retired)
-
-
-def _profile_facts(context):
-    profile = context["diagnostic"].get("profile_snapshot") or {}
-    rubro = normalize(profile.get("rubro") or "").removeprefix("rubro_")
-    facts = {"inicio_sii": profile.get("inicio_sii")}
-    if rubro == "alimentos":
-        facts["food_activity"] = True
-    elif rubro == "textil":
-        facts["food_activity"] = False
-    return facts
-
-
 def _monthly_item(key, label, amount, *, inflow=False, kind="current_operating", nature=None, **extra):
     return {"item_key": key, "label": label, "item_kind": kind,
             "economic_nature": nature or ("revenue" if inflow else "expense"),
@@ -223,8 +189,19 @@ def _save_budgets(user, context):
     return _save(user, context, items=items, delete=obsolete)
 
 
+def _legacy_notice(context):
+    return _widget(context,
+        "Ahora el diagnóstico se completa con preguntas simples, una a una. "
+        "Tu evaluación anterior se conservará con sus datos y presupuestos; no se borrará. "
+        "Para usar el nuevo asistente debes iniciar otra evaluación y revisar nuevamente sus respuestas. "
+        "Tu perfil y movimientos financieros se reutilizan.",
+        [("guided_restart", "Iniciar nuevo flujo")])
+
+
 def _prompt(context):
     d = context["diagnostic"]
+    if not cost_guide.is_guided(context):
+        return _legacy_notice(context)
     a, step = d.get("answers", {}), d.get("current_step", "location")
     financial = d.get("financial_snapshot") or {}
     if cost_guide.is_guided(context):
@@ -315,33 +292,6 @@ def _prompt(context):
         if step == "projection_date":
             options = [("yes", "Usar ese mes"), ("pause", "Pausar")]
         return _widget(context, questions[step], options)
-    if step == "costs":
-        page = a.get("cost_page", 0)
-        rows = _catalog_items(context)[page * 7:(page + 1) * 7]
-        options = [("cost_" + item["item_key"].split(":", 1)[1], item["label"][:24]) for item in rows]
-        if page:
-            options.append(("previous_costs", "Costos anteriores"))
-        if len(_catalog_items(context)) > (page + 1) * 7:
-            options.append(("next_costs", "Más costos"))
-        options.append(("costs_done", "Terminar revisión"))
-        return _widget(context, "Revisa costos candidatos. No todos aplican a tu negocio. "
-                       "Cada uno conserva su fuente y sus pendientes; no inventaremos aranceles.\n"
-                       "Los costos no revisados quedan pendientes. Puedes terminar con un diagnóstico parcial.", options, listing=True)
-    if step in {"cost_applicability", "cost_amount"}:
-        item = next(i for i in context["items"] if i["item_key"] == a["selected_cost"])
-        cat = item["catalog_snapshot"]
-        if step == "cost_applicability":
-            return _widget(context, f"{item['label']}\n{cat.get('description', '')[:330]}\n"
-                           f"Condición: {cat.get('mandatory_status')}; revisión de fuente: {cat.get('review_status')}.\n\n"
-                           "¿Este costo aplica a tu caso? Si no has verificado el permiso/obligación, elige 'No sé'. "
-                           "Esto no sustituye una validación municipal o contable.",
-                           [("yes", "Sí, aplica"), ("no", "No aplica"), ("unknown", "No sé")])
-        return _widget(context, f"{item['label']}: ingresa un presupuesto respaldado en CLP. Ejemplo:\n"
-                       "monto=50000; pagado=0; fecha=2026-11-15; frecuencia=unico; incluido=no; respaldo=cotización proveedor\n\n"
-                       "Frecuencia: unico, mensual o anual. Fecha: vencimiento real; en mensual puede omitirse. "
-                       "Incluido=si SOLO si ya está en los gastos operativos. En cambios operativos indica el TOTAL futuro, no un incremento. "
-                       "Puedes escribir 'no sé'. Un arancel pendiente no se valida solo por indicar un monto.",
-                       [("unknown", "No sé el monto"), ("pause", "Pausar")])
     if step == "edit":
         return _widget(context, "¿Qué dato quieres cambiar? Conservaremos el resto y las versiones anteriores.",
                        [("edit_" + key, label) for key, label in _EDIT_FIELDS.items()], listing=True)
@@ -434,19 +384,19 @@ def _missing_label(key, context):
 
 
 def _load_estimates():
-    # config is already loaded by the application; lazy import keeps the pure
-    # flow testable without booting network clients.
-    from config import FORMALIZATION_ESTIMATE_PREVIEW_VERSION
-    version = FORMALIZATION_ESTIMATE_PREVIEW_VERSION
-    row = get_formalization_estimate_catalog(version=version or None, include_inactive=bool(version))
-    if version and row is None:
-        raise ValueError("La versión de pruebas del catálogo no existe")
-    if row and row.get("review_by") and date.fromisoformat(str(row["review_by"])) < _today():
-        raise ValueError("El catálogo de estimaciones necesita una revisión de vigencia")
+    row = get_formalization_estimate_catalog()
+    if row is None:
+        row = get_formalization_estimate_catalog(version=DEFAULT_ESTIMATE_VERSION, include_inactive=True)
+    if row is None:
+        raise EstimateCatalogUnavailable("missing")
+    if not row.get("review_by") or date.fromisoformat(str(row["review_by"])) < _today():
+        raise EstimateCatalogUnavailable("expired")
     return row
 
 
 def _new(user, catalog):
+    if not catalog:
+        raise EstimateCatalogUnavailable("missing")
     today = _today()
     end = today.replace(day=1)
     scope = lambda text: re.sub(r"[^a-z0-9]+", "_", normalize(text or "")).strip("_") or "no_definido"
@@ -456,7 +406,7 @@ def _new(user, catalog):
         "projection_start": month_after(end), "activity_code": scope(user.get("rubro")),
         "comuna_code": scope(user.get("comuna")), "rules_version": RULES_VERSION,
         "rules_config": dict(RULES_CONFIG),
-        "answers": {"estimate_catalog": catalog} if catalog else {},
+        "answers": {"estimate_catalog": catalog},
     })
 
 
@@ -471,39 +421,6 @@ def _next(user, context, answers, *, items=None, completed_step=None):
     context = _save(user, context, {"current_step": step, "pending_field": step, "answers": answers,
                                   "conversation_status": "active"}, items=items)
     return _prompt(context)
-
-
-def _cost_amount(item, text, context):
-    fields = {normalize(key): value.strip() for key, value in
-              (part.strip().split("=", 1) for part in text.split(";") if "=" in part)}
-    if not {"monto", "pagado", "frecuencia", "incluido", "respaldo"} <= fields.keys():
-        raise ValueError("Faltan monto, pagado, frecuencia, incluido o respaldo. Usa el formato del ejemplo.")
-    amount, paid = _amount(fields["monto"]), _amount(fields["pagado"])
-    frequency = {"unico": "once", "mensual": "monthly", "anual": "annual"}.get(normalize(fields["frecuencia"]))
-    included = normalize(fields["incluido"])
-    if not frequency or included not in {"si", "no"} or len(fields["respaldo"].strip()) < 5:
-        raise ValueError("Indica frecuencia válida, incluido=si/no y un respaldo concreto.")
-    if frequency == "monthly" and paid:
-        raise ValueError("Los abonos se registran sobre pagos únicos/anuales, no contra todos los meses futuros.")
-    due = date.fromisoformat(fields["fecha"].strip()) if fields.get("fecha") else None
-    if frequency != "monthly" and due is None:
-        raise ValueError("Indica la fecha real del vencimiento.")
-    if due and due < _today() and amount > paid:
-        raise ValueError("Para un pago pendiente vencido, indica cuándo lo pagarás efectivamente desde hoy.")
-    if included == "si" and frequency != "monthly":
-        raise ValueError("Solo un pago operativo mensual puede estar incluido en el presupuesto mensual.")
-    kind = "initial_payment" if frequency == "once" or (due and due < date.fromisoformat(context["diagnostic"]["projection_start"])) else "future_operating"
-    changes = {"applicability": "applies", "amount_clp_min": amount, "amount_clp_max": amount,
-               "amount_paid_clp": paid, "amount_state": "quoted", "unit": "CLP", "frequency": frequency,
-               "due_date": due, "item_kind": kind, "included_in_baseline": included == "si",
-               "evidence": {"description": fields["respaldo"].strip(), "declared_on": _today().isoformat()}}
-    if item["item_key"] == "catalog:C24":
-        if frequency != "monthly" or included != "no":
-            raise ValueError("Para cambios operativos usa el total futuro mensual, incluido=no: reemplazará los gastos actuales.")
-        if "projected_expenses" in context["diagnostic"]["answers"]:
-            raise ValueError("Ya ajustaste los gastos en Proyección mensual. Edita esa proyección y deja C24 no aplicable para evitar duplicarlos.")
-        changes["replaces_item_key"] = "current_expenses"
-    return _input(item, **changes)
 
 
 def handle_diagnostic_message(user, message, *, external_action=False, message_id=None):
@@ -527,8 +444,10 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             if len(parts) != 4 or not d or parts[1:3] != [d["id"], str(d["lock_version"])]:
                 return "Ese botón corresponde a otra pregunta. Escribe 'mi diagnóstico' para recuperar el paso actual."
             action = parts[3]
+            if action == "guided_restart":
+                entry = True
         if entry:
-            if normalize(raw) == "nuevo diagnostico" and d and d["workflow_status"] in {"draft", "ready", "confirmed"}:
+            if (normalize(raw) == "nuevo diagnostico" or action == "guided_restart") and d and d["workflow_status"] in {"draft", "ready", "confirmed"}:
                 # Validate the new catalog before closing the resumable draft.
                 catalog = _load_estimates()
                 _save(user, context, {"workflow_status": "archived" if d["workflow_status"] == "confirmed" else "cancelled", "conversation_status": "closed"})
@@ -540,8 +459,12 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             elif d["workflow_status"] == "confirmed":
                 if normalize(raw) != "rehacer diagnostico":
                     return _result_widget(context)
+                if not cost_guide.is_guided(context):
+                    return _legacy_notice(context)
                 context = _set_step(user, context, "edit")
             else:
+                if not cost_guide.is_guided(context):
+                    return _legacy_notice(context)
                 stage = "resume"
                 context = _save(user, context, {"conversation_status": "active"})
             return _prompt(context)
@@ -566,6 +489,8 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
                     return presentation.detail(context, _widget, _money, _missing_label,
                                                sources=prefix == "gsources_", page=int(action[len(prefix):]))
         if action == "edit" and diagnostic_button:
+            if not cost_guide.is_guided(context):
+                return _legacy_notice(context)
             return _prompt(_set_step(user, context, "edit"))
         if d["workflow_status"] not in {"draft", "ready"} or d["conversation_status"] != "active":
             return None
@@ -597,6 +522,8 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
         if not valid:
             _save(user, context, {"conversation_status": "paused"})
             return PASS_TO_AI
+        if not cost_guide.is_guided(context):
+            return _legacy_notice(context)
         if cost_guide.is_guided(context) and step.startswith("estimate_"):
             patch, items = cost_guide.transition(context, action, raw, _amount, _today())
             return _prompt(_save(user, context, patch, items=items))
@@ -606,12 +533,9 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
                 clear_period_review(a)
                 a["cost_page"] = 0
                 scope = lambda text: re.sub(r"[^a-z0-9]+", "_", normalize(text or "")).strip("_") or "no_definido"
-                previous = d.get("catalog_fingerprint")
                 context = _save(user, context, {"answers": a, "current_step": "expenses", "pending_field": "expenses",
                                                "conversation_status": "active", "activity_code": scope(user.get("rubro")),
                                                "comuna_code": scope(user.get("comuna"))}, refresh=True)
-                if not cost_guide.is_guided(context) and context["diagnostic"].get("catalog_fingerprint") != previous:
-                    context = _seed_catalog(user, context)
                 return _prompt(_save_budgets(user, context))
             # Period changes invalidate the observed amounts, not private quotes.
             if target not in {"period", "costs", "projection_date"}:
@@ -621,8 +545,6 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return _prompt(_set_step(user, context, target, a))
         if step == "location" and action in {"vivienda", "local", "otra"}:
             context = _set_step(user, context, "period", a, location_type=action)
-            if not cost_guide.is_guided(context):
-                context = _seed_catalog(user, context)
             return _prompt(context)
         if step == "period":
             if action == "yes":
@@ -752,46 +674,9 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return _prompt(_set_step(user, context, "preparation", a, projection_start=start))
         if step == "calendar" and action in {"yes", "no", "unknown"}:
             a["calendar_confirmed"] = action == "yes"
-            target = ("estimate_costs" if a.get("estimate_decisions") else "estimate_needs") if cost_guide.is_guided(context) else "costs"
+            target = "estimate_costs" if a.get("estimate_decisions") else "estimate_needs"
             context = _set_step(user, context, target, a)
             return _prompt(_save_budgets(user, context))
-        if step == "costs":
-            if action == "previous_costs":
-                a["cost_page"] = max(0, a.get("cost_page", 0) - 1)
-                return _prompt(_set_step(user, context, "costs", a))
-            if action == "next_costs":
-                a["cost_page"] = a.get("cost_page", 0) + 1
-                return _prompt(_set_step(user, context, "costs", a))
-            if action == "costs_done":
-                # The initial catalog is intentionally incomplete. This cannot
-                # be set true by a user's yes/no or by filling numeric quotes.
-                a["catalog_coverage_confirmed"] = False
-                return _prompt(_set_step(user, context, "review", a))
-            if action.startswith("cost_") and any(i["item_key"] == "catalog:" + action[5:] for i in _catalog_items(context)):
-                a["selected_cost"] = "catalog:" + action[5:]
-                return _prompt(_set_step(user, context, "cost_applicability", a))
-        if step == "cost_applicability" and action in {"yes", "no", "unknown"}:
-            item = next(i for i in context["items"] if i["item_key"] == a["selected_cost"])
-            if action == "yes":
-                cat = item["catalog_snapshot"]
-                if catalog_applicability(cat, _profile_facts(context)) == "not_applicable":
-                    raise ValueError("Las condiciones de este concepto contradicen tu perfil. Revisa los datos del perfil antes de incluirlo.")
-                if (cat["pricing_method"] == "fixed" and cat["review_status"] == "reviewed"
-                        and cat.get("unit") == "CLP" and not item["metadata"].get("ambiguous_scope")):
-                    amount = convert_clp(Decimal(str(cat["amount_max"])), Decimal(1))
-                    items = [_input(item, applicability="applies", amount_clp_min=amount, amount_clp_max=amount,
-                                    amount_state="confirmed", amount_paid_clp=0, unit="CLP", due_date=_today())]
-                else:
-                    return _prompt(_set_step(user, context, "cost_amount", a))
-            else:
-                items = [_input(item, applicability="not_applicable" if action == "no" else "to_confirm",
-                                applicability_reason="Declaración del usuario; no acredita exención ni autorización")]
-            return _prompt(_save(user, context, {"current_step": "costs", "pending_field": "costs", "answers": a}, items=items))
-        if step == "cost_amount":
-            item = next(i for i in context["items"] if i["item_key"] == a["selected_cost"])
-            values = (_input(item, applicability="applies", amount_clp_min=None, amount_clp_max=None, amount_state="pending")
-                      if action == "unknown" else _cost_amount(item, raw, context))
-            return _prompt(_save(user, context, {"current_step": "costs", "pending_field": "costs", "answers": a}, items=[values]))
         if step == "review" and action == "confirm":
             if cost_guide.is_guided(context):
                 a["budget_as_of"] = _today().isoformat()
@@ -811,6 +696,11 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
         return ("El diagnóstico o sus fuentes cambiaron. Escribe 'mi diagnóstico', elige Cambiar datos y "
                 "Actualizar registros para revisar nuevamente el mes, sin perder las versiones anteriores.\n\n"
                 "Código: " + formalization_error_code(error))
+    except EstimateCatalogUnavailable:
+        return ("No está disponible un catálogo vigente para el diagnóstico guiado. "
+                "El equipo debe revisar el catálogo de estimaciones en Supabase. "
+                "No modifiqué tus datos ni volveré al formulario técnico.\n\n"
+                "Código: DIAG_CATALOG")
     except cost_guide.GuideInputError as error:
         prompt = _prompt(context)
         return {**prompt, "body": str(error) + "\n\n" + prompt["body"]}
