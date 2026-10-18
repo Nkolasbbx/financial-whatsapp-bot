@@ -15,15 +15,22 @@ from decimal import Decimal
 from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
+from core import formalization_cost_guide as cost_guide
+from core import formalization_presentation as presentation
+
 from core.formalization_engine import (
     RULES_CONFIG, RULES_VERSION, catalog_applicability, convert_clp, evaluate_diagnostic, month_after,
 )
 from core.formalization_errors import (
     formalization_error_code, formalization_error_message, safe_sqlstate,
 )
+from core.formalization_financial_review import (
+    EXPENSE_LABELS, INCOME_LABELS, clear_period_review, invalidate_projection,
+    review_expenses, snapshot_amount,
+)
 from db.formalization_diagnostics import (
     FormalizationConflictError, confirm_formalization_revision,
-    get_formalization_context, save_formalization_draft,
+    get_formalization_context, get_formalization_estimate_catalog, save_formalization_draft,
 )
 from schemas.formalization_diagnostics import FormalizationItemInput
 
@@ -32,7 +39,7 @@ logger = logging.getLogger("financial")
 ENTRY_ID = "menu_diagnostico"
 PASS_TO_AI = "__DIAGNOSTIC_AI__"
 _ENTRY = {"diagnostico de formalizacion", "diagnostico economico", "mi diagnostico",
-          "retomar diagnostico", "rehacer diagnostico", "diagnostico"}
+          "retomar diagnostico", "rehacer diagnostico", "diagnostico", "nuevo diagnostico"}
 _EXPENSE_KEYS = ("arriendo", "insumos", "servicios", "transporte", "otros")
 _EDIT_FIELDS = {"period": "Mes observado", "expenses": "Gastos actuales", "income": "Ingresos",
                 "cash": "Efectivo disponible", "owner": "Retiro personal", "debt": "Cuotas de deudas",
@@ -67,6 +74,23 @@ def _amount(message: str) -> int:
     if amount > 9_000_000_000_000:
         raise ValueError("El importe es demasiado grande para este diagnóstico.")
     return amount
+
+
+def _amount_fields(message: str, expected_keys) -> dict[str, int]:
+    """Lee montos sin exigir espacios exactos ni sobrescribir campos repetidos."""
+    fields = {}
+    expected = set(expected_keys)
+    for part in message.split(";"):
+        if not part.strip():
+            continue
+        key, separator, value = part.partition("=")
+        key = normalize(key)
+        if not separator or key not in expected or key in fields:
+            raise ValueError("Indica una sola vez cada campo del ejemplo, separado por punto y coma.")
+        fields[key] = _amount(value)
+    if set(fields) != expected:
+        raise ValueError("Completa todos los campos del ejemplo; escribe 0 cuando no corresponda.")
+    return fields
 
 
 def _token(d, action):
@@ -161,8 +185,10 @@ def _budget_items(context):
     a, d = context["diagnostic"].get("answers", {}), context["diagnostic"]
     items = []
     if a.get("expenses_confirmed"):
-        items.append(_monthly_item("current_expenses", "Gastos actuales del negocio", a["expenses_total"],
-                                   metadata={"breakdown": a.get("expenses_breakdown"), "scope": "solo operación recurrente"}))
+        items.append(_monthly_item("current_expenses", "Gastos del mes observado", a["expenses_total"],
+                                   metadata={"breakdown": a.get("expenses_breakdown"),
+                                             "oneoff_expenses": a.get("expense_oneoff"),
+                                             "scope": "gastos del mes observado; incluye compras excepcionales declaradas"}))
     if a.get("income_confirmed"):
         items.append(_monthly_item("current_income", "Ventas y servicios del periodo", a["income_total"], inflow=True))
     if "projected_income" in a:
@@ -187,7 +213,7 @@ def _save_budgets(user, context):
     items = _budget_items(context)
     expected = {item["item_key"] for item in items}
     obsolete = [item["item_key"] for item in context["items"] if not item.get("catalog_version_id")
-                and item["item_key"] not in expected]
+                and not item["item_key"].startswith("estimate:") and item["item_key"] not in expected]
     removed_ids = {item["id"] for item in context["items"] if item["item_key"] in obsolete}
     for item in _catalog_items(context):
         if item.get("replaces_item_id") in removed_ids:
@@ -201,9 +227,15 @@ def _prompt(context):
     d = context["diagnostic"]
     a, step = d.get("answers", {}), d.get("current_step", "location")
     financial = d.get("financial_snapshot") or {}
+    if cost_guide.is_guided(context):
+        guided_prompt = cost_guide.prompt(context, _widget, _money)
+        if guided_prompt:
+            return guided_prompt
     if step == "location":
         profile = d.get("profile_snapshot") or {}
-        return _widget(context, f"📊 Diagnóstico de formalización\n{profile.get('rubro_raw') or profile.get('rubro')} · {profile.get('comuna')}\n\n"
+        disclosure = (a.get("estimate_catalog", {}).get("document", {}).get("disclosure", {}).get("text", "") + "\n\n") if cost_guide.is_guided(context) else ""
+        rubro = (profile.get('rubro_raw') or profile.get('rubro') or '').removeprefix('rubro_').replace('_', ' ').capitalize()
+        return _widget(context, f"📊 Diagnóstico de formalización\n{rubro} · {profile.get('comuna')}\n\n" + disclosure +
                        "Reutilizaré tu perfil y movimientos; no cambiaré tus registros. ¿Dónde funcionará el negocio?\n"
                        "Puedes salir con el menú o hacer otra pregunta; el borrador se conserva.",
                        [("vivienda", "En mi vivienda"), ("local", "En un local"), ("otra", "Otra modalidad")])
@@ -212,33 +244,76 @@ def _prompt(context):
                        "¿Usamos ese mes? Para otro mes completo escribe AAAA-MM (ejemplo: 2026-09).",
                        [("yes", "Usar ese mes"), ("pause", "Pausar")])
     if step == "expenses":
-        categories = financial.get("categories", [])
-        detail = "; ".join(f"{row['category']}: {_money(row['total'])}" for row in categories if row["movement_type"] == "expense")
-        return _widget(context, f"Gastos registrados del mes: {_money(financial.get('expense_total'))}.\n{detail[:350]}\n\n"
-                       "Confirma si son TODOS tus gastos operativos mensuales, sin inversiones, cuotas ni retiros. "
-                       "Si faltan o hay compras únicas, escribe los TOTALES del mes:\n"
-                       "arriendo=0; insumos=0; servicios=0; transporte=0; otros=0\n"
-                       "Incluye en otros cualquier gasto adicional del negocio; no se suman otra vez a los registros.",
-                       [("yes", "Son todos operativos"), ("pause", "Pausar")])
+        amounts = review_expenses(a, financial)
+        detail = "\n".join(f"• {EXPENSE_LABELS[key]}: {_money(value)}" for key, value in amounts.items() if value)
+        empty = "No tienes gastos registrados en este mes. El cero no significa que no hayas gastado.\n" if snapshot_amount(financial.get("expense_total")) == 0 else ""
+        return _widget(context, f"💸 Gastos de {str(d['period_start'])[:7]}\n{empty}"
+                       f"Total a revisar: {_money(sum(amounts.values()))}\n{detail}\n\n"
+                       "¿Este es todo lo que gastaste en el negocio ese mes? No incluyas retiros personales ni cuotas de deuda. "
+                       "Para reemplazar el total, escribe un número. Los ajustes solo se usan en este diagnóstico.",
+                       [("yes", "Está completo"), ("expense_add", "Agregar lo que falta"), ("expense_categories", "Revisar categorías")])
+    if step == "expense_add":
+        return _widget(context, "¿Cuánto falta agregar a los gastos del mes? Escribe SOLO el monto que no está incluido, por ejemplo 15000. "
+                       "Se sumará una vez al total del diagnóstico.")
+    if step == "expense_categories":
+        amounts = review_expenses(a, financial)
+        keys = [key for key in EXPENSE_LABELS if key != "sin_desglose" or amounts.get(key)]
+        return _widget(context, "Elige una categoría para revisar su total. Arriendo y servicios están agrupados en tus registros. "
+                       "Puedes completar las categorías una a una; al terminar revisaremos el total.",
+                       [("expense_cat_" + key, EXPENSE_LABELS[key]) for key in keys] + [("expense_done", "Volver al total")], listing=True)
+    if step == "expense_category":
+        key = a["expense_category"]
+        return _widget(context, f"{EXPENSE_LABELS[key]}: {_money(review_expenses(a, financial).get(key, 0))}.\n"
+                       "Escribe el TOTAL de esta categoría para el mes, por ejemplo 40000; 0 si no hubo gastos. "
+                       "Reemplazará el monto anterior, no se sumará. No repitas gastos que dejaste en otra categoría.",
+                       [("expense_keep", "Mantener monto"), ("pause", "Pausar")])
+    if step == "expense_oneoff":
+        return _widget(context, f"Gastos del mes confirmados: {_money(a['expenses_total'])}.\n"
+                       "De ese total, ¿cuánto corresponde a compras o pagos excepcionales que NO repetirás cada mes, "
+                       "como una máquina o un permiso por única vez? Escribe el monto o 0. "
+                       "Se conservará en el mes observado, pero se descontará de la propuesta mensual futura.",
+                       [("none", "Ninguno"), ("unknown", "No sé aún"), ("pause", "Pausar")])
     if step == "income":
-        base = financial.get("operating_income_total", 0)
-        return _widget(context, f"Ventas/servicios registrados: {_money(base)}.\n"
-                       f"Aportes excluidos de ventas: {_money(financial.get('capital_contributions_total', 0))}.\n"
-                       f"Otros ingresos por revisar: {_money(financial.get('other_income_total', 0))}.\n\n"
-                       "¿Están completas las ventas/servicios del mismo mes? Confirma o escribe SOLO lo faltante. "
-                       "Para corregir todo: total 500000. No incluyas préstamos, aportes ni transferencias.",
-                       [("yes", "Ventas completas"), ("pause", "Pausar")])
+        base = a.get("income_review", a.get("income_total", snapshot_amount(financial.get("operating_income_total"))))
+        return _widget(context, f"💰 Ventas y servicios de {str(d['period_start'])[:7]}: {_money(base)}.\n"
+                       f"Aportes excluidos de ventas: {_money(snapshot_amount(financial.get('capital_contributions_total', 0)))}.\n"
+                       f"Otros ingresos por revisar: {_money(snapshot_amount(financial.get('other_income_total', 0)))}.\n\n"
+                       "¿Están completas las ventas y servicios? Si hay ventas en «Otros ingresos», agrégalas solo si no están en este total. "
+                       "No incluyas préstamos, aportes ni transferencias propias. Un número solo suma lo faltante; para reemplazar todo escribe: total 500000.",
+                       [("yes", "Está completo"), ("income_add", "Agregar lo que falta"), ("income_details", "Revisar o corregir")])
+    if step == "income_add":
+        return _widget(context, "¿Cuánto falta agregar por ventas o servicios de ese mes? Escribe SOLO el monto que todavía no está incluido. "
+                       "No sumes préstamos ni aportes personales.")
+    if step == "income_details":
+        detail = "\n".join(f"• {INCOME_LABELS.get(row['category'], 'Otros ingresos')}: {_money(snapshot_amount(row['total']))}"
+                           for row in financial.get("categories", []) if row["movement_type"] == "income")
+        return _widget(context, f"Desglose registrado del mes:\n{detail or 'No hay desglose de ingresos disponible.'}\n\n"
+                       "Para corregir las ventas y servicios, escribe su TOTAL del mes. Reemplazará el total del diagnóstico. "
+                       "Los movimientos originales se conservan.", [("income_done", "Volver al total"), ("pause", "Pausar")])
+    if step in {"projection_income", "projection_expenses"}:
+        question = "¿Cuánto esperas vender o cobrar por servicios cada mes?" if step == "projection_income" else "¿Cuánto gastarás normalmente cada mes en tu negocio? No incluyas las compras excepcionales, retiros personales ni cuotas."
+        return _widget(context, question + " Escribe un número; 0 si no corresponde.")
+    if step == "confirm_owner":
+        return _widget(context, f"Anoté {_money(a['pending_owner'])} cada mes para tus gastos personales. "
+                       "Ese retiro supera las ventas del mes que revisamos. ¿Es el monto que quieres considerar?",
+                       [("yes", "Sí, es correcto"), ("no", "Corregir monto"), ("pause", "Pausar")])
     questions = {
         "cash": "¿Cuánto efectivo tienes HOY disponible para el negocio, después de abonos ya pagados? No incluyas créditos o aportes hipotéticos.",
         "owner": "¿Cuánto necesitas retirar cada mes para uso personal? Escribe 0 si evaluarás sin retiros; no incluirá sostenibilidad del hogar.",
         "debt": "¿Cuánto pagarás mensualmente en cuotas de deudas, fuera de los gastos operativos anteriores? Incluye cada cuota una sola vez. 0 si no tienes.",
-        "representative": "¿Los ingresos y gastos confirmados representan cada uno de los próximos tres meses? Si NO, escribe: ingresos=500000; gastos=300000. No uses un mes excepcional sin ajustar.",
-        "projection_date": "¿En qué mes comenzarás el escenario posterior a formalizarte? Escribe AAAA-MM (un mes futuro). Incluiremos por separado los pagos durante la espera.",
+        "representative": (f"Para cada uno de los próximos tres meses proponemos:\nVentas y servicios: {_money(a.get('income_total'))}\n"
+                           f"Gastos habituales: {_money(a.get('expenses_total', 0) - a.get('expense_oneoff', 0)) if a.get('expense_oneoff_confirmed', True) else 'por confirmar'}\n"
+                           "Los gastos excepcionales se conservan en el mes observado. ¿Estos montos representan un mes normal?"),
+        "projection_date": f"¿Comenzamos la proyección en {str(d.get('projection_start', ''))[:7]}? Pulsa «Usar ese mes» o escribe otro mes futuro como AAAA-MM.",
         "preparation": "¿Qué otros pagos tendrás desde hoy hasta comenzar (espera, garantías, operación sin ventas autorizadas)? Escribe el total pendiente, sin repetir permisos/equipos que revisaremos después. 0 si no hay; 'no sé' si no puedes acotarlo.",
         "calendar": "¿Aceptas este calendario prudente para el presupuesto mensual: pagos al inicio y cobros al cierre de cada mes? Las fechas explícitas de permisos/cotizaciones se respetan. Si no representa tu caso, quedará pendiente validar fechas antes de clasificar.",
     }
     if step in questions:
-        options = [("yes", "Sí, representa"), ("unknown", "No sé aún"), ("pause", "Pausar")] if step in {"calendar", "representative"} else [("pause", "Pausar")]
+        options = [("yes", "Sí, representa"), ("unknown", "No sé aún"), ("pause", "Pausar")] if step == "calendar" else [("pause", "Pausar")]
+        if step == "representative":
+            options = [("yes", "Sí, representa"), ("no", "Cambiar montos"), ("unknown", "No sé aún")]
+        if step == "projection_date":
+            options = [("yes", "Usar ese mes"), ("pause", "Pausar")]
         return _widget(context, questions[step], options)
     if step == "costs":
         page = a.get("cost_page", 0)
@@ -272,21 +347,26 @@ def _prompt(context):
                        [("edit_" + key, label) for key, label in _EDIT_FIELDS.items()], listing=True)
     if step == "review":
         return _widget(context, f"Revisa tu presupuesto ({str(d['period_start'])[:7]}):\n"
-                       f"Ingresos: {_money(a.get('income_total'))}\nGastos operativos: {_money(a.get('expenses_total'))}\n"
+                       f"Ingresos: {_money(a.get('income_total'))}\nGastos del mes observado: {_money(a.get('expenses_total'))}\n"
+                       f"De esos gastos, excepcionales: {_money(a.get('expense_oneoff'))}\n"
+                       f"Ventas mensuales futuras: {_money(a.get('projected_income', a.get('income_total'))) if a.get('representative') else 'por confirmar'}\n"
+                       f"Gastos mensuales futuros: {_money(a.get('projected_expenses', a.get('expenses_total'))) if a.get('representative') else 'por confirmar'}\n"
                        f"Efectivo: {_money(a.get('available_cash'))}\nRetiros/mes: {_money(a.get('owner_amount'))}\n"
                        f"Deudas/mes: {_money(a.get('debt_amount'))}\n"
                        "Se mostrará por separado el costo inicial y los pagos futuros. "
-                       "Las obligaciones sin validar impedirán asignar alta/media/baja. ¿Guardamos esta versión?",
+                       "La estimación de FinancIAl usa tus datos y supuestos aceptados. Los costos pendientes se mostrarán por separado. ¿Calculamos?",
                        [("confirm", "Guardar diagnóstico"), ("edit", "Cambiar datos"), ("pause", "Pausar")])
     return _result_widget(context)
 
 
 def _result_widget(context):
+    if cost_guide.is_guided(context):
+        return presentation.summary(context, _widget, _money)
     d = context["diagnostic"]
     result = d.get("result") or {}
     label = d.get("capacity") or ("No evaluable" if d.get("assessment_status") == "not_evaluable" else "Parcial: faltan datos/validaciones")
     return _widget(context, f"📊 Diagnóstico: {label}\n"
-                   f"Resultado operativo actual: {_money(result.get('current_operating_result'))}/mes\n"
+                   f"Ingresos menos gastos del mes observado: {_money(result.get('current_operating_result'))}\n"
                    f"Resultado futuro conocido: {_money(result.get('future_known_operating_result'))}/mes\n"
                    f"Pagos iniciales pendientes conocidos: {_money(result.get('initial_remaining_max'))}\n"
                    f"Pendientes: {len(d.get('missing_fields') or [])}. Horizonte: tres meses.\n\n"
@@ -297,6 +377,8 @@ def _result_widget(context):
 
 
 def _details(context, *, sources=False):
+    if cost_guide.is_guided(context):
+        return presentation.detail(context, _widget, _money, _missing_label, sources=sources)
     d = context["diagnostic"]
     result = d.get("result") or {}
     if sources:
@@ -333,6 +415,10 @@ def _missing_label(key, context):
               "debt_confirmed": "Cuotas de deudas", "available_cash": "Efectivo disponible",
               "catalog_coverage_confirmed": "Validar cobertura del catálogo y permisos/costos específicos del negocio",
               "financial_sources": "Recuperar movimientos del periodo"}
+    titles.update(estimate_catalog_expired="Revisar la vigencia del catálogo de estimaciones",
+                  estimate_coverage="Revisar si faltan costos fuera de la lista",
+                  estimate_needs="Completar las preguntas del negocio",
+                  estimate_profile_changed="Revisar costos tras el cambio de rubro, comuna o lugar")
     prefixes = {"amount": "Presupuesto pendiente", "applicability": "Confirmar si aplica",
                 "source_review": "Validación de tarifa/regla pendiente", "paid": "Confirmar abonos",
                 "schedule": "Fecha/calendario pendiente", "evidence": "Respaldar la estimación",
@@ -347,7 +433,20 @@ def _missing_label(key, context):
     return "• " + titles.get(key, key.replace("_", " "))
 
 
-def _new(user):
+def _load_estimates():
+    # config is already loaded by the application; lazy import keeps the pure
+    # flow testable without booting network clients.
+    from config import FORMALIZATION_ESTIMATE_PREVIEW_VERSION
+    version = FORMALIZATION_ESTIMATE_PREVIEW_VERSION
+    row = get_formalization_estimate_catalog(version=version or None, include_inactive=bool(version))
+    if version and row is None:
+        raise ValueError("La versión de pruebas del catálogo no existe")
+    if row and row.get("review_by") and date.fromisoformat(str(row["review_by"])) < _today():
+        raise ValueError("El catálogo de estimaciones necesita una revisión de vigencia")
+    return row
+
+
+def _new(user, catalog):
     today = _today()
     end = today.replace(day=1)
     scope = lambda text: re.sub(r"[^a-z0-9]+", "_", normalize(text or "")).strip("_") or "no_definido"
@@ -357,14 +456,16 @@ def _new(user):
         "projection_start": month_after(end), "activity_code": scope(user.get("rubro")),
         "comuna_code": scope(user.get("comuna")), "rules_version": RULES_VERSION,
         "rules_config": dict(RULES_CONFIG),
+        "answers": {"estimate_catalog": catalog} if catalog else {},
     })
 
 
-def _next(user, context, answers, *, items=None):
+def _next(user, context, answers, *, items=None, completed_step=None):
     d = context["diagnostic"]
+    completed_step = completed_step or d["current_step"]
     returning = answers.pop("return_to_review", False)
-    step = "review" if returning else _SEQUENCE[_SEQUENCE.index(d["current_step"]) + 1]
-    if returning and d["current_step"] in {"income", "expenses"}:
+    step = "review" if returning else _SEQUENCE[_SEQUENCE.index(completed_step) + 1]
+    if returning and completed_step in {"income", "expenses"}:
         step = "representative"
         answers["return_to_review"] = True
     context = _save(user, context, {"current_step": step, "pending_field": step, "answers": answers,
@@ -427,9 +528,15 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
                 return "Ese botón corresponde a otra pregunta. Escribe 'mi diagnóstico' para recuperar el paso actual."
             action = parts[3]
         if entry:
-            if not d or d["workflow_status"] in {"cancelled", "archived"}:
+            if normalize(raw) == "nuevo diagnostico" and d and d["workflow_status"] in {"draft", "ready", "confirmed"}:
+                # Validate the new catalog before closing the resumable draft.
+                catalog = _load_estimates()
+                _save(user, context, {"workflow_status": "archived" if d["workflow_status"] == "confirmed" else "cancelled", "conversation_status": "closed"})
                 stage = "create"
-                context = _new(user)
+                context = _new(user, catalog)
+            elif not d or d["workflow_status"] in {"cancelled", "archived"}:
+                stage = "create"
+                context = _new(user, _load_estimates())
             elif d["workflow_status"] == "confirmed":
                 if normalize(raw) != "rehacer diagnostico":
                     return _result_widget(context)
@@ -451,6 +558,13 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return None
         if action in {"sources", "details"} and diagnostic_button and d.get("result"):
             return _details(context, sources=action == "sources")
+        if diagnostic_button and d.get("result") and cost_guide.is_guided(context):
+            if action == "gsummary":
+                return _result_widget(context)
+            for prefix in ("gdetails_", "gsources_"):
+                if action.startswith(prefix) and action[len(prefix):].isdigit():
+                    return presentation.detail(context, _widget, _money, _missing_label,
+                                               sources=prefix == "gsources_", page=int(action[len(prefix):]))
         if action == "edit" and diagnostic_button:
             return _prompt(_set_step(user, context, "edit"))
         if d["workflow_status"] not in {"draft", "ready"} or d["conversation_status"] != "active":
@@ -462,34 +576,53 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return _prompt(context)
         a, step = dict(d.get("answers") or {}), d["current_step"]
         action = {"si": "yes", "no se": "unknown"}.get(action, action)
+        word_actions = {
+            "expenses": {"completo": "yes", "agregar": "expense_add", "categorias": "expense_categories"},
+            "expense_oneoff": {"ninguno": "none", "no": "none"},
+            "expense_categories": {"terminar gastos": "expense_done", **{normalize(label): "expense_cat_" + key for key, label in EXPENSE_LABELS.items()}},
+            "expense_category": {"mantener": "expense_keep"},
+            "income": {"completo": "yes", "agregar": "income_add", "detalle": "income_details"},
+            "income_details": {"volver": "income_done"},
+        }.get(step, {})
+        word_answer = action in word_actions
+        action = word_actions.get(action, action)
+        if cost_guide.is_guided(context) and not diagnostic_button:
+            guided_action = cost_guide.text_action(context, raw)
+            if guided_action:
+                action, word_answer = guided_action, True
         # Capture only expected structured answers. Everything else exits safely.
-        valid = diagnostic_button or action in {"yes", "no", "unknown"} or bool(re.fullmatch(r"[\d.,$+\-\s]+(?:pesos|clp)?", raw.lower()))
+        valid = diagnostic_button or word_answer or action in {"yes", "no", "unknown"} or bool(re.fullmatch(r"[\d.,$+\-\s]+(?:pesos|clp)?", raw.lower()))
         valid = valid or "=" in raw or bool(re.fullmatch(r"\d{4}-\d{2}", raw)) or bool(re.fullmatch(r"total\s+[\d.$\s]+", raw.lower()))
+        valid = valid or (step == "estimate_date" and bool(re.fullmatch(r"(?:\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2})", raw)))
         if not valid:
             _save(user, context, {"conversation_status": "paused"})
             return PASS_TO_AI
+        if cost_guide.is_guided(context) and step.startswith("estimate_"):
+            patch, items = cost_guide.transition(context, action, raw, _amount, _today())
+            return _prompt(_save(user, context, patch, items=items))
         if step == "edit" and action.startswith("edit_") and action[5:] in _EDIT_FIELDS:
             target = action[5:]
             if target == "refresh":
-                for key in ("expenses_confirmed", "income_confirmed", "representative", "expenses_total", "income_total",
-                            "expenses_breakdown", "projected_income", "projected_expenses", "return_to_review"):
-                    a.pop(key, None)
+                clear_period_review(a)
                 a["cost_page"] = 0
                 scope = lambda text: re.sub(r"[^a-z0-9]+", "_", normalize(text or "")).strip("_") or "no_definido"
                 previous = d.get("catalog_fingerprint")
                 context = _save(user, context, {"answers": a, "current_step": "expenses", "pending_field": "expenses",
                                                "conversation_status": "active", "activity_code": scope(user.get("rubro")),
                                                "comuna_code": scope(user.get("comuna"))}, refresh=True)
-                if context["diagnostic"].get("catalog_fingerprint") != previous:
+                if not cost_guide.is_guided(context) and context["diagnostic"].get("catalog_fingerprint") != previous:
                     context = _seed_catalog(user, context)
                 return _prompt(_save_budgets(user, context))
             # Period changes invalidate the observed amounts, not private quotes.
             if target not in {"period", "costs", "projection_date"}:
                 a["return_to_review"] = True
+            if target == "costs" and cost_guide.is_guided(context):
+                target = "estimate_costs" if a.get("estimate_decisions") else "estimate_needs"
             return _prompt(_set_step(user, context, target, a))
         if step == "location" and action in {"vivienda", "local", "otra"}:
             context = _set_step(user, context, "period", a, location_type=action)
-            context = _seed_catalog(user, context)
+            if not cost_guide.is_guided(context):
+                context = _seed_catalog(user, context)
             return _prompt(context)
         if step == "period":
             if action == "yes":
@@ -497,35 +630,89 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             start = date.fromisoformat(raw + "-01")
             if start >= _today().replace(day=1):
                 raise ValueError("Selecciona un mes ya terminado para comparar datos completos.")
-            for key in ("expenses_confirmed", "income_confirmed", "representative", "expenses_total", "income_total",
-                        "expenses_breakdown", "projected_income", "projected_expenses", "return_to_review"):
-                a.pop(key, None)
+            clear_period_review(a)
             context = _set_step(user, context, "expenses", a, period_start=start, period_end=month_after(start))
             return _prompt(_save_budgets(user, context))
         if step == "expenses":
             financial = d["financial_snapshot"]
+            if action in {"expense_add", "expense_categories", "no"}:
+                a["expense_review"] = review_expenses(a, financial)
+                return _prompt(_set_step(user, context, "expense_categories" if action == "no" else action, a))
+            if action == "unknown":
+                return _prompt(context)
             if action == "yes":
-                a["expenses_total"] = int(financial["expense_total"])
-                a["expenses_breakdown"] = financial["categories"]
-            else:
-                fields = dict(part.strip().split("=", 1) for part in normalize(raw).split(";") if "=" in part)
-                if set(fields) != set(_EXPENSE_KEYS):
-                    raise ValueError("Indica los cinco totales: arriendo, insumos, servicios, transporte y otros (0 si no aplica).")
-                a["expenses_breakdown"] = {key: _amount(value) for key, value in fields.items()}
+                a["expenses_breakdown"] = review_expenses(a, financial)
                 a["expenses_total"] = sum(a["expenses_breakdown"].values())
+            elif "=" in raw:
+                # Accept the old format for users returning to an earlier prompt.
+                a["expenses_breakdown"] = _amount_fields(raw, _EXPENSE_KEYS)
+                a["expenses_total"] = sum(a["expenses_breakdown"].values())
+                a["expense_review"] = {
+                    "arriendo_servicios": a["expenses_breakdown"]["arriendo"] + a["expenses_breakdown"]["servicios"],
+                    "insumos_mercaderia": a["expenses_breakdown"]["insumos"],
+                    "transporte": a["expenses_breakdown"]["transporte"], "otros_gastos": a["expenses_breakdown"]["otros"],
+                }
+            else:
+                a["expense_review"] = {"sin_desglose": _amount(raw)}
+                return _prompt(_set_step(user, context, "expenses", a))
             a["expenses_confirmed"] = True
-            # A changed baseline requires a new representativity confirmation.
-            a.pop("representative", None)
-            return _next(user, context, a)
+            a.pop("expense_oneoff", None)
+            a["expense_oneoff_confirmed"] = False
+            invalidate_projection(a)
+            return _prompt(_set_step(user, context, "expense_oneoff", a))
+        if step == "expense_add":
+            amounts = review_expenses(a, d["financial_snapshot"])
+            amounts["sin_desglose"] = amounts.get("sin_desglose", 0) + _amount(raw)
+            a["expense_review"] = amounts
+            return _prompt(_set_step(user, context, "expenses", a))
+        if step == "expense_categories":
+            if action == "expense_done":
+                return _prompt(_set_step(user, context, "expenses", a))
+            if action.startswith("expense_cat_") and action.removeprefix("expense_cat_") in EXPENSE_LABELS:
+                a["expense_category"] = action.removeprefix("expense_cat_")
+                return _prompt(_set_step(user, context, "expense_category", a))
+        if step == "expense_category":
+            amounts = review_expenses(a, d["financial_snapshot"])
+            key = a["expense_category"]
+            if action != "expense_keep":
+                amounts[key] = _amount(raw)
+            a["expense_review"] = amounts
+            return _prompt(_set_step(user, context, "expense_categories", a))
+        if step == "expense_oneoff":
+            if action == "unknown":
+                a.pop("expense_oneoff", None)
+                a["expense_oneoff_confirmed"] = False
+            else:
+                amount = 0 if action == "none" else _amount(raw)
+                if amount > a["expenses_total"]:
+                    return _widget(context, "El gasto excepcional no puede superar el total del mes.\n\n" + _prompt(context)["body"],
+                                   [("none", "Ninguno"), ("unknown", "No sé aún"), ("pause", "Pausar")])
+                a.update(expense_oneoff=amount, expense_oneoff_confirmed=True)
+            return _next(user, context, a, completed_step="expenses")
         if step == "income":
-            base = int(d["financial_snapshot"]["operating_income_total"])
+            base = a.get("income_review", a.get("income_total", snapshot_amount(d["financial_snapshot"].get("operating_income_total"))))
+            if action in {"income_add", "income_details", "no"}:
+                a["income_review"] = base
+                return _prompt(_set_step(user, context, "income_details" if action == "no" else action, a))
+            if action == "unknown":
+                return _prompt(context)
             a["income_total"] = base if action == "yes" else (_amount(raw[6:]) if raw.lower().startswith("total ") else base + _amount(raw))
+            a["income_review"] = a["income_total"]
             a["income_confirmed"] = True
-            a.pop("representative", None)
+            invalidate_projection(a)
             return _next(user, context, a)
+        if step in {"income_add", "income_details"}:
+            if action != "income_done":
+                amount = _amount(raw)
+                a["income_review"] = a["income_review"] + amount if step == "income_add" else amount
+            return _prompt(_set_step(user, context, "income", a))
         if step in {"cash", "owner", "debt", "preparation"}:
             key = {"cash": "available_cash", "owner": "owner_amount", "debt": "debt_amount", "preparation": "preparation_amount"}[step]
-            a[key] = None if action == "unknown" else _amount(raw)
+            amount = None if action == "unknown" else _amount(raw)
+            if cost_guide.is_guided(context) and step == "owner" and amount is not None and amount > a.get("income_total", 0):
+                a["pending_owner"] = amount
+                return _prompt(_set_step(user, context, "confirm_owner", a))
+            a[key] = amount
             if a[key] is None:
                 a.pop(key)
             if step != "cash":
@@ -533,25 +720,40 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             else:
                 a["cash_as_of"] = _today().isoformat()
             return _next(user, context, a)
+        if step == "confirm_owner" and action in {"yes", "no"}:
+            amount = a.pop("pending_owner")
+            if action == "no":
+                return _prompt(_set_step(user, context, "owner", a))
+            a.update(owner_amount=amount, owner_confirmed=True)
+            return _next(user, context, a, completed_step="owner")
         if step == "representative":
+            if action == "no" or (action == "yes" and a.get("expense_oneoff_confirmed") is False):
+                return _prompt(_set_step(user, context, "projection_income", a))
             if action in {"yes", "unknown"}:
                 a["representative"] = action == "yes"
                 a.pop("projected_income", None)
                 a.pop("projected_expenses", None)
+                if action == "yes" and a.get("expense_oneoff_confirmed") and a.get("expense_oneoff"):
+                    a["projected_expenses"] = a["expenses_total"] - a["expense_oneoff"]
             else:
-                fields = dict(part.strip().split("=", 1) for part in normalize(raw).split(";") if "=" in part)
-                if set(fields) != {"ingresos", "gastos"}:
-                    raise ValueError("Indica ingresos=...; gastos=... para cada mes proyectado, o usa los botones.")
-                a.update(projected_income=_amount(fields["ingresos"]), projected_expenses=_amount(fields["gastos"]), representative=True)
+                fields = _amount_fields(raw, ("ingresos", "gastos"))
+                a.update(projected_income=fields["ingresos"], projected_expenses=fields["gastos"], representative=True)
             return _next(user, context, a)
+        if step == "projection_income":
+            a["projection_income_draft"] = _amount(raw)
+            return _prompt(_set_step(user, context, "projection_expenses", a))
+        if step == "projection_expenses":
+            a.update(projected_income=a.pop("projection_income_draft"), projected_expenses=_amount(raw), representative=True)
+            return _next(user, context, a, completed_step="representative")
         if step == "projection_date":
-            start = date.fromisoformat(raw + "-01")
+            start = date.fromisoformat(d["projection_start"]) if action == "yes" else date.fromisoformat(raw + "-01")
             if start <= _today():
                 raise ValueError("Selecciona el primer día de un mes futuro.")
             return _prompt(_set_step(user, context, "preparation", a, projection_start=start))
         if step == "calendar" and action in {"yes", "no", "unknown"}:
             a["calendar_confirmed"] = action == "yes"
-            context = _set_step(user, context, "costs", a)
+            target = ("estimate_costs" if a.get("estimate_decisions") else "estimate_needs") if cost_guide.is_guided(context) else "costs"
+            context = _set_step(user, context, target, a)
             return _prompt(_save_budgets(user, context))
         if step == "costs":
             if action == "previous_costs":
@@ -591,6 +793,9 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
                       if action == "unknown" else _cost_amount(item, raw, context))
             return _prompt(_save(user, context, {"current_step": "costs", "pending_field": "costs", "answers": a}, items=[values]))
         if step == "review" and action == "confirm":
+            if cost_guide.is_guided(context):
+                a["budget_as_of"] = _today().isoformat()
+                context = _save(user, context, {"answers": a})
             context = _save_budgets(user, context)
             stage = "calculate"
             assessment = evaluate_diagnostic(context)
@@ -606,6 +811,9 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
         return ("El diagnóstico o sus fuentes cambiaron. Escribe 'mi diagnóstico', elige Cambiar datos y "
                 "Actualizar registros para revisar nuevamente el mes, sin perder las versiones anteriores.\n\n"
                 "Código: " + formalization_error_code(error))
+    except cost_guide.GuideInputError as error:
+        prompt = _prompt(context)
+        return {**prompt, "body": str(error) + "\n\n" + prompt["body"]}
     except ValueError as error:
         if not entry and not diagnostic_button and not locals().get("d"):
             return None

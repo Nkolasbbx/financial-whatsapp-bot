@@ -49,6 +49,7 @@ class DiagnosticRoutingTests(unittest.TestCase):
         prompt = self.press(prompt, "local")
         prompt = self.press(prompt, "yes")
         prompt = self.press(prompt, "yes")
+        prompt = self.press(prompt, "none")
         prompt = self.press(prompt, "yes")
         for text in ("1500000", "100000", "0"):
             prompt = self.route(text)
@@ -87,6 +88,73 @@ class DiagnosticRoutingTests(unittest.TestCase):
         self.assertIn("Parcial", result["body"])
         self.assertEqual(self.repo.data["diagnostic"]["workflow_status"], "confirmed")
         self.assertEqual(len(self.repo.revisions), 1)
+
+    def test_manual_expenses_with_spaces_advance_through_whatsapp_router(self):
+        prompt = self.route("menu_diagnostico")
+        prompt = self.press(prompt, "local")
+        self.press(prompt, "yes")
+        response = self.route("arriendo= 400000; insumos = 100000;servicios=135000;transporte= 90000; otros = 50000")
+        self.assertNotEqual(response, "__AI_QUERY__")
+        self.assertIn("Gastos del mes confirmados", response["body"])
+        self.assertEqual(self.repo.data["diagnostic"]["answers"]["expenses_total"], 775000)
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "expense_oneoff")
+        response = self.press(response, "none")
+        self.assertIn("Ventas y servicios", response["body"])
+
+    def test_guided_review_buttons_reach_diagnosis_without_ia_or_roadmap(self):
+        prompt = self.route("menu_diagnostico")
+        prompt = self.press(prompt, "local")
+        prompt = self.press(prompt, "yes")
+        prompt = self.press(prompt, "expense_categories")
+        self.press(prompt, "expense_cat_transporte")
+        prompt = self.route("10000")
+        prompt = self.press(prompt, "expense_done")
+        prompt = self.press(prompt, "yes")
+        prompt = self.press(prompt, "none")
+        self.press(prompt, "income_add")
+        prompt = self.route("50000")
+        self.press(prompt, "yes")
+        a = self.repo.data["diagnostic"]["answers"]
+        self.assertEqual(a["expenses_total"], 210000)
+        self.assertEqual(a["income_total"], 550000)
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "cash")
+
+    def test_estimate_buttons_and_amounts_use_diagnostic_route(self):
+        from core import formalization_cost_guide as guide
+        from tests.test_formalization_cost_guide import catalog_row
+        with patch.object(flow_helpers.flow, "_load_estimates", return_value=catalog_row()):
+            prompt = self.route("menu_diagnostico")
+        prompt = self.press(prompt, "local")
+        prompt = self.press(prompt, "yes")
+        for text in ("sí", "0", "sí", "1500000", "100000", "0", "sí", "2026-11", "0", "sí"):
+            prompt = self.route(text)
+            self.assertNotEqual(prompt, "__AI_QUERY__")
+        for _ in range(30):
+            question = guide.pending_question(self.repo.data)
+            if not question:
+                break
+            key, _, options = question
+            if options:
+                # First choices: food preparation and affirmative facts.
+                prompt = self.press(prompt, "gchoice_0")
+            else:
+                prompt = self.route("1")
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "estimate_costs")
+        prompt = self.press(prompt, "gcost_C12")
+        prompt = self.press(prompt, "gmanual")
+        prompt = self.route("50000")
+        prompt = self.press(prompt, "gquote")
+        prompt = self.route("10000")
+        self.assertEqual(self.route("¿Cómo puedo vender más?"), "__AI_QUERY__")
+        prompt = self.route("retomar diagnóstico")
+        prompt = self.route("25/10/2026")
+        self.assertNotEqual(prompt, "__AI_QUERY__")
+        item = next(i for i in self.repo.data["items"] if i["item_key"] == "estimate:C12")
+        self.assertEqual(item["amount_clp_max"], 50000)
+        self.assertEqual(item["amount_paid_clp"], 10000)
+        with patch.object(message_router, "get_menu_widget", return_value="menu"):
+            self.assertEqual(self.route("menu_financial"), "menu")
+        self.assertEqual(self.repo.data["diagnostic"]["conversation_status"], "paused")
 
     def test_result_buttons_show_details_sources_and_reopen_selected_field(self):
         prompt = self.router_to_costs()

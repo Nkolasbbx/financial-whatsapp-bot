@@ -117,6 +117,32 @@ def _context(data: dict) -> dict:
     return data
 
 
+def get_formalization_estimate_catalog(*, version: str | None = None,
+                                       include_inactive: bool = False) -> dict | None:
+    """Lee una versión completa del catálogo en una petición al Supabase de usuarios.
+
+    El uso normal solo devuelve la versión activa. Una versión inactiva se puede
+    inspeccionar expresamente durante las pruebas, sin habilitarla para usuarios.
+    """
+    query = _admin_client().table("formalization_estimate_catalog_versions").select(
+        "id,version,author,prepared_at,review_by,document,active"
+    )
+    if version is not None:
+        if not isinstance(version, str) or not version.strip() or len(version) > 120:
+            raise ValueError("Versión de estimaciones inválida")
+        query = query.eq("version", version)
+    if not include_inactive:
+        query = query.eq("active", True)
+    rows = query.limit(1).execute().data or []
+    if not rows:
+        return None
+    row = rows[0]
+    if (not isinstance(row, dict) or not isinstance(row.get("document"), dict)
+            or row["document"].get("version") != row.get("version")):
+        raise FormalizationPersistenceError("La versión de estimaciones está incompleta")
+    return row
+
+
 def get_formalization_context(
     user_id: str, diagnostic_id: str | None = None, *, refresh_sources: bool = False,
     period_start: date | None = None, period_end: date | None = None, as_of: date | None = None,

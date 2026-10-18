@@ -194,6 +194,15 @@ def evaluate_diagnostic(context: dict) -> FormalizationAssessmentInput:
         low, high = item.get("amount_clp_min"), item.get("amount_clp_max")
         applied = item.get("applicability")
         cat = item.get("catalog_snapshot") or {}
+        meta = item.get("metadata") or {}
+        if meta.get("financial_estimate") and applied == "applies":
+            require(False, "source_review:" + key)
+            catalog = answers.get("estimate_catalog") or {}
+            registry = catalog.get("document", {}).get("source_details", {})
+            for source_id in (meta.get("decision") or {}).get("source_ids", []):
+                source = registry.get(source_id)
+                if source and source not in sources:
+                    sources.append(source)
         if cat:
             for source in cat.get("source_refs", []):
                 if source not in sources:
@@ -202,6 +211,8 @@ def evaluate_diagnostic(context: dict) -> FormalizationAssessmentInput:
                       "applicability": applied, "min": low, "max": high,
                       "paid": item.get("amount_paid_clp"), "frequency": item["frequency"],
                       "mandatory_status": cat.get("mandatory_status", "user_declared"),
+                      "origin": meta.get("origin"), "due_date": item.get("due_date"),
+                      "assumed_date": meta.get("assumed_date", False),
                       "included_in_baseline": item.get("included_in_baseline", False)})
         require(applied != "to_confirm", "applicability:" + key)
         if applied != "applies":
@@ -303,6 +314,28 @@ def evaluate_diagnostic(context: dict) -> FormalizationAssessmentInput:
     if start and start.day == 1 and type(cash) is int and cash >= 0:
         projection = evaluate_projection(cash, start, events)
         result["projection"] = projection
+    if answers.get("estimate_catalog"):
+        catalog = answers["estimate_catalog"]
+        review_by = _day(catalog.get("review_by"))
+        calculated_on = _day(answers.get("budget_as_of"))
+        if not calculated_on or (review_by and review_by < calculated_on):
+            require(False, "estimate_catalog_expired")
+        require(answers.get("estimate_coverage_confirmed") is True, "estimate_coverage")
+        require(bool(answers.get("estimate_decisions")), "estimate_needs")
+        require(answers.get("estimate_scope") == {key: diagnostic.get(key) for key in ("activity_code", "comuna_code", "location_type")}, "estimate_profile_changed")
+        result["estimate_version"] = catalog.get("version")
+        result["economic_assessment"] = {
+            "capacity": None, "label": "Estimación orientativa de FinancIAl",
+            "period_months": 3, "legal_validation": False,
+            "scope": "Solo el escenario y los costos revisados; los rangos no son límites garantizados.",
+        }
+        blockers = [key for key in missing if key != "catalog_coverage_confirmed" and not key.startswith("source_review:")]
+        if not blockers and projection and projection.get("has_operating_projection"):
+            result["economic_assessment"]["capacity"] = projection["capacity"]
+        result["economic_assessment"]["missing_fields"] = blockers
+        result["known_initial_cash_gap"] = max(0, initial_high - cash) if type(cash) is int else None
+        result["future_after_withdrawals_and_debt"] = (future_income - future_operating - answers["owner_amount"] - answers["debt_amount"]
+            if type(answers.get("owner_amount")) is int and type(answers.get("debt_amount")) is int else None)
     if missing:
         result["reasons"] = ["MISSING_REQUIRED_COST" if any(":" in key for key in missing) else "PERIOD_NOT_CONFIRMED"]
         # Never expose a seemingly definitive category inside a partial result.

@@ -29,8 +29,11 @@ class MemoryRepository:
 
     def save(self, user_id, diagnostic_id, expected, patch, *, items=None, delete_item_keys=None, refresh_sources=False, reopen=False):
         values = FormalizationDraftPatch.model_validate(patch).model_dump(exclude_unset=True, mode="json")
-        created = self.data["diagnostic"] is None
+        created = self.data["diagnostic"] is None or self.data["diagnostic"]["id"] != diagnostic_id
         if created:
+            if self.data["diagnostic"]:
+                assert self.data["diagnostic"]["workflow_status"] in {"cancelled", "archived"}
+            self.data["items"] = []
             self.data["diagnostic"] = {"id": diagnostic_id, "user_id": user_id, "workflow_status": "draft",
                                        "answers": {}, "lock_version": 0, "conversation_status": "paused"}
         d = self.data["diagnostic"]
@@ -77,6 +80,7 @@ class FlowTests(unittest.TestCase):
     def setUp(self):
         self.repo = MemoryRepository()
         for name, replacement in (("get_formalization_context", self.repo.get),
+                                  ("_load_estimates", lambda: None),
                                   ("save_formalization_draft", self.repo.save),
                                   ("confirm_formalization_revision", self.repo.confirm),
                                   ("_today", lambda: date(2026, 10, 16))):
@@ -103,7 +107,7 @@ class FlowTests(unittest.TestCase):
 
     def to_costs(self):
         self.start()
-        for text in ("sí", "sí", "1500000", "100000", "0", "sí", "2026-11", "0", "sí"):
+        for text in ("sí", "0", "sí", "1500000", "100000", "0", "sí", "2026-11", "0", "sí"):
             self.send(text)
         self.assertEqual(self.repo.data["diagnostic"]["current_step"], "costs")
 
@@ -160,15 +164,73 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.repo.data["diagnostic"]["answers"]["expenses_total"], 185000)
         self.assertEqual(self.repo.data["diagnostic"]["financial_snapshot"]["expense_total"], 200000)
 
+    def test_manual_expenses_accept_spaces_around_equals(self):
+        examples = (
+            "arriendo= 400000; insumos = 100000;servicios=135000;transporte= 90000; otros = 50000",
+            "arriendo=400000; insumos=100000;servicios=135000;transporte=90000; otros =50000",
+            " ARRIENDO = $400.000;\nINSUMOS =100000; servicios = 135000; transporte=90000; otros=50000; ",
+        )
+        for text in examples:
+            with self.subTest(text=text):
+                self.repo.data = {"diagnostic": None, "items": []}
+                self.start()
+                self.send(text)
+                d = self.repo.data["diagnostic"]
+                self.assertEqual(d["current_step"], "expense_oneoff")
+                self.assertEqual(d["conversation_status"], "active")
+                self.assertEqual(d["answers"]["expenses_total"], 775000)
+                self.assertEqual(d["answers"]["expenses_breakdown"], {
+                    "arriendo": 400000, "insumos": 100000, "servicios": 135000,
+                    "transporte": 90000, "otros": 50000,
+                })
+                self.assertEqual(d["financial_snapshot"]["expense_total"], 200000)
+
+    def test_invalid_expense_fields_preserve_progress_and_saved_values(self):
+        self.start()
+        valid = "arriendo=400000; insumos=100000; servicios=135000; transporte=90000; otros=50000"
+        examples = (
+            valid + "; ARRIENDO = 1", valid + "; desconocido=1", valid + "; texto sin valor",
+            valid.rsplit(";", 1)[0], valid.replace("otros=50000", "otros=-1"),
+            valid.replace("otros=50000", "otros=1.2.3"),
+        )
+        for text in examples:
+            with self.subTest(text=text):
+                previous = copy.deepcopy(self.repo.data)
+                response = self.send(text)
+                self.assertIn("DIAG_VALIDATION", response["body"])
+                self.assertEqual(self.repo.data, previous)
+
+    def test_projected_amounts_accept_spaces_around_equals(self):
+        self.start()
+        for text in ("sí", "0", "sí", "1500000", "100000", "0"):
+            self.send(text)
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "representative")
+        self.send(" INGRESOS = 1200000; gastos = $775.000; ")
+        d = self.repo.data["diagnostic"]
+        self.assertEqual(d["current_step"], "projection_date")
+        self.assertEqual(d["answers"]["projected_income"], 1200000)
+        self.assertEqual(d["answers"]["projected_expenses"], 775000)
+
+    def test_duplicate_projected_fields_are_not_silently_overwritten(self):
+        self.start()
+        for text in ("sí", "0", "sí", "1500000", "100000", "0"):
+            self.send(text)
+        previous = copy.deepcopy(self.repo.data)
+        response = self.send("ingresos=1200000; gastos=775000; INGRESOS = 1")
+        self.assertIn("DIAG_VALIDATION", response["body"])
+        self.assertEqual(self.repo.data, previous)
+
     def test_only_missing_income_added_to_recorded_sales(self):
         self.start()
         self.send("sí")
+        self.send("0")
         self.send("$50.000")
         self.assertEqual(self.repo.data["diagnostic"]["answers"]["income_total"], 550000)
 
     def test_malformed_amount_does_not_advance_or_store_zero(self):
         self.start()
         self.send("sí")
+        self.send("0")
         self.send("sí")
         self.send("1.2.3")
         self.assertEqual(self.repo.data["diagnostic"]["current_step"], "cash")
