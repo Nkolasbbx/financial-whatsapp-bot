@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from core import formalization_cost_guide as cost_guide
 from core import formalization_presentation as presentation
+from core import formalization_short_flow as short_flow
 
 from core.formalization_engine import (
     RULES_CONFIG, RULES_VERSION, evaluate_diagnostic, month_after,
@@ -175,7 +176,7 @@ def _budget_items(context):
     return items
 
 
-def _save_budgets(user, context):
+def _save_budgets(user, context, *, patch=None):
     items = _budget_items(context)
     expected = {item["item_key"] for item in items}
     obsolete = [item["item_key"] for item in context["items"] if not item.get("catalog_version_id")
@@ -186,7 +187,7 @@ def _save_budgets(user, context):
             # A changed observed period invalidates the replacement link, not
             # the evidence/quote. Ask to review that applicability again.
             items.append(_input(item, applicability="to_confirm", replaces_item_key=None))
-    return _save(user, context, items=items, delete=obsolete)
+    return _save(user, context, patch, items=items, delete=obsolete)
 
 
 def _legacy_notice(context):
@@ -204,6 +205,12 @@ def _prompt(context):
         return _legacy_notice(context)
     a, step = d.get("answers", {}), d.get("current_step", "location")
     financial = d.get("financial_snapshot") or {}
+    if short_flow.enabled(context):
+        brief_prompt = short_flow.prompt(context, _widget)
+        if brief_prompt:
+            return brief_prompt
+        if step == "short_calculate":
+            return _widget(context, "Tu presupuesto está preparado. Pulsa continuar para guardar el resultado.", [("confirm", "Continuar")])
     if cost_guide.is_guided(context):
         guided_prompt = cost_guide.prompt(context, _widget, _money)
         if guided_prompt:
@@ -406,8 +413,26 @@ def _new(user, catalog):
         "projection_start": month_after(end), "activity_code": scope(user.get("rubro")),
         "comuna_code": scope(user.get("comuna")), "rules_version": RULES_VERSION,
         "rules_config": dict(RULES_CONFIG),
-        "answers": {"estimate_catalog": catalog},
+        "answers": {"estimate_catalog": catalog, "estimate_flow": short_flow.VERSION},
     })
+
+
+def _confirm_result(user, context, message_id=None):
+    answers = {**context["diagnostic"]["answers"], "budget_as_of": _today().isoformat()}
+    context = _save_budgets(user, context, patch={"answers": answers})
+    assessment = evaluate_diagnostic(context)
+    if short_flow.enabled(context):
+        assessment.result["short_budget"] = short_flow.totals(context)
+        assessment.result["short_flow_version"] = short_flow.VERSION
+        assessment.result.setdefault("assumptions", []).append(
+            ("Escenario aceptado: " if answers.get("short_assumptions_accepted") else "Escenario NO aceptado: ")
+            + answers.get("short_assumptions", ""))
+    d = context["diagnostic"]
+    request_id = uuid5(UUID(d["id"]), "confirm:" + (message_id or str(d["lock_version"])))
+    saved = confirm_formalization_revision(user["id"], d["id"], d["lock_version"], str(request_id), assessment)
+    if saved.get("replayed"):
+        return _result_widget(get_formalization_context(user["id"], d["id"]))
+    return _result_widget({**context, "diagnostic": saved["diagnostic"]})
 
 
 def _next(user, context, answers, *, items=None, completed_step=None):
@@ -480,6 +505,9 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
                 _save(user, context, patch)
             return None
         if action in {"sources", "details"} and diagnostic_button and d.get("result"):
+            if action == "details" and short_flow.enabled(context):
+                return _widget(context, "Puedes revisar el desglose completo o las referencias y supuestos del presupuesto.",
+                               [("gdetails_0", "Costos y balance"), ("sources", "Fuentes y supuestos"), ("gsummary", "Volver al resumen")])
             return _details(context, sources=action == "sources")
         if diagnostic_button and d.get("result") and cost_guide.is_guided(context):
             if action == "gsummary":
@@ -488,6 +516,8 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
                 if action.startswith(prefix) and action[len(prefix):].isdigit():
                     return presentation.detail(context, _widget, _money, _missing_label,
                                                sources=prefix == "gsources_", page=int(action[len(prefix):]))
+        if action == "short_adjust" and diagnostic_button and short_flow.enabled(context) and d.get("result"):
+            return _prompt(_set_step(user, context, "short_groups"))
         if action == "edit" and diagnostic_button:
             if not cost_guide.is_guided(context):
                 return _legacy_notice(context)
@@ -512,7 +542,7 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
         word_answer = action in word_actions
         action = word_actions.get(action, action)
         if cost_guide.is_guided(context) and not diagnostic_button:
-            guided_action = cost_guide.text_action(context, raw)
+            guided_action = (short_flow.text_action(context, raw) if short_flow.enabled(context) else None) or cost_guide.text_action(context, raw)
             if guided_action:
                 action, word_answer = guided_action, True
         # Capture only expected structured answers. Everything else exits safely.
@@ -524,9 +554,26 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return PASS_TO_AI
         if not cost_guide.is_guided(context):
             return _legacy_notice(context)
+        if short_flow.enabled(context) and step.startswith("short_"):
+            if step == "short_calculate" and action == "confirm":
+                stage = "confirm"
+                return _confirm_result(user, context, message_id)
+            change = short_flow.transition(context, action, _today())
+            if not change:
+                return _prompt(context)
+            patch, items = change
+            context = _save(user, context, patch, items=items)
+            if patch["current_step"] == "short_calculate":
+                stage = "confirm"
+                return _confirm_result(user, context, message_id)
+            return _prompt(context)
         if cost_guide.is_guided(context) and step.startswith("estimate_"):
             patch, items = cost_guide.transition(context, action, raw, _amount, _today())
-            return _prompt(_save(user, context, patch, items=items))
+            context = _save(user, context, patch, items=items)
+            if patch["current_step"] == "short_calculate":
+                stage = "confirm"
+                return _confirm_result(user, context, message_id)
+            return _prompt(context)
         if step == "edit" and action.startswith("edit_") and action[5:] in _EDIT_FIELDS:
             target = action[5:]
             if target == "refresh":
@@ -541,7 +588,7 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             if target not in {"period", "costs", "projection_date"}:
                 a["return_to_review"] = True
             if target == "costs" and cost_guide.is_guided(context):
-                target = "estimate_costs" if a.get("estimate_decisions") else "estimate_needs"
+                target = ("short_groups" if a.get("estimate_decisions") else "short_needs") if short_flow.enabled(context) else ("estimate_costs" if a.get("estimate_decisions") else "estimate_needs")
             return _prompt(_set_step(user, context, target, a))
         if step == "location" and action in {"vivienda", "local", "otra"}:
             context = _set_step(user, context, "period", a, location_type=action)
@@ -551,7 +598,7 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
                 return _next(user, context, a)
             start = date.fromisoformat(raw + "-01")
             if start >= _today().replace(day=1):
-                raise ValueError("Selecciona un mes ya terminado para comparar datos completos.")
+                raise cost_guide.GuideInputError("Ese mes todavía no ha terminado. Para comparar datos completos, usa el mes anterior u otro mes ya terminado.")
             clear_period_review(a)
             context = _set_step(user, context, "expenses", a, period_start=start, period_end=month_after(start))
             return _prompt(_save_budgets(user, context))
@@ -675,9 +722,14 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
         if step == "calendar" and action in {"yes", "no", "unknown"}:
             a["calendar_confirmed"] = action == "yes"
             target = "estimate_costs" if a.get("estimate_decisions") else "estimate_needs"
+            if short_flow.enabled(context):
+                target = "review" if a.get("estimate_decisions") else "short_needs"
             context = _set_step(user, context, target, a)
             return _prompt(_save_budgets(user, context))
         if step == "review" and action == "confirm":
+            if short_flow.enabled(context):
+                stage = "confirm"
+                return _confirm_result(user, context, message_id)
             if cost_guide.is_guided(context):
                 a["budget_as_of"] = _today().isoformat()
                 context = _save(user, context, {"answers": a})

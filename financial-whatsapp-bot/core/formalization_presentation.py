@@ -15,6 +15,8 @@ REASON_LABELS = {
 def summary(context, widget, money):
     d = context["diagnostic"]
     result = d.get("result") or {}
+    if result.get("short_budget"):
+        return short_summary(context, widget, money)
     economic = result.get("economic_assessment") or {}
     capacity = economic.get("capacity")
     status = f"Capacidad económica orientativa: {capacity}." if capacity else "Aún faltan datos para estimar tu capacidad económica."
@@ -34,6 +36,36 @@ def summary(context, widget, money):
                   + advice + "\nHorizonte: tres meses. Los importes pendientes no están incluidos. "
                   "Las estimaciones no son cobros oficiales ni una validación de permisos.",
                   [("details", "Ver costos y pasos"), ("sources", "Fuentes y supuestos"), ("edit", "Cambiar datos")])
+
+
+def short_summary(context, widget, money):
+    result = context["diagnostic"]["result"]
+    groups = result["short_budget"]
+    pending_notice = (
+        "\n\nLos costos sin una estimación precisa debes completarlos en «Ajustar estimación», "
+        "con el monto informado por la municipalidad, un profesional o proveedor. "
+        "Hasta completarlos quedan fuera del total; no son gratuitos."
+        if any(row["pending"] for row in groups.values()) else ""
+    )
+
+    def amount(key):
+        row = groups[key]
+        value = money(row["min"]) if row["min"] == row["max"] else f"{money(row['min'])}–{money(row['max'])}"
+        if row["pending"] and row["max"] == 0:
+            return "por completar"
+        return value + (" + pendientes" if row["pending"] else "")
+
+    return widget(context, "📊 Tu presupuesto estimado\n\n"
+                  f"Resultado del mes observado: {money(result.get('current_operating_result'))}\n\n"
+                  f"Para comenzar (saldos pendientes):\n• Trámites y permisos: {amount('permits')}\n"
+                  f"• Arreglos y equipos: {amount('setup')}\n"
+                  f"Total inicial conocido, incluida preparación: {money(result.get('initial_remaining_min'))}–{money(result.get('initial_remaining_max'))}\n"
+                  f"Faltaría cubrir con efectivo: {money(result.get('known_initial_cash_gap'))}\n\n"
+                  f"Adicionales al mes: {amount('monthly')}\nPagos anuales separados: {amount('annual')}\n"
+                  f"Saldo mensual conocido tras gastos, retiros y deudas (costos altos del rango): {money(result.get('future_after_withdrawals_and_debt'))}\n\n"
+                  "Proyección: 3 meses. Faltan costos o validaciones: aún no es un presupuesto completo ni una calificación de capacidad. "
+                  "Son estimaciones de FinancIAl, no cobros oficiales." + pending_notice,
+                  [("details", "Ver detalle"), ("short_adjust", "Ajustar estimación"), ("edit", "Cambiar mis datos")])
 
 
 def pages(blocks, limit=760):

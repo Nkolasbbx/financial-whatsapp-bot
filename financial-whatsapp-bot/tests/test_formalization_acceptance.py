@@ -13,7 +13,7 @@ from unittest.mock import patch
 from core import formalization_flow as flow
 from core import formalization_cost_guide as guide
 from db import formalization_diagnostics as diagnostic_db
-from tests.test_formalization_flow import MemoryRepository, USER
+from tests.test_formalization_flow import MemoryRepository, USER, create_pre_short_draft
 from tests.test_formalization_cost_guide import catalog_row
 from tests.test_formalization_estimates import real_catalog
 
@@ -41,7 +41,7 @@ class PilotRepository(MemoryRepository):
 
 
 class PilotAcceptanceTests(unittest.TestCase):
-    def setUp(self):
+    def setUp(self, *, detailed=True):
         self.user = copy.deepcopy(USER)
         self.repo = PilotRepository(self.user)
         self.catalog = catalog_row()
@@ -54,6 +54,10 @@ class PilotAcceptanceTests(unittest.TestCase):
             ("_today", lambda: date(2026, 10, 18)),
         ):
             mock = patch.object(flow, name, side_effect=callback)
+            mock.start()
+            self.addCleanup(mock.stop)
+        if detailed:
+            mock = patch.object(flow, "_new", side_effect=create_pre_short_draft)
             mock.start()
             self.addCleanup(mock.stop)
 

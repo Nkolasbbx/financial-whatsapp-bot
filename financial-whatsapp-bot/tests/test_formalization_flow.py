@@ -24,6 +24,20 @@ def guided_catalog():
             "document": small_catalog(), "review_by": "2026-11-16", "active": False}
 
 
+_CREATE_CURRENT = flow._new
+
+
+def create_pre_short_draft(user, catalog):
+    """Fixture de compatibilidad: borrador guardado antes de short-v1.
+
+    La creación normal en producción y los tests short usan _new sin parche.
+    """
+    context = _CREATE_CURRENT(user, catalog)
+    answers = dict(context["diagnostic"]["answers"])
+    answers.pop("estimate_flow", None)
+    return flow._save(user, context, {"answers": answers})
+
+
 def finish_needs(case):
     for _ in range(30):
         if case.repo.data["diagnostic"]["current_step"] != "estimate_needs":
@@ -93,7 +107,7 @@ class MemoryRepository:
 
 
 class FlowTests(unittest.TestCase):
-    def setUp(self):
+    def setUp(self, *, detailed=True):
         self.repo = MemoryRepository()
         for name, replacement in (("get_formalization_context", self.repo.get),
                                   ("_load_estimates", guided_catalog),
@@ -101,6 +115,10 @@ class FlowTests(unittest.TestCase):
                                   ("confirm_formalization_revision", self.repo.confirm),
                                   ("_today", lambda: date(2026, 10, 16))):
             p = patch.object(flow, name, side_effect=replacement)
+            p.start()
+            self.addCleanup(p.stop)
+        if detailed:
+            p = patch.object(flow, "_new", side_effect=create_pre_short_draft)
             p.start()
             self.addCleanup(p.stop)
 

@@ -100,6 +100,7 @@ def text_action(context, text):
     if step == "estimate_costs":
         choices = {_slug(row["title"]): "gcost_" + row["key"] for row in context["diagnostic"]["answers"]["estimate_decisions"]}
         choices["calcular_presupuesto"] = "gdone"
+        choices["ver_diagnostico"] = "gdone"
     if step.startswith("estimate_") and step not in {"estimate_needs", "estimate_costs", "estimate_coverage"}:
         choices["revisar_despues"] = "gskip"
     return choices.get(key)
@@ -158,6 +159,14 @@ def guide_items(context):
     return [item for item in context["items"] if item["item_key"].startswith("estimate:")]
 
 
+def menu_rows(context):
+    # Local import keeps the pure short-flow builder free of an import cycle.
+    from core import formalization_short_flow as brief
+    rows = context["diagnostic"]["answers"]["estimate_decisions"]
+    selected = context["diagnostic"]["answers"].get("estimate_group")
+    return [row for row in rows if brief.group(row) == selected] if brief.enabled(context) and selected else rows
+
+
 def make_item(row):
     frequency = row["frequency"] if row["frequency"] in FREQUENCIES else "to_confirm"
     return {"item_key": "estimate:" + row["key"], "label": row["title"],
@@ -185,7 +194,7 @@ def prompt(context, widget, money):
         choices = [(f"gchoice_{i}", title) for i, (_, title) in enumerate(options)] if options else [("gzero", "Ya lo tengo"), ("unknown", "No sé"), ("pause", "Pausar")]
         return widget(context, text, choices)
     if step == "estimate_costs":
-        rows = a["estimate_decisions"]
+        rows = menu_rows(context)
         page = a.get("estimate_page", 0)
         saved = {i["item_key"]: i for i in guide_items(context)}
         choices = []
@@ -197,7 +206,7 @@ def prompt(context, widget, money):
             choices.append(("gprev", "Anteriores"))
         if (page + 1) * 7 < len(rows):
             choices.append(("gnextpage", "Más costos"))
-        choices.append(("gdone", "Calcular presupuesto"))
+        choices.append(("gdone", "Ver diagnóstico" if a.get("estimate_flow") == "short-v1" else "Calcular presupuesto"))
         return widget(context, "Revisa los costos que necesites. Cada uno permite usar una estimación de FinancIAl, ingresar tu monto o dejarlo pendiente. "
                       "Los opcionales no son obligaciones. No repitas costos ya incluidos en otra partida. Puedes calcular un resultado parcial.", choices, listing=True)
     if step == "estimate_scope":
@@ -210,13 +219,17 @@ def prompt(context, widget, money):
         row = current(context)
         ready = row.get("status") == "ready" and row.get("amount_clp_min") is not None
         suffix = FREQUENCIES.get(row["frequency"], "(periodicidad por confirmar)")
-        amount = f"FinancIAl propone {_range(row, money)} {suffix}." if ready else "Aún no tenemos una estimación suficiente para tu caso. Puedes indicar un presupuesto propio o revisarlo después."
-        warning = " Es una hipótesis de presupuesto; no un cobro oficial ni un monto garantizado."
+        saved = next((i for i in guide_items(context) if i["item_key"] == "estimate:" + row["key"]), {})
+        amount = (f"FinancIAl propone {_range(row, money)} {suffix}." if ready else
+                  "Este costo depende de tu caso y no podemos estimarlo con suficiente precisión. "
+                  "Debes ingresar el monto que te informe la municipalidad, un profesional o proveedor, usando «Tengo un monto».")
+        warning = " Es una hipótesis de presupuesto; no un cobro oficial ni un monto garantizado." if ready else ""
+        if not ready and saved.get("amount_clp_max") is None:
+            warning += " Si aún no lo conoces, elige «Revisar después»: quedará fuera del total; no significa que sea gratuito."
         if (row.get("variant") or {}).get("includes"):
             warning += "\nAlcance: " + row["variant"]["includes"]
         if row["code"] == "C24":
             warning += " Aquí se agrega SOLO el aumento que no está en tu proyección mensual."
-        saved = next((i for i in guide_items(context) if i["item_key"] == "estimate:" + row["key"]), {})
         if saved.get("amount_clp_max") is not None:
             warning += f"\nGuardado: {money(saved['amount_clp_min'])} a {money(saved['amount_clp_max'])}. Se conserva hasta que completes un cambio."
         choices = ([("gscope", "Qué incluye"), ("gmanual", "Tengo un monto"), ("gskip", "Revisar después")] if not ready else
@@ -249,6 +262,7 @@ def transition(context, action, raw, parse_amount, today):
     a = deepcopy(d["answers"])
     step = d["current_step"]
     items = None
+    brief = a.get("estimate_flow") == "short-v1"
     def finish(next_step, *, new_items=None):
         return {"current_step": next_step, "pending_field": next_step, "answers": a, "conversation_status": "active"}, new_items
     def next_payment():
@@ -273,7 +287,7 @@ def transition(context, action, raw, parse_amount, today):
             if (code in conflicts.get(row["code"], set()) and saved.get("applicability") == "applies"
                     and saved.get("amount_clp_max", 0) and item.get("amount_clp_max", 0)):
                 raise GuideInputError("Ese presupuesto puede repetir una firma o documento ya incluido. Pulsa «Revisar después» para volver a la lista. En la alternativa que no usarás, entra a sus detalles y elige «No lo necesito». Luego retoma este costo.")
-        return finish("estimate_costs", new_items=[item])
+        return finish("short_calculate" if brief else "estimate_costs", new_items=[item])
     if step == "estimate_needs":
         question = pending_question(context)
         if question:
@@ -301,10 +315,10 @@ def transition(context, action, raw, parse_amount, today):
         return finish("estimate_costs", new_items=[make_item(row) for row in a["estimate_decisions"]])
     if step == "estimate_costs":
         if action in {"gprev", "gnextpage"}:
-            max_page = (len(a["estimate_decisions"]) - 1) // 7
+            max_page = max(0, (len(menu_rows(context)) - 1) // 7)
             a["estimate_page"] = min(max_page, max(0, a.get("estimate_page", 0) + (1 if action == "gnextpage" else -1)))
         elif action == "gdone":
-            return finish("estimate_coverage")
+            return finish("short_calculate" if brief else "estimate_coverage")
         elif action.startswith("gcost_") and any(row["key"] == action[6:] for row in a["estimate_decisions"]):
             a["estimate_selected"] = action[6:]
             a.pop("estimate_pending", None)
@@ -324,11 +338,11 @@ def transition(context, action, raw, parse_amount, today):
         a.pop("estimate_assumed_date", None)
         if action == "gskip":
             # Abandoning an edit preserves a previous quote, including its source.
-            return finish("estimate_costs")
+            return finish("short_calculate" if brief else "estimate_costs")
         saved = next((i for i in guide_items(context) if i["item_key"] == "estimate:" + row["key"]), None)
         item = {key: value for key, value in saved.items() if key in FormalizationItemInput.model_fields} if saved else make_item(row)
         item.update(applicability="not_applicable", applicability_reason="Declaración del usuario; no acredita exención")
-        return finish("estimate_costs", new_items=[item])
+        return finish("short_calculate" if brief else "estimate_costs", new_items=[item])
     if action in {"gscope", "gbackcost"}:
         return finish("estimate_scope" if action == "gscope" else "estimate_offer")
     row = current(context)
