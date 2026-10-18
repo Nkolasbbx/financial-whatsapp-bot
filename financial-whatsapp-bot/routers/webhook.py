@@ -421,12 +421,17 @@ async def whatsapp_webhook(request: Request):
                             # no hay respuesta automática que mandar.
                             logger.info("Mensaje de %s reenviado al experto", phone)
 
-                        elif result == "__WEB_PANEL_LINK__":
+                        elif result in ("__WEB_PANEL_LINK__", "__DIAGNOSTIC_PANEL_LINK__"):
                             token = await create_access_token(redis, phone)
                             link = f"{str(request.base_url).rstrip('/')}/portal/acceso?token={token}"
+                            diagnostic_link = result == "__DIAGNOSTIC_PANEL_LINK__"
+                            if diagnostic_link:
+                                link += "&tab=diagnostico"
                             await send_text(
                                 phone,
-                                f"📊 Acá está el link a tu panel: {link}\n\n"
+                                (f"📊 Ajusta tus costos desde el celular: {link}\n\n"
+                                 "Puedes cambiar varios montos juntos y guardar para recalcular. Los ingresos y gastos los seguimos revisando por WhatsApp.\n\n"
+                                 if diagnostic_link else f"📊 Acá está el link a tu panel: {link}\n\n") +
                                 "Es de un solo uso y vence en 30 minutos — si "
                                 "se vence, vuelve a pedirlo desde el menú.",
                             )

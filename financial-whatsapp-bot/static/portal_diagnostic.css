@@ -1,0 +1,42 @@
+.diag { max-width: 1000px; margin: 0 auto; padding-bottom: 32px; }
+.diag-heading { margin: 12px 0 24px; }
+.diag-eyebrow { color: #176a61; font-size: 12px; font-weight: 800; letter-spacing: .08em; }
+.diag h1 { font-size: clamp(26px, 5vw, 36px); line-height: 1.2; margin: 10px 0; }
+.diag p { line-height: 1.6; }
+.diag-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.diag-metric { background: #024655; color: white; border-radius: 16px; padding: 20px; overflow-wrap: anywhere; }
+.diag-metric small { display: block; color: #d8eee8; line-height: 1.5; }
+.diag-metric strong { display: block; font-size: 22px; margin-top: 10px; }
+.diag-notice { background: #edf7f0; border: 1px solid #aed3ba; color: #174b39; border-radius: 14px; padding: 16px; margin: 20px 0; line-height: 1.6; }
+.diag-group h2 { margin: 28px 0 12px; font-size: 20px; }
+.diag-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.diag-cost { min-width: 0; background: white; border: 1px solid #c7d9da; border-radius: 16px; padding: 16px; }
+.diag-cost.changed { border: 2px solid #139381; padding: 15px; }
+.diag-cost summary { cursor: pointer; min-height: 60px; line-height: 1.5; padding: 4px; overflow-wrap: anywhere; }
+.diag-cost summary strong { font-size: 17px; }
+.diag-cost summary span { display: block; color: #4a656c; font-size: 14px; margin-top: 6px; }
+.diag-cost p { font-size: 14px; color: #4a656c; }
+.diag-cost label { display: block; font-size: 14px; font-weight: 600; margin-top: 15px; }
+.diag-cost input:not([type=checkbox]), .diag-cost select { display: block; width: 100%; min-height: 48px; border: 1px solid #809fa5; border-radius: 9px; background: white; color: #024655; padding: 10px; font: inherit; font-size: 16px; margin-top: 7px; }
+.diag-cost input[type=checkbox] { width: 22px; height: 22px; vertical-align: middle; margin-right: 8px; }
+.diag-cost .diag-check { padding: 10px 0; line-height: 1.5; }
+.diag-cost fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.diag button { border-radius: 10px; min-height: 48px; padding: 12px 20px; border: 0; font: inherit; font-size: 16px; font-weight: 700; cursor: pointer; background: #024655; color: white; }
+.diag button:disabled { opacity: .55; cursor: not-allowed; }
+.diag button.diag-secondary { background: white; color: #024655; border: 1px solid #809fa5; }
+.diag :focus-visible { outline: 3px solid #139381; outline-offset: 3px; }
+.diag-savebar { position: sticky; bottom: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 14px; background: #fff; padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); margin-top: 24px; border: 1px solid #c7d9da; box-shadow: 0 -4px 20px #02465512; border-radius: 14px; }
+#diag-dirty { font-size: 14px; line-height: 1.4; }
+#diag-status { padding: 12px 0; overflow-wrap: anywhere; }
+#diag-status.error { color: #9b2525; font-weight: 600; }
+.diag-sources { margin-top: 20px; padding: 16px; background: white; border-radius: 14px; overflow-wrap: anywhere; }
+.diag-sources summary { min-height: 44px; cursor: pointer; }
+.diag [hidden] { display: none !important; }
+@media (max-width: 600px) {
+  .diag-summary, .diag-cards { grid-template-columns: 1fr; }
+  .diag-metric { padding: 16px; }
+  .diag-metric strong { margin-top: 5px; }
+  .diag-savebar { position: fixed; left: 12px; right: 12px; bottom: 0; flex-direction: column; align-items: stretch; padding: 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); border-radius: 14px 14px 0 0; }
+  .diag-savebar button { width: 100%; }
+  .diag { padding-bottom: 140px; }
+}

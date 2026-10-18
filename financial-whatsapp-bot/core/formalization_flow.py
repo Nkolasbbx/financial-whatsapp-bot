@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from core import formalization_cost_guide as cost_guide
 from core import formalization_presentation as presentation
 from core import formalization_short_flow as short_flow
+from core.formalization_results import calculate_assessment
 
 from core.formalization_engine import (
     RULES_CONFIG, RULES_VERSION, evaluate_diagnostic, month_after,
@@ -206,6 +207,8 @@ def _prompt(context):
     a, step = d.get("answers", {}), d.get("current_step", "location")
     financial = d.get("financial_snapshot") or {}
     if short_flow.enabled(context):
+        if step == "portal_costs":
+            return _widget(context, "Tus ajustes de costos están guardados. Abre el panel para terminar de recalcular; tus ingresos y gastos se conservan.", [("short_adjust", "Ajustar en mi panel")])
         brief_prompt = short_flow.prompt(context, _widget)
         if brief_prompt:
             return brief_prompt
@@ -420,13 +423,7 @@ def _new(user, catalog):
 def _confirm_result(user, context, message_id=None):
     answers = {**context["diagnostic"]["answers"], "budget_as_of": _today().isoformat()}
     context = _save_budgets(user, context, patch={"answers": answers})
-    assessment = evaluate_diagnostic(context)
-    if short_flow.enabled(context):
-        assessment.result["short_budget"] = short_flow.totals(context)
-        assessment.result["short_flow_version"] = short_flow.VERSION
-        assessment.result.setdefault("assumptions", []).append(
-            ("Escenario aceptado: " if answers.get("short_assumptions_accepted") else "Escenario NO aceptado: ")
-            + answers.get("short_assumptions", ""))
+    assessment = calculate_assessment(context)
     d = context["diagnostic"]
     request_id = uuid5(UUID(d["id"]), "confirm:" + (message_id or str(d["lock_version"])))
     saved = confirm_formalization_revision(user["id"], d["id"], d["lock_version"], str(request_id), assessment)
@@ -516,8 +513,8 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
                 if action.startswith(prefix) and action[len(prefix):].isdigit():
                     return presentation.detail(context, _widget, _money, _missing_label,
                                                sources=prefix == "gsources_", page=int(action[len(prefix):]))
-        if action == "short_adjust" and diagnostic_button and short_flow.enabled(context) and d.get("result"):
-            return _prompt(_set_step(user, context, "short_groups"))
+        if action == "short_adjust" and diagnostic_button and short_flow.enabled(context) and d.get("answers", {}).get("estimate_decisions") and d["workflow_status"] in {"draft", "ready", "confirmed"}:
+            return "__DIAGNOSTIC_PANEL_LINK__"
         if action == "edit" and diagnostic_button:
             if not cost_guide.is_guided(context):
                 return _legacy_notice(context)
@@ -576,6 +573,8 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return _prompt(context)
         if step == "edit" and action.startswith("edit_") and action[5:] in _EDIT_FIELDS:
             target = action[5:]
+            if target == "costs" and short_flow.enabled(context) and a.get("estimate_decisions"):
+                return "__DIAGNOSTIC_PANEL_LINK__"
             if target == "refresh":
                 clear_period_review(a)
                 a["cost_page"] = 0

@@ -55,7 +55,11 @@ class ShortFlowTests(unittest.TestCase):
         self.fail("Costo no accesible desde su grupo")
 
     def adjust(self, group, key):
-        self.press("short_adjust")
+        # Compatibility fixture: an edit already in progress before portal handoff.
+        # New adjustments now return the secure portal-link marker without writes.
+        self.assertEqual(self.press("short_adjust"), "__DIAGNOSTIC_PANEL_LINK__")
+        context = flow._set_step(self.user, self.repo.get(), "short_groups")
+        self.response = flow._prompt(context)
         self.press("short_group_" + group)
         self.select(key)
 
@@ -87,7 +91,7 @@ class ShortFlowTests(unittest.TestCase):
     def test_pending_cost_notice_requests_user_amount_without_blocking(self):
         self.begin()
         self.finish()
-        self.assertIn("debes completarlos en «Ajustar estimación»", self.response["body"])
+        self.assertIn("debes completarlos en «Ajustar en mi panel»", self.response["body"])
         self.assertIn("fuera del total; no son gratuitos", self.response["body"])
         self.adjust("permits", "C16")
         self.assertIn("no podemos estimarlo con suficiente precisión", self.response["body"])

@@ -42,7 +42,7 @@ def short_summary(context, widget, money):
     result = context["diagnostic"]["result"]
     groups = result["short_budget"]
     pending_notice = (
-        "\n\nLos costos sin una estimación precisa debes completarlos en «Ajustar estimación», "
+        "\n\nLos costos sin una estimación precisa debes completarlos en «Ajustar en mi panel», "
         "con el monto informado por la municipalidad, un profesional o proveedor. "
         "Hasta completarlos quedan fuera del total; no son gratuitos."
         if any(row["pending"] for row in groups.values()) else ""
@@ -65,7 +65,7 @@ def short_summary(context, widget, money):
                   f"Saldo mensual conocido tras gastos, retiros y deudas (costos altos del rango): {money(result.get('future_after_withdrawals_and_debt'))}\n\n"
                   "Proyección: 3 meses. Faltan costos o validaciones: aún no es un presupuesto completo ni una calificación de capacidad. "
                   "Son estimaciones de FinancIAl, no cobros oficiales." + pending_notice,
-                  [("details", "Ver detalle"), ("short_adjust", "Ajustar estimación"), ("edit", "Cambiar mis datos")])
+                  [("details", "Ver detalle"), ("short_adjust", "Ajustar en mi panel"), ("edit", "Cambiar mis datos")])
 
 
 def pages(blocks, limit=760):
