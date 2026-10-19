@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from core import formalization_cost_guide as guide
 from core import formalization_short_flow as brief
 from core.formalization_results import calculate_assessment
-from core.formalization_presentation import pending_labels, capacity_explanation
+from core.formalization_presentation import pending_labels, capacity_explanation, capacity_breakdown
 from db.formalization_diagnostics import (
     get_formalization_context, save_formalization_draft, confirm_formalization_revision,
     FormalizationConflictError, FormalizationNotFoundError,
@@ -60,6 +60,7 @@ def view(context):
                         "future_after_withdrawals_and_debt", "known_initial_cash_gap")},
             "missing_count": len(pending), "pending_requirements": pending_labels(pending, context),
             "capacity": economic.get("capacity"), "capacity_explanation": capacity_explanation(result),
+            "capacity_details": capacity_breakdown(result),
             "coverage_confirmed": answers.get("estimate_coverage_confirmed") is True,
             "economic_status": "complete" if economic.get("capacity") else "partial" if pending else "not_evaluable",
             "assumptions": result.get("assumptions", []), "sources": result.get("sources", []),

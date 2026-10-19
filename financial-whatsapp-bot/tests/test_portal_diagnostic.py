@@ -137,8 +137,17 @@ class PortalDiagnosticTests(unittest.TestCase):
         self.assertTrue(d["result"]["verification_pending"])
         response = self.flow.send("mi diagnóstico")
         self.assertIn("ALTA", response["body"])
+        self.assertIn("no una verdad absoluta", response["body"])
+        self.assertIn("contador o asesor", response["body"])
         self.assertNotIn("Faltan costos o validaciones", response["body"])
         self.assertIn("resiste una baja de ventas", response["body"])
+        self.assertTrue(any("Reserva objetivo" in block for block in result["capacity_details"]))
+        before = copy.deepcopy(self.repo.get())
+        self.flow.press("details")
+        self.flow.press("gwhy_0")
+        self.assertIn("Tu resultado explicado", self.flow.response["body"])
+        self.assertIn("ALTA", self.flow.response["body"])
+        self.assertEqual(self.repo.get(), before)
 
     def test_unknown_cost_still_blocks_even_with_review_checked(self):
         result = service.update(self.flow.user["id"], self.payload(reviewed=True))

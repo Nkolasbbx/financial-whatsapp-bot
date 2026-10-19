@@ -23,6 +23,7 @@ class ShortFlowTests(unittest.TestCase):
 
     def begin(self, location="local"):
         self.send("diagnóstico")
+        self.press("start")
         self.press(location)
         self.press("yes")  # previous complete month
         self.press("yes")  # existing expenses
@@ -45,6 +46,31 @@ class ShortFlowTests(unittest.TestCase):
 
     def item(self, code):
         return next(i for i in self.repo.data["items"] if i["item_key"] == "estimate:" + code)
+
+    def test_intro_precedes_first_question_and_can_pause_without_financial_answers(self):
+        response = self.send("diagnóstico")
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "intro")
+        self.assertIn("10 a 15 minutos", response["body"])
+        self.assertIn("solo si aplican", response["body"])
+        self.assertIn("no una verdad absoluta", response["body"])
+        self.assertNotIn("¿Dónde funcionará", response["body"])
+        self.assertNotIn("income_total", self.repo.data["diagnostic"]["answers"])
+        self.press("pause")
+        self.assertEqual(self.repo.data["diagnostic"]["conversation_status"], "paused")
+        self.send("retomar diagnóstico")
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "intro")
+        self.send("Comenzar")
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "location")
+
+    def test_resume_existing_location_does_not_restart_intro(self):
+        self.send("diagnóstico")
+        old_token = next(token for token, _ in self.response["options"] if token.endswith(":start"))
+        self.send(old_token)
+        before = self.repo.get()
+        self.assertIn("otra pregunta", self.send(old_token))
+        self.assertEqual(self.repo.get(), before)
+        self.send("mi diagnóstico")
+        self.assertEqual(self.repo.data["diagnostic"]["current_step"], "location")
 
     def select(self, key):
         for _ in range(10):
@@ -281,6 +307,7 @@ class ShortFlowTests(unittest.TestCase):
 
     def test_current_month_explains_problem_without_losing_progress(self):
         self.send("diagnóstico")
+        self.press("start")
         self.press("local")
         before = copy.deepcopy(self.repo.data)
         self.send("2026-10")

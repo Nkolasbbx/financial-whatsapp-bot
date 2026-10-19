@@ -100,6 +100,12 @@
         assessment.replaceChildren(node('h2', data.capacity ? `Capacidad económica: ${data.capacity.toUpperCase()}` : data.economic_status === 'not_evaluable' ? 'Escenario sin actividad mensual suficiente' : 'Completa tu diagnóstico'));
         assessment.firstElementChild.id = 'diag-assessment-title';
         assessment.append(node('p', data.capacity_explanation));
+        if (data.capacity_details?.length) {
+            const explanation = node('details', null, 'diag-explanation');
+            explanation.append(node('summary', '¿Por qué recibí este nivel?'));
+            data.capacity_details.forEach(text => explanation.append(node('p', text.replaceAll('*', ''))));
+            assessment.append(explanation);
+        }
         if (data.pending_requirements?.length) {
             const list = node('ul');
             data.pending_requirements.forEach(text => list.append(node('li', text)));

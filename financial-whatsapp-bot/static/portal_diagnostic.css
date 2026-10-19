@@ -12,6 +12,9 @@
 .diag-review input { flex-shrink: 0; width: 24px; height: 24px; margin-top: 3px; accent-color: #139381; }
 #diag-assessment h2 { margin: 0 0 8px; font-size: 21px; }
 #diag-assessment p { margin-bottom: 0; }
+.diag-explanation { margin-top: 16px; }
+.diag-explanation summary { cursor: pointer; min-height: 44px; font-weight: 700; padding: 10px 0; }
+.diag-explanation p { white-space: pre-line; overflow-wrap: anywhere; padding: 12px 0; }
 .diag-group h2 { margin: 28px 0 12px; font-size: 20px; }
 .diag-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
 .diag-cost { min-width: 0; background: white; border: 1px solid #c7d9da; border-radius: 16px; padding: 16px; }

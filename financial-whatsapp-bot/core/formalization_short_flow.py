@@ -13,6 +13,19 @@ from core.formalization_estimates import _slug
 VERSION = "short-v1"
 GROUPS = {"permits": "Trámites y permisos", "setup": "Arreglos y equipos", "monthly": "Gastos posteriores"}
 CORE_CODES = {"C01", "C07", "C08", "C09", "C12", "C13", "C16", "C17", "C21", "C22", "C23", "C24"}
+INTRO_MESSAGE = (
+    "📊 *Antes de comenzar tu diagnóstico*\n\n"
+    "⏱️ Toma aproximadamente *10 a 15 minutos*, incluyendo la revisión de costos en el panel.\n\n"
+    "🧾 *Ten estos montos a mano, solo si aplican a tu negocio:*\n"
+    "• 🏛️ Patente municipal: monto informado o presupuesto.\n"
+    "• 💰 IVA, PPM e impuesto anual: estimación según tu situación tributaria.\n"
+    "• 🛠️ Equipos que te falta comprar: presupuesto de compra.\n"
+    "• 👥 Trabajadores: costo previsto si contratarás personal.\n\n"
+    "Para completar la evaluación necesitamos esos costos. Si necesitas ayuda, consulta a la municipalidad, un contador o proveedor.\n\n"
+    "💡 Si un costo no aplica, podrás indicarlo. Si no conoces su monto, puedes avanzar y el resultado quedará parcial.\n\n"
+    "🧭 Es una *estimación orientativa*, no una verdad absoluta. Depende de tus datos y supuestos; para profundizar, revísala con un experto.\n\n"
+    "¿Comenzamos? 👇"
+)
 
 
 def enabled(context):
