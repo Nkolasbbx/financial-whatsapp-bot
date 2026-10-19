@@ -208,12 +208,12 @@ def _prompt(context):
     financial = d.get("financial_snapshot") or {}
     if short_flow.enabled(context):
         if step == "portal_costs":
-            return _widget(context, "Tus ajustes de costos están guardados. Abre el panel para terminar de recalcular; tus ingresos y gastos se conservan.", [("short_adjust", "Ajustar en mi panel")])
+            return _widget(context, "✅ *Tus ajustes están guardados*\n\nAbre el panel para terminar de recalcular tu diagnóstico.\n\n💰 Tus ingresos y gastos se conservan.", [("short_adjust", "Ajustar en mi panel")])
         brief_prompt = short_flow.prompt(context, _widget)
         if brief_prompt:
             return brief_prompt
         if step == "short_calculate":
-            return _widget(context, "Tu presupuesto está preparado. Pulsa continuar para guardar el resultado.", [("confirm", "Continuar")])
+            return _widget(context, "🙌 *Tu presupuesto está preparado*\n\nPulsa «Continuar» para guardar y ver tu resultado.", [("confirm", "Continuar")])
     if cost_guide.is_guided(context):
         guided_prompt = cost_guide.prompt(context, _widget, _money)
         if guided_prompt:
@@ -222,78 +222,78 @@ def _prompt(context):
         profile = d.get("profile_snapshot") or {}
         disclosure = (a.get("estimate_catalog", {}).get("document", {}).get("disclosure", {}).get("text", "") + "\n\n") if cost_guide.is_guided(context) else ""
         rubro = (profile.get('rubro_raw') or profile.get('rubro') or '').removeprefix('rubro_').replace('_', ' ').capitalize()
-        return _widget(context, f"📊 Diagnóstico de formalización\n{rubro} · {profile.get('comuna')}\n\n" + disclosure +
-                       "Reutilizaré tu perfil y movimientos; no cambiaré tus registros. ¿Dónde funcionará el negocio?\n"
-                       "Puedes salir con el menú o hacer otra pregunta; el borrador se conserva.",
+        return _widget(context, f"📊 *Diagnóstico de formalización*\n📍 {rubro} · {profile.get('comuna')}\n\n" + disclosure +
+                       "💰 Usaremos tu perfil y tus movimientos registrados. Los ajustes se guardan en este diagnóstico.\n\n"
+                       "🏠 *¿Dónde funcionará el negocio?*\n\n"
+                       "💬 Puedes ir al menú o hacer otra pregunta cuando quieras. Tu borrador se conserva.",
                        [("vivienda", "En mi vivienda"), ("local", "En un local"), ("otra", "Otra modalidad")])
     if step == "period":
-        return _widget(context, f"Usaremos {str(d['period_start'])[:7]} como mes observado y tres meses futuros.\n"
-                       "¿Usamos ese mes? Para otro mes completo escribe AAAA-MM (ejemplo: 2026-09).",
+        return _widget(context, f"🗓️ *Elijamos el mes a revisar*\n\nTe propongo {str(d['period_start'])[:7]} como mes observado y una proyección de tres meses.\n\n"
+                       "¿Usamos ese mes?\n✍️ Para elegir otro mes completo, escribe AAAA-MM (ejemplo: 2026-09).",
                        [("yes", "Usar ese mes"), ("pause", "Pausar")])
     if step == "expenses":
         amounts = review_expenses(a, financial)
         detail = "\n".join(f"• {EXPENSE_LABELS[key]}: {_money(value)}" for key, value in amounts.items() if value)
         empty = "No tienes gastos registrados en este mes. El cero no significa que no hayas gastado.\n" if snapshot_amount(financial.get("expense_total")) == 0 else ""
-        return _widget(context, f"💸 Gastos de {str(d['period_start'])[:7]}\n{empty}"
+        return _widget(context, f"💸 *Tus gastos de {str(d['period_start'])[:7]}*\n\n{empty}"
                        f"Total a revisar: {_money(sum(amounts.values()))}\n{detail}\n\n"
-                       "¿Este es todo lo que gastaste en el negocio ese mes? No incluyas retiros personales ni cuotas de deuda. "
-                       "Para reemplazar el total, escribe un número. Los ajustes solo se usan en este diagnóstico.",
+                       "¿Este es todo lo que gastaste en tu negocio ese mes?\n\n"
+                       "✍️ Para reemplazar el total, escribe un número.\n"
+                       "💡 Deja fuera tus retiros personales y cuotas de deuda. Estos ajustes solo se usan en el diagnóstico.",
                        [("yes", "Está completo"), ("expense_add", "Agregar lo que falta"), ("expense_categories", "Revisar categorías")])
     if step == "expense_add":
-        return _widget(context, "¿Cuánto falta agregar a los gastos del mes? Escribe SOLO el monto que no está incluido, por ejemplo 15000. "
-                       "Se sumará una vez al total del diagnóstico.")
+        return _widget(context, "➕ *Agreguemos lo que falta*\n\n¿Cuánto falta agregar a los gastos del mes?\n\n✍️ Escribe solo el monto que no está incluido, por ejemplo 15000. Se sumará una vez al total del diagnóstico.")
     if step == "expense_categories":
         amounts = review_expenses(a, financial)
         keys = [key for key in EXPENSE_LABELS if key != "sin_desglose" or amounts.get(key)]
-        return _widget(context, "Elige una categoría para revisar su total. Arriendo y servicios están agrupados en tus registros. "
-                       "Puedes completar las categorías una a una; al terminar revisaremos el total.",
+        return _widget(context, "🗂️ *Revisemos tus gastos por categoría*\n\nElige una categoría para revisar su total.\n\n💡 Arriendo y servicios están agrupados en tus registros. Puedes completar las categorías una a una; al terminar revisaremos el total.",
                        [("expense_cat_" + key, EXPENSE_LABELS[key]) for key in keys] + [("expense_done", "Volver al total")], listing=True)
     if step == "expense_category":
         key = a["expense_category"]
-        return _widget(context, f"{EXPENSE_LABELS[key]}: {_money(review_expenses(a, financial).get(key, 0))}.\n"
-                       "Escribe el TOTAL de esta categoría para el mes, por ejemplo 40000; 0 si no hubo gastos. "
-                       "Reemplazará el monto anterior, no se sumará. No repitas gastos que dejaste en otra categoría.",
+        return _widget(context, f"🧾 *Detalle del gasto*\n\n{EXPENSE_LABELS[key]}: {_money(review_expenses(a, financial).get(key, 0))}\n\n"
+                       "✍️ Escribe el TOTAL de esta categoría para el mes, por ejemplo 40000; 0 si no hubo gastos.\n\n"
+                       "💡 Reemplazará el monto anterior. Evita repetir gastos que dejaste en otra categoría.",
                        [("expense_keep", "Mantener monto"), ("pause", "Pausar")])
     if step == "expense_oneoff":
-        return _widget(context, f"Gastos del mes confirmados: {_money(a['expenses_total'])}.\n"
-                       "De ese total, ¿cuánto corresponde a compras o pagos excepcionales que NO repetirás cada mes, "
-                       "como una máquina o un permiso por única vez? Escribe el monto o 0. "
-                       "Se conservará en el mes observado, pero se descontará de la propuesta mensual futura.",
+        return _widget(context, f"✅ *Gastos del mes confirmados: {_money(a['expenses_total'])}*\n\n"
+                       "De ese total, ¿cuánto corresponde a compras o pagos excepcionales que NO repetirás cada mes?\n"
+                       "Por ejemplo, una máquina o un permiso por única vez.\n\n"
+                       "✍️ Escribe el monto o 0. Se conservará en el mes observado, pero se descontará de la propuesta mensual futura.",
                        [("none", "Ninguno"), ("unknown", "No sé aún"), ("pause", "Pausar")])
     if step == "income":
         base = a.get("income_review", a.get("income_total", snapshot_amount(financial.get("operating_income_total"))))
-        return _widget(context, f"💰 Ventas y servicios de {str(d['period_start'])[:7]}: {_money(base)}.\n"
-                       f"Aportes excluidos de ventas: {_money(snapshot_amount(financial.get('capital_contributions_total', 0)))}.\n"
-                       f"Otros ingresos por revisar: {_money(snapshot_amount(financial.get('other_income_total', 0)))}.\n\n"
-                       "¿Están completas las ventas y servicios? Si hay ventas en «Otros ingresos», agrégalas solo si no están en este total. "
-                       "No incluyas préstamos, aportes ni transferencias propias. Un número solo suma lo faltante; para reemplazar todo escribe: total 500000.",
+        return _widget(context, f"💰 *Ventas y servicios de {str(d['period_start'])[:7]}*\nTotal: {_money(base)}\n\n"
+                       f"• Aportes excluidos de ventas: {_money(snapshot_amount(financial.get('capital_contributions_total', 0)))}\n"
+                       f"• Otros ingresos por revisar: {_money(snapshot_amount(financial.get('other_income_total', 0)))}\n\n"
+                       "¿Están completas tus ventas y servicios?\n\n"
+                       "✍️ Un número solo suma lo faltante. Para reemplazar todo escribe: total 500000.\n\n"
+                       "💡 Agrega ventas de «Otros ingresos» solo si faltan en el total. Deja fuera préstamos, aportes y transferencias propias.",
                        [("yes", "Está completo"), ("income_add", "Agregar lo que falta"), ("income_details", "Revisar o corregir")])
     if step == "income_add":
-        return _widget(context, "¿Cuánto falta agregar por ventas o servicios de ese mes? Escribe SOLO el monto que todavía no está incluido. "
-                       "No sumes préstamos ni aportes personales.")
+        return _widget(context, "➕ *Completemos tus ventas*\n\n¿Cuánto falta agregar por ventas o servicios de ese mes?\n\n✍️ Escribe solo el monto que todavía no está incluido. Deja fuera préstamos y aportes personales.")
     if step == "income_details":
         detail = "\n".join(f"• {INCOME_LABELS.get(row['category'], 'Otros ingresos')}: {_money(snapshot_amount(row['total']))}"
                            for row in financial.get("categories", []) if row["movement_type"] == "income")
-        return _widget(context, f"Desglose registrado del mes:\n{detail or 'No hay desglose de ingresos disponible.'}\n\n"
-                       "Para corregir las ventas y servicios, escribe su TOTAL del mes. Reemplazará el total del diagnóstico. "
-                       "Los movimientos originales se conservan.", [("income_done", "Volver al total"), ("pause", "Pausar")])
+        return _widget(context, f"🔎 *Tus ingresos del mes*\n\n{detail or 'No hay desglose de ingresos disponible.'}\n\n"
+                       "✍️ Para corregir las ventas y servicios, escribe su TOTAL del mes. Reemplazará el total del diagnóstico.\n\n"
+                       "✅ Tus movimientos originales se conservan.", [("income_done", "Volver al total"), ("pause", "Pausar")])
     if step in {"projection_income", "projection_expenses"}:
         question = "¿Cuánto esperas vender o cobrar por servicios cada mes?" if step == "projection_income" else "¿Cuánto gastarás normalmente cada mes en tu negocio? No incluyas las compras excepcionales, retiros personales ni cuotas."
-        return _widget(context, question + " Escribe un número; 0 si no corresponde.")
+        return _widget(context, "🔮 *Miremos los próximos meses*\n\n" + question + "\n\n✍️ Escribe un número; 0 si no corresponde.")
     if step == "confirm_owner":
-        return _widget(context, f"Anoté {_money(a['pending_owner'])} cada mes para tus gastos personales. "
+        return _widget(context, f"🔎 *Confirmemos este monto*\n\nAnoté {_money(a['pending_owner'])} cada mes para tus gastos personales.\n\n"
                        "Ese retiro supera las ventas del mes que revisamos. ¿Es el monto que quieres considerar?",
                        [("yes", "Sí, es correcto"), ("no", "Corregir monto"), ("pause", "Pausar")])
     questions = {
-        "cash": "¿Cuánto efectivo tienes HOY disponible para el negocio, después de abonos ya pagados? No incluyas créditos o aportes hipotéticos.",
-        "owner": "¿Cuánto necesitas retirar cada mes para uso personal? Escribe 0 si evaluarás sin retiros; no incluirá sostenibilidad del hogar.",
-        "debt": "¿Cuánto pagarás mensualmente en cuotas de deudas, fuera de los gastos operativos anteriores? Incluye cada cuota una sola vez. 0 si no tienes.",
-        "representative": (f"Para cada uno de los próximos tres meses proponemos:\nVentas y servicios: {_money(a.get('income_total'))}\n"
-                           f"Gastos habituales: {_money(a.get('expenses_total', 0) - a.get('expense_oneoff', 0)) if a.get('expense_oneoff_confirmed', True) else 'por confirmar'}\n"
-                           "Los gastos excepcionales se conservan en el mes observado. ¿Estos montos representan un mes normal?"),
-        "projection_date": f"¿Comenzamos la proyección en {str(d.get('projection_start', ''))[:7]}? Pulsa «Usar ese mes» o escribe otro mes futuro como AAAA-MM.",
-        "preparation": "¿Qué otros pagos tendrás desde hoy hasta comenzar (espera, garantías, operación sin ventas autorizadas)? Escribe el total pendiente, sin repetir permisos/equipos que revisaremos después. 0 si no hay; 'no sé' si no puedes acotarlo.",
-        "calendar": "¿Aceptas este calendario prudente para el presupuesto mensual: pagos al inicio y cobros al cierre de cada mes? Las fechas explícitas de permisos/cotizaciones se respetan. Si no representa tu caso, quedará pendiente validar fechas antes de clasificar.",
+        "cash": "💵 *Dinero disponible hoy*\n\n¿Cuánto efectivo tienes HOY para el negocio, después de abonos ya pagados?\n\n✍️ Escribe el monto disponible. Deja fuera créditos o aportes que todavía no tienes.",
+        "owner": "🏡 *Tus gastos personales*\n\n¿Cuánto necesitas retirar del negocio cada mes para uso personal?\n\n✍️ Escribe un monto o 0 si evaluarás sin retiros. Con 0 no evaluaremos si el negocio cubre tus gastos del hogar.",
+        "debt": "💳 *Cuotas de deudas*\n\n¿Cuánto pagarás cada mes en cuotas de deudas, fuera de los gastos que ya revisamos?\n\n✍️ Incluye cada cuota una sola vez. Escribe 0 si no tienes.",
+        "representative": (f"🔮 *Un mes normal para tu negocio*\n\nPara cada uno de los próximos tres meses proponemos:\n\n💰 Ventas y servicios: {_money(a.get('income_total'))}\n"
+                           f"💸 Gastos habituales: {_money(a.get('expenses_total', 0) - a.get('expense_oneoff', 0)) if a.get('expense_oneoff_confirmed', True) else 'por confirmar'}\n\n"
+                           "¿Estos montos representan un mes normal?\n💡 Los gastos excepcionales se conservan en el mes observado."),
+        "projection_date": f"🗓️ *¿Cuándo comenzamos la proyección?*\n\nTe propongo {str(d.get('projection_start', ''))[:7]}.\n\nPulsa «Usar ese mes» o escribe otro mes futuro como AAAA-MM.",
+        "preparation": "🧾 *Otros pagos antes de comenzar*\n\n¿Tendrás otros pagos de espera, garantías o funcionamiento antes de tener ventas autorizadas?\n\n✍️ Escribe el total pendiente, sin repetir permisos o equipos que revisaremos después.\n\n💡 Usa 0 si no hay; escribe «no sé» si todavía no conoces el monto.",
+        "calendar": "🗓️ *Ordenemos tus cobros y pagos*\n\nPara calcular, supondremos que pagas al inicio de cada mes y cobras al cierre. Las fechas que indiques para permisos o cotizaciones se respetan.\n\n¿Este calendario representa tu caso?\n💡 Si no estás seguro, lo dejaremos pendiente antes de clasificar.",
     }
     if step in questions:
         options = [("yes", "Sí, representa"), ("unknown", "No sé aún"), ("pause", "Pausar")] if step == "calendar" else [("pause", "Pausar")]
@@ -303,16 +303,16 @@ def _prompt(context):
             options = [("yes", "Usar ese mes"), ("pause", "Pausar")]
         return _widget(context, questions[step], options)
     if step == "edit":
-        return _widget(context, "¿Qué dato quieres cambiar? Conservaremos el resto y las versiones anteriores.",
+        return _widget(context, "✏️ *Actualicemos tu diagnóstico*\n\n¿Qué dato quieres cambiar?\n\n✅ Conservaremos el resto y las versiones anteriores.",
                        [("edit_" + key, label) for key, label in _EDIT_FIELDS.items()], listing=True)
     if step == "review":
-        return _widget(context, f"Revisa tu presupuesto ({str(d['period_start'])[:7]}):\n"
-                       f"Ingresos: {_money(a.get('income_total'))}\nGastos del mes observado: {_money(a.get('expenses_total'))}\n"
+        return _widget(context, f"📋 *Revisa tu presupuesto de {str(d['period_start'])[:7]}*\n\n"
+                       f"💰 Ingresos: {_money(a.get('income_total'))}\n💸 Gastos del mes observado: {_money(a.get('expenses_total'))}\n"
                        f"De esos gastos, excepcionales: {_money(a.get('expense_oneoff'))}\n"
                        f"Ventas mensuales futuras: {_money(a.get('projected_income', a.get('income_total'))) if a.get('representative') else 'por confirmar'}\n"
                        f"Gastos mensuales futuros: {_money(a.get('projected_expenses', a.get('expenses_total'))) if a.get('representative') else 'por confirmar'}\n"
-                       f"Efectivo: {_money(a.get('available_cash'))}\nRetiros/mes: {_money(a.get('owner_amount'))}\n"
-                       f"Deudas/mes: {_money(a.get('debt_amount'))}\n"
+                       f"\n💵 Efectivo: {_money(a.get('available_cash'))}\n🏡 Retiros/mes: {_money(a.get('owner_amount'))}\n"
+                       f"💳 Deudas/mes: {_money(a.get('debt_amount'))}\n\n"
                        "Se mostrará por separado el costo inicial y los pagos futuros. "
                        "La estimación de FinancIAl usa tus datos y supuestos aceptados. Los costos pendientes se mostrarán por separado. ¿Calculamos?",
                        [("confirm", "Guardar diagnóstico"), ("edit", "Cambiar datos"), ("pause", "Pausar")])
@@ -523,7 +523,7 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return None
         if action == "pause" or normalize(raw) in {"pausar diagnostico", "cancelar diagnostico"}:
             _save(user, context, {"conversation_status": "paused"})
-            return "Conservé tu borrador. Para continuar escribe 'retomar diagnóstico'."
+            return "💾 *Conservé tu borrador*\n\nPuedes continuar cuando quieras.\n💬 Escribe 'retomar diagnóstico' y seguimos donde quedaste."
         if action == "resume" and diagnostic_button:
             return _prompt(context)
         a, step = dict(d.get("answers") or {}), d["current_step"]

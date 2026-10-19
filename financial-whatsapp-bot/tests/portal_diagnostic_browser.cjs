@@ -11,6 +11,7 @@ const fixture = JSON.parse(execFileSync(process.argv[2], [path.join(__dirname, '
     try {
         const page = await browser.newPage({viewport: {width: 390, height: 844}, isMobile: true, deviceScaleFactor: 1});
         const errors = [], writes = [];
+        page.on('dialog', dialog => dialog.accept());
         page.on('pageerror', error => errors.push(error.message));
         let conflict = false, state = structuredClone(fixture.data);
         await page.route('**/*', async route => {
@@ -22,6 +23,7 @@ const fixture = JSON.parse(execFileSync(process.argv[2], [path.join(__dirname, '
                     if (conflict) return route.fulfill({status: 409, json: {detail: 'El diagnóstico cambió. Recarga antes de editar.'}});
                     state.lock_version++;
                     state.summary.initial_remaining_max = 150000;
+                    if (body.coverage_confirmed) state = structuredClone(fixture.completed);
                 }
                 return route.fulfill({json: state});
             }
@@ -66,7 +68,20 @@ const fixture = JSON.parse(execFileSync(process.argv[2], [path.join(__dirname, '
         await page.setViewportSize({width: 1280, height: 900});
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'desktop overflow');
         await page.screenshot({path: path.join(out, 'diagnostico-desktop.png'), fullPage: true});
+        conflict = false;
+        state = {...structuredClone(fixture.completed), coverage_confirmed: false, capacity: null,
+                 economic_status: 'partial', missing_count: 1,
+                 pending_requirements: ['Confirma al final del panel que terminaste de revisar los costos.']};
+        await page.goto('https://financial.test/portal?tab=diagnostico');
+        await page.locator('#diag-content').waitFor({state: 'visible'});
+        await page.locator('#diag-coverage').check();
+        await page.getByRole('button', {name: 'Finalizar diagnóstico'}).click();
+        await page.waitForFunction(() => document.getElementById('diag-status').textContent.includes('Diagnóstico finalizado'));
+        assert.equal(writes.at(-1).changes.length, 0, 'review-only finalization must not rewrite costs');
+        assert.equal(writes.at(-1).coverage_confirmed, true);
+        assert((await page.locator('#diag-assessment').innerText()).includes(fixture.completed.capacity.toUpperCase()));
+        assert(!(await page.locator('#diag-summary').innerText()).includes('faltan costos'));
         assert.deepEqual(errors, []);
-        console.log('PASS: mobile/desktop layout, save batch, CSRF header, conflict preservation, no browser errors');
+        console.log('PASS: mobile/desktop, save batch, CSRF, conflicts, complete diagnosis and review-only finalization');
     } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

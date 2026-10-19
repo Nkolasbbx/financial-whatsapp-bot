@@ -8,9 +8,10 @@
     const $ = id => document.getElementById(id);
     const status = $('diag-status'), content = $('diag-content'), form = $('diag-form');
     const save = $('diag-save'), reload = $('diag-reload');
+    const coverage = $('diag-coverage');
     const money = value => value == null ? 'Pendiente' : new Intl.NumberFormat('es-CL', {style: 'currency', currency: 'CLP', maximumFractionDigits: 0}).format(value);
     const range = (min, max) => min === max ? money(max) : `${money(min)} – ${money(max)}`;
-    let data = null, busy = false, conflicted = false;
+    let data = null, busy = false, conflicted = false, reviewDirty = false;
     const changed = new Set(), controls = new Map();
     function node(tag, text, cls) {
         const element = document.createElement(tag);
@@ -30,8 +31,10 @@
         return payload;
     }
     function updateDirty() {
-        $('diag-dirty').textContent = changed.size ? `${changed.size} costo(s) con cambios. El resumen aún muestra el resultado guardado.` : 'Sin cambios pendientes';
-        save.disabled = busy || conflicted || (!changed.size && !data?.recalculation_pending);
+        $('diag-dirty').textContent = changed.size ? `${changed.size} costo(s) con cambios. El resumen aún muestra el resultado guardado.` :
+            reviewDirty ? 'Guarda la revisión para actualizar tu diagnóstico.' : 'Sin cambios pendientes';
+        save.disabled = busy || conflicted || (!changed.size && !reviewDirty && !data?.recalculation_pending);
+        save.textContent = coverage.checked ? 'Finalizar diagnóstico' : 'Guardar y recalcular';
         reload.disabled = busy;
     }
     function field(parent, title, type, value, options = []) {
@@ -81,17 +84,30 @@
             due.required = active && !monthly && high > Number(paid.value || 0);
             included.parentElement.hidden = !monthly; included.disabled = !active || !monthly;
         }
-        el.addEventListener('input', () => { changed.add(item.key); el.classList.add('changed'); visibility(); updateDirty(); });
+        el.addEventListener('input', () => {
+            changed.add(item.key); el.classList.add('changed'); visibility();
+            coverage.checked = false; reviewDirty = Boolean(data?.coverage_confirmed); updateDirty();
+        });
         visibility(); controls.set(item.key, {el, mode, amount, paid, frequency, due, included, origin: originInput, refresh: visibility});
         return el;
     }
     function render(next) {
-        data = next; changed.clear(); controls.clear(); conflicted = false; reload.hidden = true;
+        data = next; changed.clear(); controls.clear(); conflicted = false; reviewDirty = false; reload.hidden = true;
         content.hidden = !data.available;
         if (!data.available) { message(data.message); return; }
+        coverage.checked = Boolean(data.coverage_confirmed); coverage.disabled = false;
+        const assessment = $('diag-assessment');
+        assessment.replaceChildren(node('h2', data.capacity ? `Capacidad económica: ${data.capacity.toUpperCase()}` : data.economic_status === 'not_evaluable' ? 'Escenario sin actividad mensual suficiente' : 'Completa tu diagnóstico'));
+        assessment.firstElementChild.id = 'diag-assessment-title';
+        assessment.append(node('p', data.capacity_explanation));
+        if (data.pending_requirements?.length) {
+            const list = node('ul');
+            data.pending_requirements.forEach(text => list.append(node('li', text)));
+            assessment.append(list);
+        }
         $('diag-summary').replaceChildren();
         const values = [['Resultado del mes observado · ' + data.period, money(data.summary.current_operating_result)],
-                        ['Pagos iniciales conocidos · faltan costos por completar', range(data.summary.initial_remaining_min, data.summary.initial_remaining_max)],
+                        [data.missing_count ? 'Pagos iniciales conocidos · revisa los pendientes' : 'Pagos iniciales del escenario revisado', range(data.summary.initial_remaining_min, data.summary.initial_remaining_max)],
                         ['Saldo mensual conocido tras gastos, retiros y deudas', money(data.summary.future_after_withdrawals_and_debt)]];
         values.forEach(([label, value]) => { const box = node('article', null, 'diag-metric'); box.append(node('small', label), node('strong', value)); $('diag-summary').append(box); });
         $('diag-costs').replaceChildren();
@@ -101,7 +117,7 @@
             data.items.filter(item => item.group === key).forEach(item => cards.append(card(item)));
             $('diag-costs').append(section);
         });
-        const sources = $('diag-sources'); sources.replaceChildren(node('p', `Catálogo: ${data.catalog_version}. Proyección de tres meses; no certifica permisos ni capacidad económica completa.`));
+        const sources = $('diag-sources'); sources.replaceChildren(node('p', `Catálogo: ${data.catalog_version}. Proyección de tres meses. La capacidad económica es orientativa; verifica permisos y cobros con cada organismo.`));
         data.assumptions.forEach(text => sources.append(node('p', text)));
         data.sources.forEach(source => sources.append(node('p', typeof source === 'string' ? source : Object.values(source).filter(value => typeof value === 'string').join(' · '))));
         message(data.recalculation_pending ? 'Tus cambios están guardados. Pulsa Guardar y recalcular para completar el resultado.' : 'Abre un costo para ajustarlo. Puedes cambiar varios antes de guardar.');
@@ -109,7 +125,7 @@
     }
     async function load() {
         if (busy) return;
-        if (changed.size && !window.confirm('¿Descartar los cambios de esta pantalla y cargar la versión guardada?')) return;
+        if ((changed.size || reviewDirty) && !window.confirm('¿Descartar los cambios de esta pantalla y cargar la versión guardada?')) return;
         busy = true; updateDirty(); message('Cargando tu diagnóstico…');
         try { render(await api()); }
         catch (error) { message(error.message, true); reload.hidden = false; if (error.status === 401) content.hidden = true; }
@@ -133,8 +149,8 @@
         try {
             const csrf = document.querySelector('meta[name="financial-csrf-token"]')?.content;
             render(await api({method: 'PUT', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf || ''},
-                body: JSON.stringify({diagnostic_id: data.diagnostic_id, lock_version: data.lock_version, request_id: crypto.randomUUID(), changes})}));
-            message(`Cambios guardados. Pagos iniciales conocidos: antes ${money(previous)}, ahora ${money(data.summary.initial_remaining_max)}. Puedes consultar el resultado con «mi diagnóstico» en WhatsApp.`);
+                body: JSON.stringify({diagnostic_id: data.diagnostic_id, lock_version: data.lock_version, request_id: crypto.randomUUID(), changes, coverage_confirmed: coverage.checked})}));
+            message(`${data.capacity ? 'Diagnóstico finalizado. Capacidad: ' + data.capacity.toUpperCase() + '.' : 'Cambios guardados. Revisa los pendientes indicados arriba.'} Pagos iniciales: antes ${money(previous)}, ahora ${money(data.summary.initial_remaining_max)}. Consulta «mi diagnóstico» en WhatsApp.`);
             status.scrollIntoView({behavior: 'smooth', block: 'center'});
         } catch (error) {
             message(error.message, true); reload.hidden = false;
@@ -143,10 +159,12 @@
             if (error.status === 401) content.hidden = true;
             // Re-enable through each card's own visibility rules without losing edits.
             controls.forEach(c => { c.mode.disabled = false; c.refresh(); });
+            coverage.disabled = false;
         } finally { busy = false; updateDirty(); }
     });
     form.noValidate = true;
     reload.addEventListener('click', load);
-    window.addEventListener('beforeunload', event => { if (changed.size) { event.preventDefault(); event.returnValue = ''; } });
+    coverage.addEventListener('change', () => { reviewDirty = coverage.checked !== Boolean(data?.coverage_confirmed); updateDirty(); });
+    window.addEventListener('beforeunload', event => { if (changed.size || reviewDirty) { event.preventDefault(); event.returnValue = ''; } });
     load();
 })();

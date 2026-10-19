@@ -333,6 +333,14 @@ def evaluate_diagnostic(context: dict) -> FormalizationAssessmentInput:
         if not blockers and projection and projection.get("has_operating_projection"):
             result["economic_assessment"]["capacity"] = projection["capacity"]
         result["economic_assessment"]["missing_fields"] = blockers
+        # A completed short-flow budget is an economic assessment of the user's
+        # declared scenario. Municipal/tax verification remains separately recorded.
+        if answers.get("estimate_flow") == "short-v1":
+            result["verification_pending"] = [key for key in missing if key not in blockers]
+            missing = blockers
+            result["economic_assessment"]["status"] = (
+                "partial" if blockers else "complete" if result["economic_assessment"]["capacity"] else "not_evaluable")
+            result["economic_assessment"]["coverage_confirmed"] = answers.get("estimate_coverage_confirmed") is True
         result["known_initial_cash_gap"] = max(0, initial_high - cash) if type(cash) is int else None
         result["future_after_withdrawals_and_debt"] = (future_income - future_operating - answers["owner_amount"] - answers["debt_amount"]
             if type(answers.get("owner_amount")) is int and type(answers.get("debt_amount")) is int else None)

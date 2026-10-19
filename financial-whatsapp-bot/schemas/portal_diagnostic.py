@@ -30,6 +30,7 @@ class DiagnosticAdjustments(BaseModel):
     lock_version: StrictInt = Field(ge=0)
     request_id: UUID
     changes: list[CostAdjustment] = Field(max_length=80)
+    coverage_confirmed: bool = False
 
     @model_validator(mode="after")
     def unique_keys(self):

@@ -12,6 +12,51 @@ REASON_LABELS = {
 }
 
 
+def pending_labels(keys, context):
+    names = {item["item_key"]: item["label"] for item in context.get("items", [])}
+    fields = {
+        "estimate_coverage": "Confirma al final del panel que terminaste de revisar los costos.",
+        "expenses_confirmed": "Confirma tus gastos por WhatsApp.",
+        "income_confirmed": "Confirma tus ingresos por WhatsApp.",
+        "representative": "Confirma por WhatsApp los ingresos y gastos de los meses futuros.",
+        "calendar_confirmed": "Confirma por WhatsApp el calendario de cobros y pagos.",
+        "preparation_confirmed": "Indica por WhatsApp los otros pagos antes de comenzar (0 si no tienes).",
+        "owner_confirmed": "Confirma por WhatsApp tu retiro personal mensual.",
+        "debt_confirmed": "Confirma por WhatsApp las cuotas de tus deudas.",
+        "available_cash": "Indica por WhatsApp el efectivo disponible para tu negocio.",
+        "financial_sources": "Vuelve a consultar los movimientos del mes por WhatsApp.",
+        "estimate_catalog_expired": "Es necesario revisar la vigencia de las estimaciones del catálogo.",
+        "estimate_profile_changed": "Revisa las estimaciones después del cambio de rubro, comuna o lugar.",
+        "estimate_needs": "Completa las preguntas sobre tu negocio por WhatsApp.",
+        "projection_start": "Revisa el mes de inicio de la proyección por WhatsApp.",
+        "monthly_period": "Revisa el mes observado por WhatsApp.",
+    }
+    prefixes = {"applicability": "Completa el monto o marca que no corresponde",
+                "amount": "Completa el monto", "paid": "Indica lo ya pagado (0 si nada)",
+                "schedule": "Revisa la fecha de pago", "schedule_total": "Revisa las cuotas y su total",
+                "replacement": "Revisa el gasto que reemplaza", "evidence": "Indica el origen del monto",
+                "catalog_scope": "Revisa el alcance del costo", "financing_commitment": "Confirma el financiamiento"}
+    labels = []
+    for key in keys:
+        prefix, _, item_key = key.partition(":")
+        label = (f"{prefixes[prefix]}: {names.get(item_key, 'costo por revisar')}." if prefix in prefixes
+                 else fields.get(key, "Revisa los datos del diagnóstico por WhatsApp."))
+        if label not in labels:
+            labels.append(label)
+    return labels
+
+
+def capacity_explanation(result):
+    capacity = (result.get("economic_assessment") or {}).get("capacity")
+    if not capacity:
+        return "Completa los datos pendientes para evaluar el escenario." if (result.get("economic_assessment") or {}).get("missing_fields") else "No hay actividad mensual suficiente para clasificar la capacidad económica."
+    reasons = [REASON_LABELS[key] for key in (result.get("projection") or {}).get("reasons", []) if key in REASON_LABELS]
+    if reasons:
+        return " ".join(reasons[:2])
+    return ("El escenario cubre los pagos, mantiene una reserva y resiste una baja de ventas del 15%." if capacity == "alta"
+            else "El escenario cubre los pagos, pero tiene un margen de seguridad limitado.")
+
+
 def summary(context, widget, money):
     d = context["diagnostic"]
     result = d.get("result") or {}
@@ -41,10 +86,19 @@ def summary(context, widget, money):
 def short_summary(context, widget, money):
     result = context["diagnostic"]["result"]
     groups = result["short_budget"]
+    economic = result.get("economic_assessment") or {}
+    capacity = economic.get("capacity")
+    missing = pending_labels(economic.get("missing_fields", []), context)
+    if capacity:
+        indicator = {"alta": "🟢", "media": "🟡", "baja": "🔴"}[capacity]
+        status = f"{indicator} Capacidad económica orientativa: {capacity.upper()}\n\n💬 {capacity_explanation(result)}"
+    elif missing:
+        status = "📝 Para terminar: " + missing[0] + (" Hay más pendientes en «Ver detalle»." if len(missing) > 1 else "")
+    else:
+        status = "💬 " + capacity_explanation(result)
     pending_notice = (
-        "\n\nLos costos sin una estimación precisa debes completarlos en «Ajustar en mi panel», "
-        "con el monto informado por la municipalidad, un profesional o proveedor. "
-        "Hasta completarlos quedan fuera del total; no son gratuitos."
+        "\n\n✏️ Los costos sin una estimación precisa debes completarlos en «Ajustar en mi panel», "
+        "con un monto informado. Quedan fuera del total; no son gratuitos."
         if any(row["pending"] for row in groups.values()) else ""
     )
 
@@ -55,16 +109,15 @@ def short_summary(context, widget, money):
             return "por completar"
         return value + (" + pendientes" if row["pending"] else "")
 
-    return widget(context, "📊 Tu presupuesto estimado\n\n"
-                  f"Resultado del mes observado: {money(result.get('current_operating_result'))}\n\n"
-                  f"Para comenzar (saldos pendientes):\n• Trámites y permisos: {amount('permits')}\n"
+    return widget(context, "📊 *Tu diagnóstico económico*\n\n" + status + "\n\n"
+                  f"💰 *Resultado del mes observado*\n{money(result.get('current_operating_result'))}\n\n"
+                  f"🚀 *Para comenzar* (saldos pendientes)\n• Trámites y permisos: {amount('permits')}\n"
                   f"• Arreglos y equipos: {amount('setup')}\n"
-                  f"Total inicial conocido, incluida preparación: {money(result.get('initial_remaining_min'))}–{money(result.get('initial_remaining_max'))}\n"
+                  f"Total inicial, incluida preparación: {money(result.get('initial_remaining_min'))}–{money(result.get('initial_remaining_max'))}\n"
                   f"Faltaría cubrir con efectivo: {money(result.get('known_initial_cash_gap'))}\n\n"
-                  f"Adicionales al mes: {amount('monthly')}\nPagos anuales separados: {amount('annual')}\n"
-                  f"Saldo mensual conocido tras gastos, retiros y deudas (costos altos del rango): {money(result.get('future_after_withdrawals_and_debt'))}\n\n"
-                  "Proyección: 3 meses. Faltan costos o validaciones: aún no es un presupuesto completo ni una calificación de capacidad. "
-                  "Son estimaciones de FinancIAl, no cobros oficiales." + pending_notice,
+                  f"🗓️ *Gastos posteriores*\n• Adicionales al mes: {amount('monthly')}\n• Pagos anuales separados: {amount('annual')}\n\n"
+                  f"💵 *Saldo mensual tras gastos, retiros y deudas*\n{money(result.get('future_after_withdrawals_and_debt'))}\n\n"
+                  "ℹ️ Proyección: 3 meses, usando los costos altos del rango. Estimaciones de FinancIAl; verifica permisos y cobros con cada organismo." + pending_notice,
                   [("details", "Ver detalle"), ("short_adjust", "Ajustar en mi panel"), ("edit", "Cambiar mis datos")])
 
 

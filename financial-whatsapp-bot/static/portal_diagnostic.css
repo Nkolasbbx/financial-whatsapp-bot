@@ -8,6 +8,10 @@
 .diag-metric small { display: block; color: #d8eee8; line-height: 1.5; }
 .diag-metric strong { display: block; font-size: 22px; margin-top: 10px; }
 .diag-notice { background: #edf7f0; border: 1px solid #aed3ba; color: #174b39; border-radius: 14px; padding: 16px; margin: 20px 0; line-height: 1.6; }
+.diag-review { display: flex; align-items: flex-start; gap: 12px; background: white; padding: 18px; margin-top: 24px; border: 1px solid #809fa5; border-radius: 14px; font-size: 16px; line-height: 1.6; cursor: pointer; }
+.diag-review input { flex-shrink: 0; width: 24px; height: 24px; margin-top: 3px; accent-color: #139381; }
+#diag-assessment h2 { margin: 0 0 8px; font-size: 21px; }
+#diag-assessment p { margin-bottom: 0; }
 .diag-group h2 { margin: 28px 0 12px; font-size: 20px; }
 .diag-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
 .diag-cost { min-width: 0; background: white; border: 1px solid #c7d9da; border-radius: 16px; padding: 16px; }

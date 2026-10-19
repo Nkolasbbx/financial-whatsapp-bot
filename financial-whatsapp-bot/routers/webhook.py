@@ -446,8 +446,9 @@ async def whatsapp_webhook(request: Request):
                                 link += "&tab=diagnostico"
                             await send_text(
                                 phone,
-                                (f"📊 Ajusta tus costos desde el celular: {link}\n\n"
-                                 "Puedes cambiar varios montos juntos y guardar para recalcular. Los ingresos y gastos los seguimos revisando por WhatsApp.\n\n"
+                                (f"📊 *Tu diagnóstico en el panel*\n\n🔗 Abre este enlace desde tu celular:\n{link}\n\n"
+                                 "✏️ Ajusta los costos que necesites.\n✅ Marca la revisión y pulsa «Finalizar diagnóstico».\n\n"
+                                 "💰 Tus ingresos y gastos los seguimos revisando por WhatsApp.\n\n"
                                  if diagnostic_link else f"📊 Acá está el link a tu panel: {link}\n\n") +
                                 "Es de un solo uso y vence en 30 minutos — si "
                                 "se vence, vuelve a pedirlo desde el menú.",

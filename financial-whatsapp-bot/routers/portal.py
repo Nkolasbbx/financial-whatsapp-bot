@@ -953,9 +953,13 @@ async def panel(
           <p id="diag-status" role="status" aria-live="polite">Cargando tu diagnóstico…</p>
           <button type="button" id="diag-reload" class="diag-secondary" hidden>Recargar diagnóstico</button>
           <div id="diag-content" hidden>
+            <section id="diag-assessment" class="diag-notice" aria-labelledby="diag-assessment-title"></section>
             <div id="diag-summary" class="diag-summary"></div>
             <aside class="diag-notice">Los montos de FinancIAl son estimaciones, no cobros oficiales. Completa los costos sin estimación con el monto informado por la municipalidad, un profesional o proveedor. Los pendientes quedan fuera del total: no son gratuitos.</aside>
             <form id="diag-form"><div id="diag-costs"></div>
+              <label class="diag-review"><input id="diag-coverage" type="checkbox">
+                Revisé los costos: completé los que aplican y marqué los que no necesito. No tengo otros costos por agregar a este escenario.
+              </label>
               <footer class="diag-savebar"><span id="diag-dirty">Sin cambios pendientes</span>
                 <button id="diag-save" type="submit">Guardar y recalcular</button>
               </footer>

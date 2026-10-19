@@ -53,10 +53,10 @@ def pending_question(context):
 
 
 def assumptions(context):
-    return ("Escenario: un negocio pequeño, una instalación y capital de hasta $10.000.000; "
-            "sin obras estructurales, actividades especiales ni rebajas por Microempresa Familiar. "
-            "Los aumentos mensuales se suponen fuera de tus gastos actuales; puedes corregirlos. "
-            "Si faltan equipos, su monto queda pendiente hasta que lo indiques. "
+    return ("• Un negocio pequeño, una instalación y capital de hasta $10.000.000.\n"
+            "• Sin obras estructurales, actividades especiales ni rebajas por Microempresa Familiar.\n"
+            "• Los aumentos mensuales se suponen fuera de tus gastos actuales; puedes corregirlos.\n"
+            "• Si faltan equipos, su monto queda pendiente hasta que lo indiques.\n"
             "Los pagos iniciales se suponen pendientes, antes de comenzar; no son vencimientos oficiales.")
 
 
@@ -118,11 +118,11 @@ def prompt(context, widget):
         q = pending_question(context)
         if q:
             index = [r[0] for r in questions(context)].index(q[0]) + 1
-            return widget(context, f"Tu negocio · {index}/3\n{q[1]}",
+            return widget(context, f"🏪 *Tu negocio · {index}/3*\n\n{q[1]}\n\n👇 Elige la opción que mejor te represente.",
                           [(f"short_choice_{i}", title) for i, (_, title) in enumerate(q[2])])
     if step == "short_assumptions":
-        return widget(context, "Prepararé una estimación sin preguntarte por cada trámite.\n\n" + assumptions(context)
-                      + "\n\n¿Usamos este escenario? Si no corresponde, mostraré tus finanzas con los costos pendientes.",
+        return widget(context, "✨ *¡Vamos con tu estimación!*\n\nUsaremos estas condiciones para preparar el presupuesto:\n\n" + assumptions(context)
+                      + "\n\n¿Usamos este escenario?\n💡 Si no corresponde, mostraré tus finanzas con los costos pendientes.",
                       [("short_accept", "Ver estimación"), ("short_reject", "No es mi caso"), ("pause", "Pausar")])
     if step == "short_groups":
         return widget(context, "¿Qué parte quieres ajustar? Solo cambia lo que conoces; lo demás se conserva.",

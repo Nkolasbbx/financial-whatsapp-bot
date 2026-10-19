@@ -32,10 +32,10 @@ class PortalDiagnosticTests(unittest.TestCase):
             p = patch.object(service, name, side_effect=callback)
             p.start(); self.addCleanup(p.stop)
 
-    def payload(self, changes=()):
+    def payload(self, changes=(), *, reviewed=False):
         d = self.repo.data["diagnostic"]
         return DiagnosticAdjustments(diagnostic_id=d["id"], lock_version=d["lock_version"],
-                                     request_id=uuid4(), changes=list(changes))
+                                     request_id=uuid4(), changes=list(changes), coverage_confirmed=reviewed)
 
     def change(self, key="estimate:C12", **values):
         return {"key": key, "mode": "manual", "amount": 200000, "paid": 50000,
@@ -114,6 +114,63 @@ class PortalDiagnosticTests(unittest.TestCase):
     def test_schema_rejects_duplicates_extra_fields_and_noninteger_money(self):
         for changes in ([self.change(), self.change()], [self.change(amount=-1)], [self.change(amount=2.5)], [self.change(user_id="evil")]):
             with self.subTest(changes=changes), self.assertRaises(ValidationError): self.payload(changes)
+
+    def fill_pending_costs(self):
+        changes = []
+        for item in service.view(self.repo.get())["items"]:
+            if item["mode"] != "pending":
+                continue
+            # Real supplied budgets for every unresolved concept in this fixture.
+            changes.append(self.change(item["key"], amount=1000, paid=0,
+                                       frequency=item["frequency"] if item["frequency"] in {"once", "monthly", "annual"} else "once"))
+        return changes
+
+    def test_completing_panel_produces_full_economic_diagnosis_on_both_channels(self):
+        result = service.update(self.flow.user["id"], self.payload(self.fill_pending_costs(), reviewed=True))
+        self.assertEqual(result["economic_status"], "complete")
+        self.assertEqual(result["capacity"], "alta")
+        self.assertEqual(result["pending_requirements"], [])
+        d = self.repo.data["diagnostic"]
+        self.assertEqual(d["assessment_status"], "complete")
+        self.assertEqual(d["missing_fields"], [])
+        self.assertFalse(d["result"]["economic_assessment"]["legal_validation"])
+        self.assertTrue(d["result"]["verification_pending"])
+        response = self.flow.send("mi diagnóstico")
+        self.assertIn("ALTA", response["body"])
+        self.assertNotIn("Faltan costos o validaciones", response["body"])
+        self.assertIn("resiste una baja de ventas", response["body"])
+
+    def test_unknown_cost_still_blocks_even_with_review_checked(self):
+        result = service.update(self.flow.user["id"], self.payload(reviewed=True))
+        self.assertIsNone(result["capacity"])
+        self.assertTrue(any("Completa el monto" in label for label in result["pending_requirements"]))
+
+    def test_all_amounts_need_explicit_review_then_can_finalize_without_retyping(self):
+        result = service.update(self.flow.user["id"], self.payload(self.fill_pending_costs()))
+        self.assertIsNone(result["capacity"])
+        self.assertEqual(result["pending_requirements"], ["Confirma al final del panel que terminaste de revisar los costos."])
+        result = service.update(self.flow.user["id"], self.payload(reviewed=True))
+        self.assertEqual(result["capacity"], "alta")
+
+    def test_missing_financial_data_is_shown_instead_of_hidden_validation(self):
+        self.repo.data["diagnostic"]["answers"]["preparation_confirmed"] = False
+        result = service.update(self.flow.user["id"], self.payload(self.fill_pending_costs(), reviewed=True))
+        self.assertIsNone(result["capacity"])
+        self.assertEqual(result["pending_requirements"], ["Indica por WhatsApp los otros pagos antes de comenzar (0 si no tienes)."])
+
+    def test_complete_diagnosis_can_be_low_or_medium_and_keeps_real_reasons(self):
+        for income, cash, expected in ((200000, 1500000, "baja"), (310000, 310000, "media")):
+            with self.subTest(expected=expected):
+                context = copy.deepcopy(self.repo.get())
+                # Change budget items and corresponding answer together, as WhatsApp does.
+                self.repo.data["diagnostic"]["answers"].update(income_total=income, available_cash=cash)
+                for item in self.repo.data["items"]:
+                    if item["item_key"] == "current_income":
+                        item.update(amount_clp_min=income, amount_clp_max=income)
+                result = service.update(self.flow.user["id"], self.payload(self.fill_pending_costs(), reviewed=True))
+                self.assertEqual(result["capacity"], expected)
+                self.assertTrue(result["capacity_explanation"])
+                self.repo.data = context
 
 
 class PortalDiagnosticHTTPTests(unittest.TestCase):

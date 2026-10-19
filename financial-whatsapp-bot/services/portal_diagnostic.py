@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from core import formalization_cost_guide as guide
 from core import formalization_short_flow as brief
 from core.formalization_results import calculate_assessment
+from core.formalization_presentation import pending_labels, capacity_explanation
 from db.formalization_diagnostics import (
     get_formalization_context, save_formalization_draft, confirm_formalization_revision,
     FormalizationConflictError, FormalizationNotFoundError,
@@ -34,6 +35,8 @@ def view(context):
         return {"available": False, "message": "Primero completa o retoma tu diagnóstico por WhatsApp. Al llegar al resultado podrás ajustar aquí sus costos."}
     answers = d["answers"]
     result = d.get("result") or calculate_assessment(context).result
+    economic = result.get("economic_assessment") or {}
+    pending = economic.get("missing_fields", d.get("missing_fields") or [])
     rows = []
     for item in guide.guide_items(context):
         decision = item.get("metadata", {}).get("decision", {})
@@ -55,7 +58,10 @@ def view(context):
             "recalculation_pending": d["current_step"] == "portal_costs", "items": rows,
             "summary": {key: result.get(key) for key in ("current_operating_result", "initial_remaining_min", "initial_remaining_max",
                         "future_after_withdrawals_and_debt", "known_initial_cash_gap")},
-            "missing_count": len(d.get("missing_fields") or []),
+            "missing_count": len(pending), "pending_requirements": pending_labels(pending, context),
+            "capacity": economic.get("capacity"), "capacity_explanation": capacity_explanation(result),
+            "coverage_confirmed": answers.get("estimate_coverage_confirmed") is True,
+            "economic_status": "complete" if economic.get("capacity") else "partial" if pending else "not_evaluable",
             "assumptions": result.get("assumptions", []), "sources": result.get("sources", []),
             "catalog_version": answers["estimate_catalog"]["version"]}
 
@@ -108,7 +114,9 @@ def update(user_id, payload):
             item["evidence"].update(origin=origin, channel="portal")
         changed.append(FormalizationItemInput.model_validate(item).model_dump(mode="json"))
     # Only changed rows are written; profile, financial movements and other costs remain untouched.
-    answers = {**d["answers"], "budget_as_of": today().isoformat()}
+    answers = {**d["answers"], "budget_as_of": today().isoformat(),
+               "estimate_coverage_confirmed": payload.coverage_confirmed,
+               "cost_reviewed_at": today().isoformat() if payload.coverage_confirmed else None}
     saved = save_formalization_draft(user_id, d["id"], d["lock_version"],
         {"answers": answers, "conversation_status": "paused", "current_step": "portal_costs", "pending_field": None},
         items=changed, reopen=d["workflow_status"] == "confirmed")
