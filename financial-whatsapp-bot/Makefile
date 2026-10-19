@@ -1,8 +1,12 @@
+# Usa los binarios del venv del proyecto si existe, para que los targets
+# funcionen sin tener que activar el venv antes.
+VENV_BIN := $(if $(wildcard venv/bin/arq),venv/bin/,)
+
 run-server:
-	uvicorn main:app --reload --port 8000
+	$(VENV_BIN)uvicorn main:app --reload --port 8000
 
 run-worker:
-	arq worker.WorkerSettings
+	$(VENV_BIN)arq worker.WorkerSettings
 
 off-railway:
 	npx -y @railway/cli@latest scale us-west=0 --service financial-whatsapp-bot

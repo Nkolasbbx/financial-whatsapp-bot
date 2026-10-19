@@ -41,6 +41,11 @@ class UserProfileResetTests(unittest.TestCase):
             "reminders_enabled": True,
             "reminders_paused": True,
             "reminder_count": 3,
+            "nombre_completo": "Ana Pérez",
+            "rut": "12345678-5",
+            "email": "ana@ejemplo.cl",
+            "direccion_negocio": "Av. Recoleta 123",
+            "profile_completion_step": "done",
         }
 
         with patch.dict(sys.modules, {"dependencies": fake_dependencies}):
@@ -61,6 +66,8 @@ class UserProfileResetTests(unittest.TestCase):
         self.assertFalse(payload["reminders_enabled"])
         self.assertFalse(payload["reminders_paused"])
         self.assertEqual(payload["reminder_count"], 0)
+        for field in ("nombre_completo", "rut", "email", "direccion_negocio", "profile_completion_step"):
+            self.assertIsNone(payload[field])
 
     @patch("services.message_router.process_onboarding", return_value="onboarding")
     @patch("services.message_router.reset_user_profile")

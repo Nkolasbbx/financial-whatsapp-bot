@@ -355,6 +355,36 @@
     background: #7c3aed;
 }
 
+/* Texto de los eventos en blanco: los eventos con hora (vista Mes) y las
+   filas de la vista Lista no usan el texto blanco de FullCalendar y
+   heredaban el petróleo del contenedor, quedando invisibles sobre su
+   propio fondo. */
+#business-calendar .calendar-event-active,
+#business-calendar .calendar-event-completed,
+#business-calendar .calendar-event-overdue,
+#business-calendar .calendar-event-tax,
+#business-calendar .calendar-event-fund,
+#business-calendar .calendar-event-active *,
+#business-calendar .calendar-event-completed *,
+#business-calendar .calendar-event-overdue *,
+#business-calendar .calendar-event-tax *,
+#business-calendar .calendar-event-fund * {
+    color: #fff;
+}
+
+/* El punto de los eventos con hora y de la vista Lista sale azul por
+   defecto; en blanco se distingue sobre el fondo de color. */
+#business-calendar .fc-daygrid-event-dot,
+#business-calendar .fc-list-event-dot {
+    border-color: #fff;
+}
+
+/* Vista Lista: el hover de FullCalendar pone fondo gris claro en las
+   celdas y taparía el texto blanco; se mantiene el color de la fila. */
+#business-calendar .fc-list-event:hover td {
+    background: transparent;
+}
+
 @media (max-width: 640px) {
     .calendar-header {
         flex-direction: column;

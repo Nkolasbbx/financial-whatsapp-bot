@@ -13,7 +13,8 @@ class FundAlertDatabaseTests(unittest.TestCase):
         selected = query.select.return_value
         not_formalized = selected.eq.return_value
         onboarding_done = not_formalized.eq.return_value
-        roadmap_not_completed = onboarding_done.is_.return_value
+        not_blocked = onboarding_done.eq.return_value
+        roadmap_not_completed = not_blocked.is_.return_value
         roadmap_not_completed.execute.return_value = SimpleNamespace(
             data=[
                 {
@@ -48,7 +49,8 @@ class FundAlertDatabaseTests(unittest.TestCase):
 
         self.assertEqual([user["id"] for user in result], ["pending-user"])
         client.table.assert_called_once_with("users")
-        onboarding_done.is_.assert_called_once_with(
+        onboarding_done.eq.assert_called_once_with("bloqueado", False)
+        not_blocked.is_.assert_called_once_with(
             "roadmap_completed_at",
             "null",
         )

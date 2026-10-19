@@ -7,6 +7,7 @@ import dependencies
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from config import META_WEBHOOK_VERIFY_TOKEN, DEBUG
+from core.expert_flow import EXPERT_RELAY
 from core.roadmaps import extract_hito_context
 from db.rate_limits import (
     RATE_LIMIT_WARNING,
@@ -15,7 +16,12 @@ from db.rate_limits import (
 )
 from db.calendar import update_calendar_delivery_status
 from db.reminders import update_reminder_delivery_status
-from db.users import get_last_user_message, get_user
+from db.users import (
+    BLOCKED_USER_MESSAGE,
+    get_last_user_message,
+    get_user,
+    is_user_blocked,
+)
 from phone_lock import acquire_phone_lock, release_phone_lock
 from services.message_router import RESET_COMMANDS, route_message, split_message
 from services.pending_confirmation import (
@@ -218,6 +224,18 @@ async def whatsapp_webhook(request: Request):
                     logger.warning("Mensaje de Meta sin teléfono válido")
                     continue
 
+                # Usuario bloqueado manualmente (users.bloqueado): solo recibe
+                # el aviso de acceso. Se revisa antes del lock y de transcribir
+                # audio para no gastar Whisper ni IA en él.
+                if await asyncio.to_thread(is_user_blocked, phone):
+                    logger.info("Mensaje ignorado: usuario bloqueado %s", phone)
+                    try:
+                        await send_text(phone, BLOCKED_USER_MESSAGE)
+                    except WhatsAppAPIError as error:
+                        logger.error("No se pudo avisar al usuario bloqueado: %s", error)
+                    processed_messages += 1
+                    continue
+
                 # Lock distribuido en Redis: garantiza que, para este teléfono,
                 # no se envíe ninguna otra respuesta mientras un job de IA
                 # encolado por un mensaje anterior siga en curso en el worker.
@@ -374,6 +392,7 @@ async def whatsapp_webhook(request: Request):
                         phone,
                         message,
                         reply_to_message_id,
+                        message_id=message_id,
                     )
 
                     try:
@@ -414,12 +433,23 @@ async def whatsapp_webhook(request: Request):
                             )
                             hand_off_to_worker = True
 
-                        elif result == "__WEB_PANEL_LINK__":
+                        elif result == EXPERT_RELAY:
+                            # Mensaje reenviado al panel del experto (HdU16):
+                            # no hay respuesta automática que mandar.
+                            logger.info("Mensaje de %s reenviado al experto", phone)
+
+                        elif result in ("__WEB_PANEL_LINK__", "__DIAGNOSTIC_PANEL_LINK__"):
                             token = await create_access_token(redis, phone)
                             link = f"{str(request.base_url).rstrip('/')}/portal/acceso?token={token}"
+                            diagnostic_link = result == "__DIAGNOSTIC_PANEL_LINK__"
+                            if diagnostic_link:
+                                link += "&tab=diagnostico"
                             await send_text(
                                 phone,
-                                f"📊 Acá está el link a tu panel: {link}\n\n"
+                                (f"📊 *Tu diagnóstico en el panel*\n\n🔗 Abre este enlace desde tu celular:\n{link}\n\n"
+                                 "✏️ Ajusta los costos que necesites.\n✅ Marca la revisión y pulsa «Finalizar diagnóstico».\n\n"
+                                 "💰 Tus ingresos y gastos los seguimos revisando por WhatsApp.\n\n"
+                                 if diagnostic_link else f"📊 Acá está el link a tu panel: {link}\n\n") +
                                 "Es de un solo uso y vence en 30 minutos — si "
                                 "se vence, vuelve a pedirlo desde el menú.",
                             )

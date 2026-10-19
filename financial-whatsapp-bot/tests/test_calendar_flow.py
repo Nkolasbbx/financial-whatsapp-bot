@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from core import calendar_flow
 from services.message_router import route_message
+from tests.profile_fixtures import COMPLETE_PROFILE
 
 
 class CalendarFlowTests(unittest.TestCase):
@@ -130,6 +131,7 @@ class CalendarFlowTests(unittest.TestCase):
         cancel_fund_mock,
     ):
         get_user_mock.return_value = {
+            **COMPLETE_PROFILE,
             **self.user,
             "onboarding_step": "done",
             "reminder_count": 0,

@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
     onboarding_step TEXT DEFAULT '0',         -- '0','1','2','3','done'
     roadmap JSONB DEFAULT '[]'::jsonb,        -- Array de hitos
     conversation_history JSONB DEFAULT '[]'::jsonb,
+    bloqueado BOOLEAN NOT NULL DEFAULT false, -- true: el bot solo responde el aviso de acceso
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );

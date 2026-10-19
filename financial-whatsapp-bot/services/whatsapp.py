@@ -134,24 +134,33 @@ async def download_media(media_id: str) -> tuple[bytes, str]:
             await client.aclose()
 
 
-async def send_text(phone: str, content: str) -> dict:
-    """Envía un mensaje de texto libre mediante WhatsApp Cloud API."""
+async def send_text(
+    phone: str,
+    content: str,
+    reply_to_message_id: str | None = None,
+) -> dict:
+    """Envía un mensaje de texto libre mediante WhatsApp Cloud API.
+
+    Con `reply_to_message_id` (el wamid de un mensaje recibido) el mensaje se
+    muestra como respuesta citada a ese mensaje.
+    """
     recipient = normalize_phone(phone).removeprefix("+")
     if not recipient:
         raise WhatsAppAPIError("El teléfono destinatario no es válido")
 
-    return await _post_message(
-        {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": recipient,
-            "type": "text",
-            "text": {
-                "preview_url": False,
-                "body": content,
-            },
-        }
-    )
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": recipient,
+        "type": "text",
+        "text": {
+            "preview_url": False,
+            "body": content,
+        },
+    }
+    if reply_to_message_id:
+        payload["context"] = {"message_id": reply_to_message_id}
+    return await _post_message(payload)
 
 
 async def send_template(

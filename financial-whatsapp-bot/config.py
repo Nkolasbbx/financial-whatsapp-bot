@@ -127,6 +127,13 @@ INGESTION_ENABLE_CONTEXTUAL = (
     os.getenv("INGESTION_ENABLE_CONTEXTUAL", "false").strip().lower() == "true"
 )
 
+# HDU017 usa supabase_admin del Supabase de usuarios, no DB_DSN (RAG).
+# La bandera permite desactivar la entrada sin eliminar borradores ni afectar
+# el resto del asistente.
+FORMALIZATION_DIAGNOSTICS_ENABLED = (
+    os.getenv("FORMALIZATION_DIAGNOSTICS_ENABLED", "true").strip().lower() == "true"
+)
+
 # Cuentas del panel municipal (InnovaRecoleta, El Bosque). Hardcodeadas a
 # propósito: solo hay 2 municipalidades clientes por ahora, no se justifica
 # un sistema de registro/roles todavía. Las contraseñas viven acá solo como

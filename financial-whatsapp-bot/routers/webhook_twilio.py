@@ -12,7 +12,13 @@ from db.rate_limits import (
     check_message_rate_limit,
     is_rate_limit_exempt,
 )
-from db.users import get_last_user_message, get_user, save_user
+from db.users import (
+    BLOCKED_USER_MESSAGE,
+    get_last_user_message,
+    get_user,
+    is_user_blocked,
+    save_user,
+)
 
 logger = logging.getLogger("financial")
 router = APIRouter()
@@ -26,6 +32,12 @@ async def whatsapp_webhook_twilio(request: Request, background_tasks: Background
     
     phone_clean = phone.replace("whatsapp:", "").strip()
     twiml = MessagingResponse()
+
+    # Usuario bloqueado manualmente (users.bloqueado): solo recibe el aviso de acceso.
+    if await asyncio.to_thread(is_user_blocked, phone_clean):
+        logger.info("Mensaje Twilio ignorado: usuario bloqueado %s", phone_clean)
+        twiml.message(BLOCKED_USER_MESSAGE)
+        return Response(content=str(twiml), media_type="application/xml")
 
     if not is_rate_limit_exempt(message):
         rate_limit = await asyncio.to_thread(

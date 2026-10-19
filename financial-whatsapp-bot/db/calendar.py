@@ -562,6 +562,7 @@ def get_due_calendar_events(
         )
         .eq("status", "active")
         .eq("users.reminders_enabled", True)
+        .eq("users.bloqueado", False)
         .lte("reminder_at", _iso_utc(current))
         .order("reminder_at", desc=False)
         .limit(scan_limit)

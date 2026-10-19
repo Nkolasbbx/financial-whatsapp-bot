@@ -148,6 +148,7 @@ def get_due_reminder_users(limit: int) -> list[dict]:
         )
         .eq("reminders_enabled", True)
         .eq("reminders_paused", False)
+        .eq("bloqueado", False)
         .lt("reminder_count", 3)
         .lte("next_reminder_at", _iso_utc(_utc_now()))
         .order("next_reminder_at")

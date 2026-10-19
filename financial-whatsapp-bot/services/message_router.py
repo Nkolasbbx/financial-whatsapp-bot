@@ -1,7 +1,19 @@
 import logging
 
-from config import FINANCIAL_MOVEMENTS_ENABLED
-from db.users import get_user, reset_user_profile, save_user
+from config import FINANCIAL_MOVEMENTS_ENABLED, FORMALIZATION_DIAGNOSTICS_ENABLED
+from core.formalization_flow import (
+    PASS_TO_AI as DIAGNOSTIC_PASS_TO_AI,
+    handle_diagnostic_message,
+    is_diagnostic_entry,
+)
+from db.users import (
+    UserPersistenceError,
+    create_user_profile,
+    get_user,
+    reset_user_profile,
+    save_user,
+    update_onboarding_profile,
+)
 from core.calendar_flow import (
     handle_calendar_message,
     is_calendar_entry_message,
@@ -20,6 +32,7 @@ from core.financial_flow import (
     should_exit_financial_message,
     should_handle_financial_message,
 )
+from core.expert_flow import handle_expert_message
 from core.menu import MENU_BUTTON, get_menu_widget
 from core.roadmaps import (
     get_roadmap_text,
@@ -31,7 +44,12 @@ from core.roadmaps import (
     HITO_VOLVER_ID,
     MENU_FINANCIAL_ID,
 )
-from core.onboarding import process_onboarding
+from core.onboarding import (
+    PROFILE_BACK_ID,
+    PROFILE_SKIP_ADDRESS_ID,
+    needs_onboarding,
+    process_onboarding,
+)
 from db.calendar import clear_calendar_session, get_calendar_session
 from db.fondos import (
     cancel_fund_session,
@@ -74,6 +92,10 @@ YA_LO_REALICE_TRIGGERS = [
 # routers/webhook.py para pedir confirmación cuando el comando llega
 # transcrito desde un audio (HdU11, AC3).
 RESET_COMMANDS = {"reiniciar", "reset", "empezar de nuevo", "menu_reiniciar"}
+PAUSE_REMINDERS_COMMANDS = {
+    "pausar recordatorios", "desactivar recordatorios", "no quiero recordatorios",
+    "menu_recordatorios_off",
+}
 
 # Frases de navegación al menú del bot. A propósito son frases completas y
 # no la palabra suelta "menú": muchos usuarios son emprendedores de comida
@@ -97,7 +119,9 @@ def _mentions_menu(msg_lower: str) -> bool:
 def _is_explicit_other_module_action(message: str) -> bool:
     """Permite navegar sin confundir preguntas con acciones sobre el roadmap."""
     raw = message.strip().lower()
-    if raw.startswith(("menu_", "calendar_", "finance_", "hito_", "unsatisfied_")):
+    if raw.startswith(("menu_", "calendar_", "finance_", "hito_", "unsatisfied_", "diag:", "fund_")):
+        return True
+    if is_diagnostic_entry(message) or is_fund_entry_message(message):
         return True
     if is_calendar_entry_message(message):
         return True
@@ -167,22 +191,71 @@ def route_message(
     phone: str,
     message: str,
     reply_to_message_id: str | None = None,
+    message_id: str | None = None,
 ):
     message = message.strip()
     msg_lower = message.lower()
 
     # Get or create user
-    user = get_user(phone)
+    try:
+        user = get_user(phone, strict=True)
+        if not user:
+            user = create_user_profile(phone)
+    except UserPersistenceError:
+        return "No pude consultar o guardar tu perfil en este momento. Inténtalo nuevamente más tarde."
 
-    if not user:
-        user = {"phone": phone, "onboarding_step": 0}
-        save_user(phone, user)
+    # Reiniciar y retirar los recordatorios siguen disponibles durante el registro.
+    bypass_onboarding = (
+        msg_lower in RESET_COMMANDS or msg_lower.rstrip(".") in PAUSE_REMINDERS_COMMANDS
+    )
 
     # ── Onboarding flow ──
-    if user.get("onboarding_step") != "done":
-        response = process_onboarding(user, message, save_user)
+    if user.get("onboarding_step") != "done" and not bypass_onboarding:
+        response = process_onboarding(user, message, update_onboarding_profile)
         if response:
             return response
+
+    # ── Contacto con un experto (HdU16) ──
+    # Va antes del resto de los flujos: mientras un experto conversa con el
+    # emprendedor, el asistente de IA queda en pausa para él.
+    expert_response = handle_expert_message(user, message, RESET_COMMANDS, message_id)
+    if expert_response is not None:
+        if FORMALIZATION_DIAGNOSTICS_ENABLED:
+            # El relé humano mantiene prioridad y no deja una pregunta numérica
+            # del diagnóstico activa para cuando termine la conversación.
+            handle_diagnostic_message(user, "menu_experto", external_action=True)
+        return expert_response
+
+    # Los usuarios antiguos completan solo los datos faltantes. La conversación
+    # con un experto mantiene prioridad y su roadmap nunca se reinicia aquí.
+    if not bypass_onboarding and needs_onboarding(user):
+        return process_onboarding(user, message, update_onboarding_profile)
+    if msg_lower in {PROFILE_BACK_ID, PROFILE_SKIP_ADDRESS_ID}:
+        return get_menu_widget(user, prefix="✅ Tu perfil ya está completo. Ese botón corresponde a una pregunta anterior.\n\n")
+
+    # El diagnóstico corre en el mismo threadpool del router, sin IA ni nuevas
+    # tareas de Redis. Debe poder salir antes de los triggers del roadmap y de
+    # las sesiones de otros módulos (también de sus botones hardcodeados).
+    if FORMALIZATION_DIAGNOSTICS_ENABLED:
+        # diag: es navegación para los otros módulos, pero una respuesta interna
+        # para el diagnóstico. No pausar su sesión ni enviar ese ID a la IA.
+        external_action = (
+            not message.strip().startswith("diag:")
+            and _is_explicit_other_module_action(message)
+        )
+        diagnostic_response = handle_diagnostic_message(
+            user, message, external_action=external_action,
+            message_id=message_id,
+        )
+        if diagnostic_response is not None:
+            if is_diagnostic_entry(message):
+                _clear_calendar_session_safely(user.get("id"))
+                _clear_financial_session_safely(user.get("id"))
+                try:
+                    cancel_fund_session(user["id"])
+                except Exception:
+                    logger.exception("No se pudo cerrar fondos al abrir el diagnóstico")
+            return "__AI_QUERY__" if diagnostic_response == DIAGNOSTIC_PASS_TO_AI else diagnostic_response
 
     # Leer una sola vez el contexto de fondos, también antes de los comandos
     # que retornan temprano (reiniciar/recordatorios). Cancelar la sesión no
@@ -237,7 +310,11 @@ def route_message(
                 "No pude reiniciar tu perfil en este momento. "
                 "Inténtalo nuevamente más tarde."
             )
-        return process_onboarding(new_user, message, save_user)
+        return process_onboarding(new_user, message, update_onboarding_profile)
+
+    if msg_lower == "menu_recordatorios":
+        return {"type": "buttons", "body": "¿Qué quieres hacer con tus recordatorios?",
+                "options": [("menu_recordatorios_on", "Activar"), ("menu_recordatorios_off", "Pausar"), *MENU_BUTTON]}
 
     activation_commands = {
         "activar recordatorios",
@@ -270,13 +347,7 @@ def route_message(
             "options": MENU_BUTTON,
         }
 
-    pause_commands = {
-        "pausar recordatorios",
-        "desactivar recordatorios",
-        "no quiero recordatorios",
-        "menu_recordatorios_off",
-    }
-    if msg_lower.rstrip(".") in pause_commands:
+    if msg_lower.rstrip(".") in PAUSE_REMINDERS_COMMANDS:
         _record_reply_safely(phone, reply_to_message_id)
         try:
             reminders_were_disabled = disable_reminders(phone)

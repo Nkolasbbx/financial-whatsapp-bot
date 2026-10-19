@@ -44,6 +44,7 @@ _PORTAL_TABS = (
     ("calendario", "Calendario"),
     ("fondos", "Fondos"),
     ("finanzas", "Finanzas"),
+    ("diagnostico", "Diagnóstico"),
     ("chat", "Chat"),
 )
 _PORTAL_TAB_IDS = frozenset(tab_id for tab_id, _ in _PORTAL_TABS)
@@ -347,7 +348,7 @@ def _pagina_no_autorizado(mensaje: str) -> Response:
 
 
 @router.get("/acceso")
-async def acceso(token: str, request: Request):
+async def acceso(token: str, request: Request, tab: str = "resumen"):
     """Canjea el link de un solo uso por una sesión de panel."""
     redis = request.app.state.redis
     phone = await redeem_access_token(redis, token)
@@ -357,7 +358,8 @@ async def acceso(token: str, request: Request):
 
     session_id = await create_session(redis, phone)
 
-    response = Response(status_code=303, headers={"Location": "/portal"})
+    destination = "/portal?tab=diagnostico" if tab == "diagnostico" else "/portal"
+    response = Response(status_code=303, headers={"Location": destination})
     response.set_cookie(
         _SESSION_COOKIE,
         session_id,
@@ -939,6 +941,35 @@ async def panel(
         <link rel="stylesheet" href="/static/portal_funds.css">
         """
         scripts = '<script defer src="/static/portal_funds.js"></script>'
+
+    elif active_tab == "diagnostico":
+        csrf_token = await get_or_create_csrf_token(redis, financial_session)
+        contenido = '''
+        <section class="diag" id="diagnostic-app" aria-labelledby="diagnostic-title">
+          <header class="diag-heading"><span class="diag-eyebrow">MI NEGOCIO · PLANIFICACIÓN</span>
+            <h1 id="diagnostic-title">Tu diagnóstico, más claro</h1>
+            <p>Ajusta los costos de formalización a tu realidad. Tus ingresos y gastos se revisan por WhatsApp; aquí no se modifican tus movimientos.</p>
+          </header>
+          <p id="diag-status" role="status" aria-live="polite">Cargando tu diagnóstico…</p>
+          <button type="button" id="diag-reload" class="diag-secondary" hidden>Recargar diagnóstico</button>
+          <div id="diag-content" hidden>
+            <section id="diag-assessment" class="diag-notice" aria-labelledby="diag-assessment-title"></section>
+            <div id="diag-summary" class="diag-summary"></div>
+            <aside class="diag-notice">Los montos de FinancIAl son estimaciones, no cobros oficiales. Completa los costos sin estimación con el monto informado por la municipalidad, un profesional o proveedor. Los pendientes quedan fuera del total: no son gratuitos.</aside>
+            <form id="diag-form"><div id="diag-costs"></div>
+              <label class="diag-review"><input id="diag-coverage" type="checkbox">
+                Revisé los costos: completé los que aplican y marqué los que no necesito. No tengo otros costos por agregar a este escenario.
+              </label>
+              <footer class="diag-savebar"><span id="diag-dirty">Sin cambios pendientes</span>
+                <button id="diag-save" type="submit">Guardar y recalcular</button>
+              </footer>
+            </form>
+            <details class="diag-sources"><summary>Fuentes y supuestos</summary><div id="diag-sources"></div></details>
+          </div>
+          <noscript>Activa JavaScript para revisar y ajustar tu diagnóstico.</noscript>
+        </section>'''
+        head_extra = _csrf_meta(csrf_token) + f'<link rel="stylesheet" href="{_versioned_static_url("portal_diagnostic.css")}">'
+        scripts = f'<script defer src="{_versioned_static_url("portal_diagnostic.js")}"></script>'
 
     elif active_tab == "finanzas":
         csrf_token = await get_or_create_csrf_token(redis, financial_session)

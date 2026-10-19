@@ -46,6 +46,7 @@ def get_users_for_tax_alerts() -> list[dict]:
         .select("id, phone, inicio_sii, rubro, rubro_raw, comuna")
         .eq("inicio_sii", "si")
         .eq("onboarding_step", "done")
+        .eq("bloqueado", False)
         .execute()
     )
     return result.data or []
@@ -65,6 +66,7 @@ def get_users_for_fund_alerts() -> list[dict]:
         )
         .eq("inicio_sii", "no")
         .eq("onboarding_step", "done")
+        .eq("bloqueado", False)
         .is_("roadmap_completed_at", "null")
         .execute()
     )
