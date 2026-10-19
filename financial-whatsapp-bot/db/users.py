@@ -8,7 +8,8 @@ logger = logging.getLogger("financial")
 # Se utiliza como fallback cuando Supabase no está configurado.
 users_db: dict[str, dict] = {}
 
-_RESET_PRESERVED_FIELDS = {"id", "phone", "auth_user_id", "created_at"}
+# bloqueado se preserva: reiniciar el perfil no debe desbloquear al usuario.
+_RESET_PRESERVED_FIELDS = {"id", "phone", "auth_user_id", "created_at", "bloqueado"}
 _RESET_SAFE_DEFAULTS = {
     "onboarding_step": 0,
     "reminders_enabled": False,
@@ -83,6 +84,39 @@ def get_user(phone: str, *, strict: bool = False) -> dict | None:
             logger.error("Supabase get_user error: %s", error)
 
     return users_db.get(phone)
+
+
+BLOCKED_USER_MESSAGE = (
+    "El bot de momento no se encuentra disponible, para solicitar acceso "
+    "envía un mensaje a grupofinancial06@gmail.com"
+)
+
+
+def is_user_blocked(phone: str) -> bool:
+    """Indica si el usuario fue bloqueado manualmente (columna users.bloqueado).
+
+    Un teléfono sin perfil no está bloqueado. Ante un fallo de Supabase se
+    permite continuar para no dejar a todos sin bot por una caída temporal.
+    """
+    import dependencies
+
+    client = getattr(dependencies, "supabase_admin", None) or dependencies.supabase
+    if client:
+        try:
+            result = (
+                client
+                .table("users")
+                .select("bloqueado")
+                .eq("phone", phone)
+                .limit(1)
+                .execute()
+            )
+            return bool(result.data and result.data[0].get("bloqueado"))
+        except Exception as error:
+            logger.error("No se pudo consultar el bloqueo (%s)", type(error).__name__)
+            return False
+
+    return bool((users_db.get(phone) or {}).get("bloqueado"))
 
 
 def create_user_profile(phone: str) -> dict:

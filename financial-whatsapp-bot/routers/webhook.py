@@ -16,7 +16,12 @@ from db.rate_limits import (
 )
 from db.calendar import update_calendar_delivery_status
 from db.reminders import update_reminder_delivery_status
-from db.users import get_last_user_message, get_user
+from db.users import (
+    BLOCKED_USER_MESSAGE,
+    get_last_user_message,
+    get_user,
+    is_user_blocked,
+)
 from phone_lock import acquire_phone_lock, release_phone_lock
 from services.message_router import RESET_COMMANDS, route_message, split_message
 from services.pending_confirmation import (
@@ -217,6 +222,18 @@ async def whatsapp_webhook(request: Request):
                 phone = normalize_phone(incoming.get("from", ""))
                 if not phone:
                     logger.warning("Mensaje de Meta sin teléfono válido")
+                    continue
+
+                # Usuario bloqueado manualmente (users.bloqueado): solo recibe
+                # el aviso de acceso. Se revisa antes del lock y de transcribir
+                # audio para no gastar Whisper ni IA en él.
+                if await asyncio.to_thread(is_user_blocked, phone):
+                    logger.info("Mensaje ignorado: usuario bloqueado %s", phone)
+                    try:
+                        await send_text(phone, BLOCKED_USER_MESSAGE)
+                    except WhatsAppAPIError as error:
+                        logger.error("No se pudo avisar al usuario bloqueado: %s", error)
+                    processed_messages += 1
                     continue
 
                 # Lock distribuido en Redis: garantiza que, para este teléfono,
