@@ -35,7 +35,7 @@ def create_pre_short_draft(user, catalog):
     context = _CREATE_CURRENT(user, catalog)
     answers = dict(context["diagnostic"]["answers"])
     answers.pop("estimate_flow", None)
-    return flow._save(user, context, {"answers": answers})
+    return flow._save(user, context, {"answers": answers, "current_step": "location", "pending_field": "location"})
 
 
 def finish_needs(case):

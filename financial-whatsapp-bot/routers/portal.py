@@ -956,6 +956,7 @@ async def panel(
             <section id="diag-assessment" class="diag-notice" aria-labelledby="diag-assessment-title"></section>
             <div id="diag-summary" class="diag-summary"></div>
             <aside class="diag-notice">Los montos de FinancIAl son estimaciones, no cobros oficiales. Completa los costos sin estimación con el monto informado por la municipalidad, un profesional o proveedor. Los pendientes quedan fuera del total: no son gratuitos.</aside>
+            <aside class="diag-notice">🧭 Este diagnóstico es una estimación orientativa, no una verdad absoluta. Depende de tus datos y supuestos y puede cambiar con tu negocio. Para profundizar, revisa el resultado, los cálculos y sus supuestos con un contador, asesor de emprendimiento o profesional del área correspondiente.</aside>
             <form id="diag-form"><div id="diag-costs"></div>
               <label class="diag-review"><input id="diag-coverage" type="checkbox">
                 Revisé los costos: completé los que aplican y marqué los que no necesito. No tengo otros costos por agregar a este escenario.

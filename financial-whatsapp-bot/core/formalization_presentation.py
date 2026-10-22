@@ -1,6 +1,17 @@
 """Resultados legibles y paginados del presupuesto de FinancIAl."""
 from core.formalization_cost_guide import FREQUENCIES
 
+ORIENTATION_NOTICE = (
+    "🧭 *¿Cómo interpretar tu resultado?*\n\n"
+    "La capacidad alta, media o baja es una estimación orientativa basada en tus ingresos, gastos, costos y fechas de pago.\n\n"
+    "No es una verdad absoluta ni garantiza lo que ocurrirá con tu negocio. Puede cambiar si cambian tus datos o las condiciones consideradas.\n\n"
+    "🤝 Para profundizar, revisa este diagnóstico con un contador, asesor de emprendimiento o profesional del área correspondiente. "
+    "Puedes mostrarle los cálculos y supuestos utilizados."
+)
+BRIEF_ORIENTATION_NOTICE = (
+    "🧭 Estimación orientativa, no una verdad absoluta. Depende de tus datos y supuestos. "
+    "🤝 Para profundizar, consulta a un contador o asesor de emprendimiento."
+)
 
 REASON_LABELS = {
     "INITIAL_CASH_GAP": "El efectivo no alcanza para los pagos previos al inicio.",
@@ -57,6 +68,118 @@ def capacity_explanation(result):
             else "El escenario cubre los pagos, pero tiene un margen de seguridad limitado.")
 
 
+def capacity_breakdown(result):
+    """Explica las mismas reglas del motor con sus importes, sin recalificar."""
+    capacity = (result.get("economic_assessment") or {}).get("capacity")
+    if capacity not in {"alta", "media", "baja"}:
+        return []
+    projection = result.get("projection") or {}
+    months = projection.get("months") or []
+    money = lambda value: "por confirmar" if value is None else "$" + f"{value:,}".replace(",", ".")
+    indicator = {"alta": "🟢", "media": "🟡", "baja": "🔴"}[capacity]
+    descriptions = {
+        "alta": "El escenario cubre el arranque y los pagos, conserva una reserva y sigue cubriendo los pagos si las ventas bajan un 15%.",
+        "media": "El escenario cubre el arranque y sus pagos habituales, pero el margen de seguridad es limitado. Abajo puedes ver qué condición falta para alcanzar un nivel alto.",
+        "baja": "El escenario muestra un faltante de dinero en alguna fecha o pagos mayores que los cobros previstos. Un buen resultado de ventas por sí solo no asegura poder pagar a tiempo.",
+    }
+    blocks = [f"{indicator} *¿Por qué tu capacidad es {capacity.upper()}?*\n\n{descriptions[capacity]}"]
+    low, high = result.get("initial_remaining_min"), result.get("initial_remaining_max")
+    cost = money(high) if low == high else f"{money(low)} a {money(high)}"
+    blocks.append(f"🚀 *1. Dinero para comenzar*\n\n"
+                  f"• Pagos iniciales pendientes: {cost}.\n"
+                  f"• Saldo al iniciar la proyección, después de los cobros y pagos previos: {money(projection.get('opening_balance'))}.\n"
+                  f"• Faltante al comenzar: {money(projection.get('initial_cash_gap'))}.")
+    net = None
+    if months:
+        income = sum(month.get("inflows", 0) for month in months)
+        outflow = sum(month.get("outflows", 0) for month in months)
+        net = income - outflow
+        blocks.append(f"🗓️ *2. Cobros y pagos de los tres meses*\n\n"
+                      f"• Cobros previstos: {money(income)}.\n• Pagos previstos: {money(outflow)}.\n"
+                      f"• Diferencia del periodo: {money(net)}.\n\n"
+                      "Incluimos gastos, retiros personales, deudas y pagos puntuales que vencen dentro del periodo. Los pagos anteriores se muestran en el arranque.\n\n"
+                      "Para los movimientos mensuales suponemos pagos al inicio y cobros al cierre, salvo calendarios explícitos registrados.")
+    minimum = projection.get("minimum_balance")
+    opening = projection.get("opening_balance")
+    reserve = projection.get("reserve_target")
+    reserve_gap = max(0, reserve - min(opening, minimum)) if all(type(value) is int for value in (reserve, opening, minimum)) else None
+    blocks.append(f"🛟 *3. Dinero de respaldo*\n\n"
+                  f"• Reserva objetivo: {money(reserve)}; equivale al mayor mes de pagos habituales.\n"
+                  f"• Menor saldo de todo el escenario: {money(minimum)}.\n"
+                  f"• Diferencia para mantener esa reserva: {money(reserve_gap)}.\n\n"
+                  "La reserva es dinero que buscamos conservar, no otro gasto que se sume a tus pagos.")
+    if months:
+        stress_net = sum(month.get("stress_inflows", 0) - month.get("outflows", 0) for month in months)
+        blocks.append(f"📉 *4. Si vendes un 15% menos*\n\n"
+                      f"Manteniendo los mismos pagos:\n• Diferencia de cobros y pagos de los tres meses: {money(stress_net)}.\n"
+                      f"• Menor saldo disponible: {money(projection.get('stress_minimum_balance'))}.\n\n"
+                      "Un saldo negativo señala dinero que faltaría para cubrir pagos. Esta simulación considera una caída de ventas, no una predicción de lo que ocurrirá.")
+    reasons = projection.get("reasons", [])
+    factors = []
+    if "INITIAL_CASH_GAP" in reasons:
+        factors.append(f"🔴 Al comenzar faltan {money(projection.get('initial_cash_gap'))} para cubrir los pagos previos.")
+    if "BASE_PAYMENT_UNCOVERED" in reasons:
+        first = projection.get("first_uncovered_payment") or {}
+        when = first.get("on")
+        if when:
+            parts = str(when)[:10].split("-")
+            when = "/".join(reversed(parts))
+        factors.append(f"🔴 Hay pagos sin cobertura{' el ' + when if when else ''}: "
+                       f"el mayor faltante del escenario es {money(projection.get('maximum_cash_gap'))}. "
+                       "Esto puede pasar aunque los ingresos totales sean suficientes, si llegan después del pago.")
+    if "BASE_CASH_BURN" in reasons and net is not None:
+        factors.append(f"🔴 En los tres meses, los pagos superan los cobros en {money(max(0, -net))}; el negocio consume dinero disponible.")
+    if "RESERVE_NOT_COVERED" in reasons:
+        factors.append(f"🟡 No se conserva la reserva objetivo: faltan {money(reserve_gap)} en el momento de menor disponibilidad.")
+    if "STRESS_CASH_BURN" in reasons:
+        factors.append("🟡 Con ventas 15% menores, los pagos del periodo superarían los cobros.")
+    if "STRESS_PAYMENT_UNCOVERED" in reasons:
+        factors.append(f"🟡 Con esa caída de ventas habría pagos sin cobertura; el menor saldo sería {money(projection.get('stress_minimum_balance'))}.")
+    if capacity == "media" and net == 0:
+        factors.append("🟡 Los cobros y pagos del periodo quedan iguales. El nivel alto requiere un resultado de caja positivo, además de reserva y resistencia a menores ventas.")
+    if capacity == "alta":
+        factors = ["✅ Cubres el arranque y no hay pagos sin cobertura.",
+                   "✅ Mantienes al menos un mes de pagos habituales como reserva.",
+                   "✅ Los cobros superan los pagos y resistes ventas 15% menores sin faltantes."]
+    if factors:
+        blocks.append("🔎 *Qué determinó tu nivel*\n\n" + "\n\n".join(factors))
+    blocks.append("✏️ *Puedes actualizar el escenario*\n\n"
+                  "Si cambian tus ingresos, gastos, retiros o deudas, actualízalos por WhatsApp. "
+                  "Los costos y fechas de formalización se ajustan en el panel. Al guardar, recalculamos tu nivel.\n\n"
+                  "La evaluación usa tres meses y los costos altos del rango. Es orientativa y depende de tus datos y las fechas de cobro y pago.")
+    blocks.append(ORIENTATION_NOTICE)
+    return blocks
+
+
+def capacity_detail(context, widget, *, page=0):
+    result = context["diagnostic"].get("result") or {}
+    # Keep each explanation section together whenever it fits on one message.
+    content, current = [], ""
+    blocks = capacity_breakdown(result)
+    for block in blocks:
+        parts = [block] if len(block) <= 760 else block.split("\n\n")
+        for part in parts:
+            pieces = [part] if len(part) <= 760 else pages([part])
+            for piece in pieces:
+                candidate = (current + "\n\n" + piece).strip()
+                if len(candidate) > 760:
+                    content.append(current)
+                    current = piece
+                else:
+                    current = candidate
+    if current:
+        content.append(current)
+    content = content or ["📝 Completa los datos pendientes para conocer tu capacidad económica."]
+    page = min(max(0, page), len(content) - 1)
+    options = []
+    if page:
+        options.append(("gwhy_" + str(page - 1), "Anterior"))
+    if page + 1 < len(content):
+        options.append(("gwhy_" + str(page + 1), "Siguiente"))
+    options.append(("gsummary", "Volver al resumen"))
+    return widget(context, f"💬 *Tu resultado explicado* · {page + 1}/{len(content)}\n\n{content[page]}", options)
+
+
 def summary(context, widget, money):
     d = context["diagnostic"]
     result = d.get("result") or {}
@@ -79,7 +202,7 @@ def summary(context, widget, money):
                   f"Resultado mensual futuro, antes de pagos anuales: {money(result.get('future_known_operating_result'))}\n"
                   f"Después de retiros personales y deudas: {money(after)}\n\n"
                   + advice + "\nHorizonte: tres meses. Los importes pendientes no están incluidos. "
-                  "Las estimaciones no son cobros oficiales ni una validación de permisos.",
+                  + BRIEF_ORIENTATION_NOTICE,
                   [("details", "Ver costos y pasos"), ("sources", "Fuentes y supuestos"), ("edit", "Cambiar datos")])
 
 
@@ -117,7 +240,7 @@ def short_summary(context, widget, money):
                   f"Faltaría cubrir con efectivo: {money(result.get('known_initial_cash_gap'))}\n\n"
                   f"🗓️ *Gastos posteriores*\n• Adicionales al mes: {amount('monthly')}\n• Pagos anuales separados: {amount('annual')}\n\n"
                   f"💵 *Saldo mensual tras gastos, retiros y deudas*\n{money(result.get('future_after_withdrawals_and_debt'))}\n\n"
-                  "ℹ️ Proyección: 3 meses, usando los costos altos del rango. Estimaciones de FinancIAl; verifica permisos y cobros con cada organismo." + pending_notice,
+                  "ℹ️ Proyección: 3 meses, usando los costos altos del rango.\n\n" + BRIEF_ORIENTATION_NOTICE + pending_notice,
                   [("details", "Ver detalle"), ("short_adjust", "Ajustar en mi panel"), ("edit", "Cambiar mis datos")])
 
 
@@ -155,17 +278,15 @@ def detail(context, widget, money, missing_label, *, sources=False, page=0):
             else:
                 blocks.append(str(source))
         blocks.extend(result.get("assumptions", []))
+        blocks.append(ORIENTATION_NOTICE)
         blocks.append("Los montos propios conservan su origen declarado. Las fechas supuestas se usan para presupuestar, no como vencimientos oficiales. "
                       "Los pagos anuales se pagan en su fecha; no se dividen entre doce para simular caja.")
     else:
         economic = result.get("economic_assessment") or {}
         projection = result.get("projection") or {}
         if economic.get("capacity"):
-            reasons = [REASON_LABELS[key] for key in projection.get("reasons", []) if key in REASON_LABELS]
-            explanation = " ".join(reasons) or "El escenario cubre los pagos, mantiene una reserva y resiste una baja de ventas del 15%."
-            blocks.append(f"Por qué la capacidad orientativa es {economic['capacity']}: {explanation} "
-                          "Se evalúan tres meses, con pagos al inicio y cobros al cierre, salvo fechas explícitas. "
-                          "Son reglas propuestas de FinancIAl, no una certificación financiera o legal.")
+            blocks.append(f"Por qué la capacidad orientativa es {economic['capacity']}")
+            blocks.extend(capacity_breakdown(result))
         for cost in result.get("costs", []):
             if cost["applicability"] == "not_applicable":
                 amount = "No incluido en este escenario"

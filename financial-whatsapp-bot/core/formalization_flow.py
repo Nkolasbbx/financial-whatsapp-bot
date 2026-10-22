@@ -207,6 +207,8 @@ def _prompt(context):
     a, step = d.get("answers", {}), d.get("current_step", "location")
     financial = d.get("financial_snapshot") or {}
     if short_flow.enabled(context):
+        if step == "intro":
+            return _widget(context, short_flow.INTRO_MESSAGE, [("start", "Comenzar"), ("pause", "Ahora no")])
         if step == "portal_costs":
             return _widget(context, "✅ *Tus ajustes están guardados*\n\nAbre el panel para terminar de recalcular tu diagnóstico.\n\n💰 Tus ingresos y gastos se conservan.", [("short_adjust", "Ajustar en mi panel")])
         brief_prompt = short_flow.prompt(context, _widget)
@@ -411,7 +413,7 @@ def _new(user, catalog):
     end = today.replace(day=1)
     scope = lambda text: re.sub(r"[^a-z0-9]+", "_", normalize(text or "")).strip("_") or "no_definido"
     return save_formalization_draft(user["id"], str(uuid4()), 0, {
-        "current_step": "location", "pending_field": "location", "conversation_status": "active",
+        "current_step": "intro", "pending_field": "intro", "conversation_status": "active",
         "period_start": month_after(end, -1), "period_end": end,
         "projection_start": month_after(end), "activity_code": scope(user.get("rubro")),
         "comuna_code": scope(user.get("comuna")), "rules_version": RULES_VERSION,
@@ -503,14 +505,19 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return None
         if action in {"sources", "details"} and diagnostic_button and d.get("result"):
             if action == "details" and short_flow.enabled(context):
+                if (d["result"].get("economic_assessment") or {}).get("capacity"):
+                    return _widget(context, "💬 *Conoce tu diagnóstico*\n\nPuedes ver por qué recibiste ese nivel, revisar los costos o consultar las fuentes.",
+                                   [("gwhy_0", "¿Por qué este nivel?"), ("gdetails_0", "Costos y balance"), ("sources", "Fuentes y supuestos")])
                 return _widget(context, "Puedes revisar el desglose completo o las referencias y supuestos del presupuesto.",
                                [("gdetails_0", "Costos y balance"), ("sources", "Fuentes y supuestos"), ("gsummary", "Volver al resumen")])
             return _details(context, sources=action == "sources")
         if diagnostic_button and d.get("result") and cost_guide.is_guided(context):
             if action == "gsummary":
                 return _result_widget(context)
-            for prefix in ("gdetails_", "gsources_"):
+            for prefix in ("gwhy_", "gdetails_", "gsources_"):
                 if action.startswith(prefix) and action[len(prefix):].isdigit():
+                    if prefix == "gwhy_":
+                        return presentation.capacity_detail(context, _widget, page=int(action[len(prefix):]))
                     return presentation.detail(context, _widget, _money, _missing_label,
                                                sources=prefix == "gsources_", page=int(action[len(prefix):]))
         if action == "short_adjust" and diagnostic_button and short_flow.enabled(context) and d.get("answers", {}).get("estimate_decisions") and d["workflow_status"] in {"draft", "ready", "confirmed"}:
@@ -521,7 +528,7 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return _prompt(_set_step(user, context, "edit"))
         if d["workflow_status"] not in {"draft", "ready"} or d["conversation_status"] != "active":
             return None
-        if action == "pause" or normalize(raw) in {"pausar diagnostico", "cancelar diagnostico"}:
+        if action == "pause" or normalize(raw) in {"pausar diagnostico", "cancelar diagnostico"} or (d.get("current_step") == "intro" and normalize(raw) == "ahora no"):
             _save(user, context, {"conversation_status": "paused"})
             return "💾 *Conservé tu borrador*\n\nPuedes continuar cuando quieras.\n💬 Escribe 'retomar diagnóstico' y seguimos donde quedaste."
         if action == "resume" and diagnostic_button:
@@ -529,6 +536,7 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
         a, step = dict(d.get("answers") or {}), d["current_step"]
         action = {"si": "yes", "no se": "unknown"}.get(action, action)
         word_actions = {
+            "intro": {"comenzar": "start", "empezar": "start", "continuar": "start"},
             "expenses": {"completo": "yes", "agregar": "expense_add", "categorias": "expense_categories"},
             "expense_oneoff": {"ninguno": "none", "no": "none"},
             "expense_categories": {"terminar gastos": "expense_done", **{normalize(label): "expense_cat_" + key for key, label in EXPENSE_LABELS.items()}},
@@ -551,6 +559,8 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
             return PASS_TO_AI
         if not cost_guide.is_guided(context):
             return _legacy_notice(context)
+        if step == "intro" and action == "start":
+            return _prompt(_set_step(user, context, "location"))
         if short_flow.enabled(context) and step.startswith("short_"):
             if step == "short_calculate" and action == "confirm":
                 stage = "confirm"

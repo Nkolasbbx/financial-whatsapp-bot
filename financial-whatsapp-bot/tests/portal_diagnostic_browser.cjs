@@ -80,6 +80,12 @@ const fixture = JSON.parse(execFileSync(process.argv[2], [path.join(__dirname, '
         assert.equal(writes.at(-1).changes.length, 0, 'review-only finalization must not rewrite costs');
         assert.equal(writes.at(-1).coverage_confirmed, true);
         assert((await page.locator('#diag-assessment').innerText()).includes(fixture.completed.capacity.toUpperCase()));
+        await page.getByText('¿Por qué recibí este nivel?', {exact: true}).click();
+        assert((await page.locator('.diag-explanation').innerText()).includes('Reserva objetivo'));
+        assert((await page.locator('.diag-explanation').innerText()).includes('Si vendes un 15% menos'));
+        await page.setViewportSize({width: 390, height: 844});
+        assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'explanation mobile overflow');
+        await page.screenshot({path: path.join(out, 'diagnostico-explicacion-mobile.png'), fullPage: true});
         assert(!(await page.locator('#diag-summary').innerText()).includes('faltan costos'));
         assert.deepEqual(errors, []);
         console.log('PASS: mobile/desktop, save batch, CSRF, conflicts, complete diagnosis and review-only finalization');
