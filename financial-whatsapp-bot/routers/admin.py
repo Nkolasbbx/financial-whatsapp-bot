@@ -14,8 +14,10 @@ asistente (respuestas no útiles, temas consultados y conflictivos).
 import html
 import json
 import logging
+import math
 from collections import Counter
 from datetime import datetime
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Cookie, Form, Request, Response
 
@@ -53,6 +55,7 @@ def _pagina_base(
         cuenta_html = f"""
         <nav class="admin-nav" aria-label="Cuenta">
             <a href="/admin">Panel</a>
+            <a href="/admin/emprendedores">Emprendedores</a>
             <a href="/admin/documentos">Documentos</a>
             <a href="/admin/solicitudes">Solicitudes</a>
             <a href="/admin/convocatorias">Convocatorias</a>
@@ -213,45 +216,6 @@ async def dashboard(
         for titulo, cuenta in sorted(conteo_hitos.items(), key=lambda kv: -kv[1])
     ) or '<p class="subtitulo">No hay emprendedores en progreso todavía.</p>'
 
-    # --- Tabla de emprendedores ---
-    # Solo se muestran de entrada las primeras filas; el resto queda oculto
-    # tras el botón "Ver más" (admin.js), que revela EMPRENDEDORES_PASO filas
-    # adicionales por click (acumulativo) en vez de mostrarlas todas de golpe
-    # — para no alargar el panel con listas largas de comunas con muchos
-    # emprendedores.
-    EMPRENDEDORES_VISIBLES = 8
-    EMPRENDEDORES_PASO = 10
-
-    filas_emprendedores = []
-    for indice, u in enumerate(usuarios):
-        hito = get_pending_milestone(u)
-        completo = bool(u.get("roadmap_completed_at"))
-        numero_hito = "✔" if completo else (str(hito["id"]) + "/" + str(len(u.get("roadmap"))) if hito else "0")
-        estado = "Formalizado" if completo else "En progreso"
-        estado_clase = "completo" if completo else "progreso"
-        hito_titulo = "Formalización completa" if completo else (hito["title"] if hito else "Sin roadmap asignado")
-        rubro = u.get("rubro") or "No definido"
-        fila_clase = ' class="admin-table-row-hidden"' if indice >= EMPRENDEDORES_VISIBLES else ""
-
-        filas_emprendedores.append(
-            f"""<tr{fila_clase}>
-                <td>{html.escape(u.get("phone", ""))}</td>
-                <td><span class="admin-badge {estado_clase}">{estado}</span></td>
-                <td>{html.escape("(" + numero_hito + ") - " + hito_titulo)}</td>
-                <td>{html.escape(rubro)}</td>
-            </tr>"""
-        )
-
-    restantes = max(0, total - EMPRENDEDORES_VISIBLES)
-    primer_paso = min(EMPRENDEDORES_PASO, restantes)
-    boton_ver_mas = (
-        f'''<button type="button" class="admin-table-toggle"
-                aria-controls="tabla-emprendedores" data-paso="{EMPRENDEDORES_PASO}"
-                >Ver {primer_paso} más</button>'''
-        if restantes > 0
-        else ""
-    )
-
     insights = get_admin_insights(comuna)
 
     contenido = f"""
@@ -287,15 +251,8 @@ async def dashboard(
 
     <div class="admin-card">
         <h2>Emprendedores de {html.escape(comuna)}</h2>
-        <table class="admin-table" id="tabla-emprendedores">
-            <thead>
-                <tr><th>Teléfono</th><th>Estado</th><th>Hito</th><th>Rubro</th></tr>
-            </thead>
-            <tbody>
-                {''.join(filas_emprendedores) or '<tr><td colspan="4">No hay emprendedores</td></tr>'}
-            </tbody>
-        </table>
-        {boton_ver_mas}
+        <p class="subtitulo">El listado completo tiene su propia página, con búsqueda por teléfono y filtros por estado y rubro.</p>
+        <a class="admin-btn-secondary" href="/admin/emprendedores">Ver listado completo</a>
     </div>
 
     <div class="admin-card">
@@ -324,6 +281,141 @@ async def dashboard(
         content=_pagina_base(account.get("nombre", comuna), contenido, account),
         media_type="text/html",
     )
+
+
+# --- Listado de emprendedores ---
+# Página propia (no una tabla dentro del panel) porque en comunas con
+# muchos emprendedores la lista crece sin tope: se pagina en el servidor.
+
+EMPRENDEDORES_POR_PAGINA = 25
+_ESTADOS_EMPRENDEDOR = [("formalizado", "Formalizados"), ("progreso", "En progreso")]
+
+
+def _opciones(valores: list[tuple[str, str]], elegido: str, todos: str) -> str:
+    opciones = [f'<option value="">{html.escape(todos)}</option>']
+    opciones += [
+        f'<option value="{html.escape(v)}"{" selected" if v == elegido else ""}>{html.escape(etiqueta)}</option>'
+        for v, etiqueta in valores
+    ]
+    return "".join(opciones)
+
+
+def _solo_digitos(texto: str) -> str:
+    return "".join(c for c in texto if c.isdigit())
+
+
+def _filtrar_emprendedores(usuarios: list[dict], telefono: str, estado: str, rubro: str) -> list[dict]:
+    digitos = _solo_digitos(telefono)
+    resultado = []
+    for u in usuarios:
+        completo = bool(u.get("roadmap_completed_at"))
+        if (estado == "formalizado" and not completo) or (estado == "progreso" and completo):
+            continue
+        if rubro and (u.get("rubro") or "No definido") != rubro:
+            continue
+        if digitos and digitos not in _solo_digitos(u.get("phone") or ""):
+            continue
+        resultado.append(u)
+    return resultado
+
+
+def _fila_emprendedor(u: dict) -> str:
+    hito = get_pending_milestone(u)
+    completo = bool(u.get("roadmap_completed_at"))
+    numero_hito = "✔" if completo else (str(hito["id"]) + "/" + str(len(u.get("roadmap"))) if hito else "0")
+    estado = "Formalizado" if completo else "En progreso"
+    estado_clase = "completo" if completo else "progreso"
+    hito_titulo = "Formalización completa" if completo else (hito["title"] if hito else "Sin roadmap asignado")
+    rubro = u.get("rubro") or "No definido"
+    return f"""<tr>
+        <td>{html.escape(u.get("phone", ""))}</td>
+        <td><span class="admin-badge {estado_clase}">{estado}</span></td>
+        <td>{html.escape("(" + numero_hito + ") - " + hito_titulo)}</td>
+        <td>{html.escape(RUBRO_DISPLAY.get(rubro, rubro))}</td>
+    </tr>"""
+
+
+def _paginacion_html(pagina: int, total_paginas: int, filtros: dict[str, str]) -> str:
+    if total_paginas <= 1:
+        return ""
+
+    def enlace(destino: int, texto: str, rel: str) -> str:
+        query = urlencode({**{k: v for k, v in filtros.items() if v}, "pagina": destino})
+        return f'<a class="admin-btn-secondary" rel="{rel}" href="/admin/emprendedores?{html.escape(query)}">{texto}</a>'
+
+    anterior = enlace(pagina - 1, "← Anterior", "prev") if pagina > 1 else "<span></span>"
+    siguiente = enlace(pagina + 1, "Siguiente →", "next") if pagina < total_paginas else "<span></span>"
+    return f"""
+        <nav class="admin-pagination" aria-label="Páginas del listado">
+            {anterior}
+            <span class="admin-pagination-status">Página {pagina} de {total_paginas}</span>
+            {siguiente}
+        </nav>"""
+
+
+@router.get("/emprendedores")
+async def emprendedores(
+    request: Request,
+    financial_admin_session: str | None = Cookie(default=None),
+):
+    account = await get_admin_session_account(request.app.state.redis, financial_admin_session)
+    if not account:
+        return Response(status_code=303, headers={"Location": "/admin/login"})
+
+    comuna = account["comuna"]
+    usuarios = get_users_by_comuna(comuna)
+    rubros = sorted({u.get("rubro") or "No definido" for u in usuarios})
+
+    params = request.query_params
+    telefono = params.get("q", "").strip()[:20]
+    estado = params.get("estado", "") if params.get("estado", "") in dict(_ESTADOS_EMPRENDEDOR) else ""
+    rubro = params.get("rubro", "") if params.get("rubro", "") in rubros else ""
+
+    filtrados = _filtrar_emprendedores(usuarios, telefono, estado, rubro)
+    total_paginas = max(1, math.ceil(len(filtrados) / EMPRENDEDORES_POR_PAGINA))
+    try:
+        pagina = int(params.get("pagina", "1"))
+    except ValueError:
+        pagina = 1
+    pagina = min(max(1, pagina), total_paginas)
+    inicio = (pagina - 1) * EMPRENDEDORES_POR_PAGINA
+    visibles = filtrados[inicio:inicio + EMPRENDEDORES_POR_PAGINA]
+
+    if visibles:
+        filas = "".join(_fila_emprendedor(u) for u in visibles)
+        resumen = f"Mostrando {inicio + 1}–{inicio + len(visibles)} de {len(filtrados)}"
+        if len(filtrados) != len(usuarios):
+            resumen += f" (de {len(usuarios)} en total)"
+    else:
+        vacio = "Ningún emprendedor coincide con esos filtros." if usuarios else "No hay emprendedores registrados todavía."
+        filas = f'<tr><td colspan="4">{vacio}</td></tr>'
+        resumen = ""
+
+    opciones_rubro = [(r, RUBRO_DISPLAY.get(r, r)) for r in rubros]
+    contenido = f"""
+    <form method="get" action="/admin/emprendedores" class="admin-filters" aria-label="Filtrar emprendedores">
+        <label>Teléfono <input type="search" name="q" value="{html.escape(telefono)}" inputmode="numeric" placeholder="Ej: 56912345678"></label>
+        <label>Estado <select name="estado">{_opciones(_ESTADOS_EMPRENDEDOR, estado, "Todos")}</select></label>
+        <label>Rubro <select name="rubro">{_opciones(opciones_rubro, rubro, "Todos")}</select></label>
+        <button type="submit" class="admin-btn-secondary">Filtrar</button>
+        <a href="/admin/emprendedores" class="admin-filter-clear">Limpiar</a>
+    </form>
+
+    <div class="admin-card">
+        <h2>Emprendedores de {html.escape(comuna)}</h2>
+        <p class="subtitulo">{html.escape(resumen)}</p>
+        <table class="admin-table">
+            <thead>
+                <tr><th>Teléfono</th><th>Estado</th><th>Hito</th><th>Rubro</th></tr>
+            </thead>
+            <tbody>
+                {filas}
+            </tbody>
+        </table>
+        {_paginacion_html(pagina, total_paginas, {"q": telefono, "estado": estado, "rubro": rubro})}
+    </div>
+    """
+    return Response(content=_pagina_base("Emprendedores", contenido, account), media_type="text/html")
 
 
 # --- HdU15: ingesta automática de documentos ---
@@ -426,7 +518,7 @@ def _pagina_documentos(account: dict, flash: dict | None = None) -> str:
     contenido = f"""
     {_flash_html(flash)}
     <div id="live-banner"></div>
-    <div class="admin-card admin-card-feature">
+    <div class="admin-card">
         <h2>Subir documentos</h2>
         <p class="subtitulo">
             Se etiquetan automáticamente con la comuna de tu cuenta

@@ -29,7 +29,7 @@ from db.expert_requests import (
     resolve_expert_request,
     take_expert_request,
 )
-from routers.admin import _flash_html, _pagina_base, _pop_flash, _set_flash
+from routers.admin import _flash_html, _opciones, _pagina_base, _pop_flash, _set_flash
 from services.admin_auth import get_admin_session_account
 from services.whatsapp import WhatsAppAPIError, send_text
 
@@ -192,15 +192,6 @@ def _tabla(titulo: str, filas: list[dict], vacio: str) -> str:
             <tbody>{cuerpo}</tbody>
         </table>
     </div>"""
-
-
-def _opciones(valores: list[tuple[str, str]], elegido: str, todos: str) -> str:
-    opciones = [f'<option value="">{html.escape(todos)}</option>']
-    opciones += [
-        f'<option value="{html.escape(v)}"{" selected" if v == elegido else ""}>{html.escape(etiqueta)}</option>'
-        for v, etiqueta in valores
-    ]
-    return "".join(opciones)
 
 
 def _filtros_html(rubros: list[str], tema: str, rubro: str, formalizado: str, vence: bool) -> str:

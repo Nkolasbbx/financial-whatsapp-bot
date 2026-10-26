@@ -241,7 +241,7 @@ select:focus-visible {
     margin: -8px 0 14px;
 }
 
-/* Contenedor destacado (subir documento) — receta del simulador ROI */
+/* Contenedor destacado (tomar solicitud) — receta del simulador ROI */
 .admin-card.admin-card-feature {
     border-radius: 24px;
     border-color: color-mix(in srgb, var(--petrol) 30%, transparent);
@@ -395,31 +395,32 @@ select:focus-visible {
     border-top: 1px solid color-mix(in srgb, var(--petrol) 20%, transparent);
 }
 
-/* Filas extra de la lista de emprendedores, ocultas hasta "Ver más" */
-.admin-table-row-hidden {
-    display: none;
+/* Nota bajo el nombre del documento: sin el margen negativo del subtítulo de la card */
+.admin-table .subtitulo {
+    margin: 4px 0 0;
 }
 
-.admin-table-row-hidden.is-visible {
-    display: table-row;
+/* Paginación del listado de emprendedores: anterior · estado · siguiente */
+.admin-pagination {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 16px;
+    margin-top: 20px;
 }
 
-.admin-table-toggle {
-    display: block;
-    margin: 16px auto 0;
-    background: transparent;
-    color: var(--petrol);
-    border: 1px solid color-mix(in srgb, var(--petrol) 40%, transparent);
-    padding: 8px 20px;
-    border-radius: 999px;
-    font-size: 13px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: border-color 300ms;
+.admin-pagination > :first-child {
+    justify-self: start;
 }
 
-.admin-table-toggle:hover {
-    border-color: var(--emerald);
+.admin-pagination > :last-child {
+    justify-self: end;
+}
+
+.admin-pagination-status {
+    font-size: 14px;
+    font-weight: 600;
+    color: color-mix(in srgb, var(--petrol) 90%, transparent);
 }
 
 .admin-badge {
@@ -1029,7 +1030,10 @@ select:focus-visible {
     color: color-mix(in srgb, var(--petrol) 75%, transparent);
 }
 
-.admin-filters select {
+.admin-filters select,
+.admin-filters input[type="search"] {
+    box-sizing: border-box;
+    height: 40px;
     padding: 8px 12px;
     border-radius: 10px;
     border: 1px solid color-mix(in srgb, var(--petrol) 30%, transparent);
@@ -1049,7 +1053,14 @@ select:focus-visible {
 
 .admin-filter-clear {
     font-size: 14px;
-    padding-bottom: 8px;
+    font-weight: 600;
+    line-height: 40px;
+    color: var(--petrol);
+    transition: color 300ms;
+}
+
+.admin-filter-clear:hover {
+    color: var(--emerald);
 }
 
 .admin-chip {

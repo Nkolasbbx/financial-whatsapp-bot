@@ -6,6 +6,18 @@
 
     const TIME_ZONE = "America/Santiago";
 
+    function capitalize(text) {
+        return text.charAt(0).toUpperCase() + text.slice(1);
+    }
+
+    // Meses con mayúscula inicial ("Octubre"): Intl y FullCalendar los dan en minúscula.
+    const MONTH_NAMES = Array.from({ length: 12 }, function (_, month) {
+        return capitalize(
+            new Intl.DateTimeFormat("es-CL", { timeZone: "UTC", month: "long" })
+                .format(new Date(Date.UTC(2026, month, 1)))
+        );
+    });
+
     // Valor para <input type="datetime-local"> en hora de Chile.
     function chileInputValue(value) {
         const date = value instanceof Date ? value : new Date(value);
@@ -160,6 +172,13 @@
                 month: "Mes",
                 list: "Lista",
             },
+            // arg.date.month viene en base 0, como en Date.
+            titleFormat: function (arg) {
+                return `${MONTH_NAMES[arg.date.month]} de ${arg.date.year}`;
+            },
+            listDaySideFormat: function (arg) {
+                return `${arg.date.day} de ${MONTH_NAMES[arg.date.month]} de ${arg.date.year}`;
+            },
         };
     }
 
@@ -170,7 +189,9 @@
             day: "numeric",
             month: "long",
             year: "numeric",
-        }).format(new Date(value));
+        }).formatToParts(new Date(value)).map(function (part) {
+            return part.type === "month" ? capitalize(part.value) : part.value;
+        }).join("");
     }
 
     function formatTime(value) {
