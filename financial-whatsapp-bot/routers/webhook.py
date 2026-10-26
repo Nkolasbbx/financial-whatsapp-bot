@@ -16,14 +16,29 @@ from db.rate_limits import (
 )
 from db.calendar import update_calendar_delivery_status
 from db.community_events import update_community_delivery_status
+from db.expert_requests import get_open_expert_request
 from db.reminders import update_reminder_delivery_status
 from db.users import (
     BLOCKED_USER_MESSAGE,
     get_last_user_message,
     get_user,
     is_user_blocked,
+    set_audio_consent,
 )
 from phone_lock import acquire_phone_lock, release_phone_lock
+from services.audio_consent import (
+    ACCEPTED_AND_PROCESSING_TEXT,
+    ACCEPTED_TEXT,
+    DECLINED_REMINDER_TEXT,
+    REJECTED_TEXT,
+    WRONG_TEXT,
+    audio_choice,
+    consent_prompt,
+    consent_state,
+    echo_widget,
+    pop_pending_audio,
+    stash_pending_audio,
+)
 from services.message_router import RESET_COMMANDS, route_message, split_message
 from services.pending_confirmation import (
     clear_pending_confirmation,
@@ -88,6 +103,45 @@ def _extract_message_text(incoming: dict) -> str | None:
         reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
         return (reply.get("id") or reply.get("title") or "").strip() or None
     return None
+
+
+def _has_open_expert_request(phone: str) -> bool:
+    """¿Está eligiendo tema o conversando con un experto? En ese caso hay una
+    persona del otro lado y no corresponde el filtro de audios ambiguos."""
+    try:
+        user = get_user(phone)
+        return bool(user and user.get("id") and get_open_expert_request(user["id"]))
+    except Exception as error:
+        logger.warning("No se pudo consultar la solicitud de experto: %s", error)
+        return False
+
+
+def _audio_consent(phone: str) -> bool | None:
+    """True/False si ya decidió sobre el procesamiento de audios; None si no."""
+    try:
+        return consent_state(get_user(phone))
+    except Exception as error:
+        logger.warning("No se pudo consultar el consentimiento de audio: %s", error)
+        return None
+
+
+async def _apply_audio_choice(redis, phone: str, choice: str):
+    """Aplica la respuesta del usuario sobre sus audios (HdU011, iteración).
+
+    Devuelve (respuesta, media_id): media_id es el audio que quedó esperando el
+    consentimiento y que hay que procesar ahora, si aceptó."""
+    if choice == "accept":
+        await asyncio.to_thread(set_audio_consent, phone, True)
+        media_id = await pop_pending_audio(redis, phone)
+        return (ACCEPTED_AND_PROCESSING_TEXT if media_id else ACCEPTED_TEXT), media_id
+    if choice == "reject":
+        await asyncio.to_thread(set_audio_consent, phone, False)
+        await pop_pending_audio(redis, phone)
+        return REJECTED_TEXT, None
+    # "wrong": lo que se mostró no es lo que dijo. Se descarta cualquier
+    # confirmación que haya quedado armada con esa mala interpretación.
+    await clear_pending_confirmation(redis, phone)
+    return WRONG_TEXT, None
 
 
 async def _transcribe_incoming_audio(incoming: dict) -> str | None:
@@ -263,23 +317,93 @@ async def whatsapp_webhook(request: Request):
                     is_audio_message = incoming.get("type") == "audio"
                     message = _extract_message_text(incoming)
 
+                    # ── Consentimiento de audios y "esto no es lo que dije" ──
+                    choice = audio_choice(message)
+                    if choice:
+                        reply, pending_media_id = await _apply_audio_choice(redis, phone, choice)
+                        try:
+                            if reply:
+                                await _send_response(phone, reply)
+                        except WhatsAppAPIError as error:
+                            logger.error("No se pudo responder sobre el audio: %s", error)
+                        if not pending_media_id:
+                            processed_messages += 1
+                            continue
+                        # Aceptó mientras un audio esperaba: se procesa ahora,
+                        # igual que si recién hubiera llegado.
+                        incoming = {
+                            "type": "audio",
+                            "audio": {"id": pending_media_id},
+                            "id": message_id,
+                            "from": incoming.get("from"),
+                        }
+                        is_audio_message = True
+                        message = None
+
                     if message is None and is_audio_message:
+                        consent = await asyncio.to_thread(_audio_consent, phone)
+                        if consent is not True:
+                            # Sin consentimiento NO se transcribe: se pregunta
+                            # (y el audio espera) o se recuerda que puede
+                            # seguir por texto.
+                            try:
+                                if consent is None:
+                                    media_id = (incoming.get("audio") or {}).get("id")
+                                    if media_id:
+                                        await stash_pending_audio(redis, phone, media_id)
+                                    await _send_response(phone, consent_prompt())
+                                else:
+                                    await send_text(phone, DECLINED_REMINDER_TEXT)
+                            except WhatsAppAPIError as error:
+                                logger.error("No se pudo pedir el consentimiento de audio: %s", error)
+                            processed_messages += 1
+                            continue
+
                         message = await _transcribe_incoming_audio(incoming)
+                        if message is not None and audio_choice(message) == "wrong":
+                            # Lo dijo por voz ("no es lo que dije"): mismo efecto
+                            # que el botón, sin mostrar el eco de esa frase.
+                            reply, _ = await _apply_audio_choice(redis, phone, "wrong")
+                            try:
+                                await _send_response(phone, reply)
+                            except WhatsAppAPIError as error:
+                                logger.error("No se pudo responder sobre el audio: %s", error)
+                            processed_messages += 1
+                            continue
+                        if message is not None:
+                            # Siempre se muestra lo que se entendió, antes de
+                            # responder o seguir con cualquier funcionalidad.
+                            try:
+                                await _send_response(phone, echo_widget(message))
+                            except WhatsAppAPIError as error:
+                                logger.error("No se pudo mostrar la transcripción: %s", error)
 
                     # ── Audio transcrito pero de confianza dudosa (HdU11, AC4) ──
                     # Se distingue de "message is None" (AC5): acá Whisper sí
                     # devolvió texto, pero muy corto o una frase de relleno
                     # típica de ruido/silencio — se le muestra al usuario lo
                     # que se entendió y se le pide repetir, sin tocar su perfil.
+                    # El filtro no aplica cuando hay una persona o una pregunta
+                    # esperando una respuesta corta: un "sí"/"no" dicho por audio
+                    # como confirmación, o cualquier audio mientras el emprendedor
+                    # elige tema o conversa con un experto (que sí lo interpreta).
+                    skip_ambiguity_filter = bool(
+                        message is not None
+                        and is_audio_message
+                        and (
+                            await get_pending_confirmation(redis, phone)
+                            or await asyncio.to_thread(_has_open_expert_request, phone)
+                        )
+                    )
                     if (
                         message is not None
                         and is_audio_message
+                        and not skip_ambiguity_filter
                         and is_ambiguous_transcription(message)
                     ):
                         try:
                             await send_text(
                                 phone,
-                                f'🎤 Escuché: "{message}"\n\n'
                                 "No estoy seguro de haber entendido bien. ¿Puedes "
                                 "repetir el audio más claro, o escribirme tu "
                                 "consulta por texto?",
@@ -363,7 +487,6 @@ async def whatsapp_webhook(request: Request):
                             await set_pending_confirmation(redis, phone, "reiniciar")
                             await send_text(
                                 phone,
-                                f'🎤 Escuché: "{message}"\n\n'
                                 "¿Confirmas que quieres *reiniciar tu perfil*? Vas a "
                                 "perder tu progreso actual.\n\nResponde *sí* para "
                                 "confirmar o *no* para cancelar.",

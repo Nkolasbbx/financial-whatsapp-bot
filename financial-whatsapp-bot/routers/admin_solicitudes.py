@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Form, Request, Response
+from fastapi.responses import JSONResponse
 
 from core.calendar_service import get_calendar_timezone
 from core.expert_flow import TOPIC_LABELS, TOPICS
@@ -26,6 +27,7 @@ from db.expert_requests import (
     list_expert_messages,
     list_expert_requests,
     parse_timestamp as _parse_dt,
+    reopen_expert_request,
     resolve_expert_request,
     take_expert_request,
 )
@@ -247,6 +249,11 @@ def _extracto(texto: str) -> str:
     return texto if len(texto) <= QUOTE_PREVIEW_CHARS else texto[:QUOTE_PREVIEW_CHARS].rstrip() + "…"
 
 
+def _firma(mensajes: list[dict]) -> str:
+    """Cambia cuando llega o se envía un mensaje: el navegador la compara para saber si refrescar."""
+    return f"{len(mensajes)}:{mensajes[-1].get('id') if mensajes else 0}"
+
+
 def _mensaje_citable(mensajes: list[dict], mensaje_id) -> dict | None:
     """Un mensaje del emprendedor que se puede citar (tiene el wamid guardado)."""
     try:
@@ -366,10 +373,42 @@ def _bloque_conversacion(
     return f"""
     <div class="admin-card">
         <h2>Conversación</h2>
-        <div class="admin-thread">{hilo}</div>
+        <div id="nuevo-mensaje" class="admin-new-msg" role="status" aria-live="polite" hidden></div>
+        <div class="admin-thread" id="hilo">{hilo}</div>
         {composer}
     </div>
     <div class="admin-card">{cerrar}</div>"""
+
+
+@router.get("/{request_id}/hilo")
+async def hilo(
+    request_id: str,
+    request: Request,
+    financial_admin_session: str | None = Cookie(default=None),
+):
+    """Estado y conversación en JSON: la página lo consulta cada pocos segundos
+    para mostrar mensajes nuevos sin recargar (y sin borrar lo que se escribe)."""
+    account = await _auth(request, financial_admin_session)
+    if not account:
+        return JSONResponse({"error": "sesion"}, status_code=401)
+
+    fila = get_expert_request(request_id, account["comuna"])
+    if not fila:
+        return JSONResponse({"error": "no encontrada"}, status_code=404)
+
+    mensajes = list_expert_messages(request_id)
+    restante = window_remaining(fila)
+    status = fila["status"]
+    citado = _mensaje_citable(mensajes, request.query_params.get("responder"))
+    return JSONResponse({
+        "status": status,
+        "sig": _firma(mensajes),
+        "hilo_html": _hilo_html(
+            mensajes, request_id, puede_responder=restante > timedelta(0),
+            seleccionado=citado["id"] if citado else None,
+        ),
+        "ventana_html": _ventana_html(restante) if status != "resolved" else "—",
+    })
 
 
 @router.get("/{request_id}")
@@ -401,20 +440,39 @@ async def detalle(
         responder = _mensaje_citable(mensajes, request.query_params.get("responder"))
         cuerpo = _bloque_conversacion(request_id, mensajes, restante, nombre, responder)
     else:
-        cierre = f"{_fecha_local(fila.get('resolved_at'))} por {fila.get('closed_by') or '—'}"
+        cerrada_por = fila.get("closed_by") or "—"
+        cierre = f"{_fecha_local(fila.get('resolved_at'))} por {cerrada_por}"
+        aviso = (
+            '<p class="admin-hint">El emprendedor terminó la conversación. Puedes dejarla cerrada o volver a dejarla pendiente.</p>'
+            if str(cerrada_por).startswith("emprendedor") else ""
+        )
         cuerpo = f"""
     <div class="admin-card">
         <h2>Conversación</h2>
         <p class="subtitulo">Resuelta el {html.escape(cierre)}.</p>
         <div class="admin-thread">{_hilo_html(mensajes)}</div>
+        {aviso}
+        <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/reabrir"
+              onsubmit="return confirm('¿Dejar esta solicitud pendiente otra vez?')">
+            <div class="admin-form-actions">
+                <span class="admin-hint">Queda cerrada si no haces nada.</span>
+                <button type="submit" class="admin-btn-secondary">Dejar pendiente</button>
+            </div>
+        </form>
     </div>"""
 
     ventana = (
-        f"{_ventana_html(restante)}<small>se renueva cuando el emprendedor escribe · "
+        f'<span id="ventana-valor">{_ventana_html(restante)}</span><small>se renueva cuando el emprendedor escribe · '
         f'<a href="/admin/solicitudes/{html.escape(request_id)}">Actualizar</a></small>'
         if status != "resolved" else "—"
     )
     tema = TOPIC_LABELS.get(fila.get("topic") or "", "Sin tema")
+    vigia = (
+        f'<div id="hilo-watch" hidden data-request="{html.escape(request_id)}" '
+        f'data-status="{html.escape(status)}" data-sig="{html.escape(_firma(mensajes))}"></div>'
+        '<script src="/static/admin_solicitudes.js"></script>'
+        if status in ("pending", "in_progress") else ""
+    )
     contenido = f"""
     {_flash_html(flash)}
     <div class="admin-card">
@@ -433,6 +491,7 @@ async def detalle(
     </div>
     {_bloque_motivo(fila)}
     {cuerpo}
+    {vigia}
     <p><a href="/admin/solicitudes">← Volver a las solicitudes</a></p>"""
     return Response(content=_pagina_base("Solicitud de experto", contenido, account), media_type="text/html")
 
@@ -551,4 +610,30 @@ async def resolver(request_id: str, request: Request, financial_admin_session: s
         await _set_flash(redis, financial_admin_session, "ok", "Solicitud marcada como resuelta.")
     else:
         await _set_flash(redis, financial_admin_session, "warn", "La solicitud ya estaba cerrada.")
+    return _redirect(f"/admin/solicitudes/{request_id}")
+
+
+@router.post("/{request_id}/reabrir")
+async def reabrir(request_id: str, request: Request, financial_admin_session: str | None = Cookie(default=None)):
+    account = await _auth(request, financial_admin_session)
+    if not account:
+        return _redirect("/admin/login")
+    redis = request.app.state.redis
+
+    fila = get_expert_request(request_id, account["comuna"])
+    if not fila:
+        return Response(status_code=404)
+
+    try:
+        reabierta = reopen_expert_request(request_id, account["comuna"])
+    except Exception as error:
+        # Índice único: el emprendedor ya tiene otra solicitud abierta.
+        logger.warning("No se pudo reabrir la solicitud %s: %s", request_id, error)
+        await _set_flash(redis, financial_admin_session, "error", "No se pudo dejar pendiente: el emprendedor ya tiene otra solicitud abierta.")
+        return _redirect(f"/admin/solicitudes/{request_id}")
+
+    if reabierta:
+        await _set_flash(redis, financial_admin_session, "ok", "La solicitud quedó pendiente otra vez.")
+    else:
+        await _set_flash(redis, financial_admin_session, "warn", "La solicitud no estaba cerrada.")
     return _redirect(f"/admin/solicitudes/{request_id}")
