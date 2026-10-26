@@ -13,3 +13,4 @@ arq==0.28.0
 beautifulsoup4>=4.12,<5
 python-multipart>=0.0.9,<0.1
 pymupdf4llm==1.28.2
+google-auth[requests]>=2.29,<3

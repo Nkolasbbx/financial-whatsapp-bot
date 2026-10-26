@@ -15,6 +15,7 @@ from db.rate_limits import (
     is_rate_limit_exempt,
 )
 from db.calendar import update_calendar_delivery_status
+from db.community_events import update_community_delivery_status
 from db.reminders import update_reminder_delivery_status
 from db.users import (
     BLOCKED_USER_MESSAGE,
@@ -209,6 +210,20 @@ async def whatsapp_webhook(request: Request):
                 except Exception as error:
                     logger.error(
                         "No se pudo actualizar el estado del calendario %s: %s",
+                        status.get("id", "unknown"),
+                        error,
+                    )
+                try:
+                    await asyncio.to_thread(
+                        update_community_delivery_status,
+                        status.get("id", ""),
+                        status.get("status", ""),
+                        status.get("timestamp"),
+                        failure_reason,
+                    )
+                except Exception as error:
+                    logger.error(
+                        "No se pudo actualizar el estado del aviso de convocatoria %s: %s",
                         status.get("id", "unknown"),
                         error,
                     )

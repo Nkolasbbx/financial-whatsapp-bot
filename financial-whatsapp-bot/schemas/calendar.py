@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 ReminderDays = Literal[0, 1, 3, 7]
-CalendarEventSource = Literal["personal", "tributaria", "fondo"]
+CalendarEventSource = Literal["personal", "tributaria", "fondo", "comunitaria"]
 
 
 class CalendarEventCreateRequest(BaseModel):
@@ -42,3 +42,8 @@ class CalendarEventResponse(BaseModel):
     all_day: bool = False
     details: str | None = None
     link: str | None = None
+    # Solo las convocatorias comunitarias (HdU019) usan estos campos.
+    title: str | None = None
+    category: str | None = None
+    location: str | None = None
+    organizer: str | None = None

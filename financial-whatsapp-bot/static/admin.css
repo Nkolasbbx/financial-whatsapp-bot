@@ -1104,3 +1104,61 @@ select:focus-visible {
     background: color-mix(in srgb, var(--emerald) 15%, white);
     font-size: 13px;
 }
+
+/* Convocatorias comunitarias (HdU019): el calendario y su modal reutilizan
+   portal_calendar.css; aquí solo va el bloque de Google Calendar. */
+.community-integrations {
+    display: grid;
+    gap: 24px;
+}
+
+@media (min-width: 768px) {
+    .community-integrations {
+        grid-template-columns: 1fr 1fr;
+        gap: 56px;
+    }
+}
+
+.community-integrations h3 {
+    margin: 0 0 10px;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.community-integrations p {
+    margin: 0 0 10px;
+}
+
+.community-integrations a {
+    color: var(--petrol);
+    font-weight: 700;
+    transition: color 300ms;
+}
+
+.community-integrations a:hover {
+    color: var(--emerald);
+}
+
+.community-feed-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.community-feed-row input {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 14px;
+    border: 1px solid color-mix(in srgb, var(--petrol) 30%, transparent);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--petrol) 5%, white);
+    color: var(--petrol);
+    font: inherit;
+    font-size: 13px;
+}
+
+.community-feed-row input:focus {
+    outline: none;
+    border-color: var(--emerald);
+    box-shadow: 0 0 0 2px var(--emerald);
+}

@@ -13,7 +13,9 @@ from phone_lock import release_phone_lock
 from redis_settings import get_redis_settings
 from services.alertas_tributarias import send_tax_alerts
 from services.calendar_reminders import send_due_calendar_reminders
+from services.community_notices import send_due_community_notices
 from services.financial_movements import process_financial_movement_and_send
+from services.google_calendar import sync_pending_google_events
 
 from services.ingestion_jobs import STORAGE_BUCKET
 from services.reminders import send_due_reminders
@@ -126,6 +128,30 @@ async def run_reminders_job(ctx):
             results[name] = {"status": "failed"}
 
     logger.info("Cron de recordatorios ejecutado: %s", results)
+
+
+async def run_community_job(ctx):
+    """Cron de arq (HdU019): avisos de convocatorias comunitarias y réplica
+    pendiente en Google Calendar.
+
+    Corre cada 15 minutos, separado de run_reminders_job (que va a la hora en
+    punto), para que el aviso salga cerca de la hora que eligió el admin sin
+    cambiar la frecuencia de los demás recordatorios. Igual que ese job, se
+    traga las excepciones para no tumbar el worker.
+    """
+    results = {}
+    services = (
+        ("community", send_due_community_notices),
+        ("google_calendar", sync_pending_google_events),
+    )
+    for name, service in services:
+        try:
+            results[name] = await service()
+        except Exception:
+            logger.exception("Fallo ejecutando el servicio de %s", name)
+            results[name] = {"status": "failed"}
+
+    logger.info("Cron de convocatorias ejecutado: %s", results)
 
 
 async def process_document_ingestion_task(
@@ -258,6 +284,7 @@ class WorkerSettings:
     functions = [process_ai_task, process_document_ingestion_task, process_financial_movement_task]
     cron_jobs = [
         cron(run_reminders_job, hour=set(range(24)), minute=0, run_at_startup=False),
+        cron(run_community_job, hour=set(range(24)), minute={0, 15, 30, 45}, run_at_startup=False),
         cron(cleanup_orphaned_uploads_job, hour=set(range(24)), minute=30, run_at_startup=False),
     ]
     on_startup = startup

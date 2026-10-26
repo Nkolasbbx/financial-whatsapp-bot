@@ -45,6 +45,8 @@ def _pagina_base(
     contenido: str,
     cuenta: dict | None = None,
     encabezado_centrado: bool = False,
+    head_extra: str = "",
+    scripts: str = "",
 ) -> str:
     cuenta_html = ""
     if cuenta:
@@ -53,6 +55,7 @@ def _pagina_base(
             <a href="/admin">Panel</a>
             <a href="/admin/documentos">Documentos</a>
             <a href="/admin/solicitudes">Solicitudes</a>
+            <a href="/admin/convocatorias">Convocatorias</a>
             <span class="admin-nav-session">
                 <span class="admin-nav-account">{html.escape(cuenta.get("nombre", ""))}</span>
                 <a href="/admin/logout" class="admin-nav-logout">Cerrar sesión</a>
@@ -71,6 +74,7 @@ def _pagina_base(
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/admin.css">
+{head_extra}
 </head>
 <body>
 <a class="skip-link" href="#main">Saltar al contenido principal</a>
@@ -95,6 +99,7 @@ def _pagina_base(
 {contenido}
 </main>
 <script src="/static/admin.js"></script>
+{scripts}
 </body>
 </html>"""
 

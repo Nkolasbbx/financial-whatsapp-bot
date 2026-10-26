@@ -22,6 +22,11 @@
     margin-bottom: 0;
 }
 
+.calendar-header .calendar-primary-button {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
 .calendar-primary-button,
 .calendar-secondary-button,
 .calendar-danger-button {
@@ -133,6 +138,22 @@
     background: var(--emerald);
 }
 
+/* Convocatorias comunitarias (HdU019): «vidrio tintado» esmeralda para
+   distinguirlas de los eventos sólidos sin salir de la paleta. */
+.calendar-legend-dot.community {
+    border: 1px solid color-mix(in srgb, var(--emerald) 95%, transparent);
+    background: color-mix(in srgb, var(--emerald) 40%, white);
+}
+
+.calendar-legend-dot.community-sent {
+    background: var(--emerald);
+}
+
+.calendar-legend-dot.community-cancelled {
+    border: 1px solid color-mix(in srgb, var(--petrol) 30%, transparent);
+    background: color-mix(in srgb, var(--petrol) 6%, white);
+}
+
 .calendar-modal-open {
     overflow: hidden;
 }
@@ -204,7 +225,8 @@
 }
 
 .calendar-field input,
-.calendar-field select {
+.calendar-field select,
+.calendar-field textarea {
     width: 100%;
     padding: 14px 16px;
     border: 1px solid color-mix(in srgb, var(--petrol) 30%, transparent);
@@ -217,16 +239,78 @@
 }
 
 .calendar-field input:focus,
-.calendar-field select:focus {
+.calendar-field select:focus,
+.calendar-field textarea:focus {
     outline: none;
     border-color: var(--emerald);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--emerald) 90%, transparent);
 }
 
 .calendar-field input:disabled,
-.calendar-field select:disabled {
+.calendar-field select:disabled,
+.calendar-field textarea:disabled,
+.calendar-field input[readonly] {
     background: color-mix(in srgb, var(--petrol) 10%, white);
     color: color-mix(in srgb, var(--petrol) 90%, transparent);
+}
+
+.calendar-field textarea {
+    resize: vertical;
+    line-height: 1.5;
+}
+
+/* .calendar-field usa display:flex, que le gana al [hidden] del navegador. */
+.calendar-modal [hidden] {
+    display: none !important;
+}
+
+/* Dos campos lado a lado (fecha de la actividad y del aviso). */
+.calendar-field-row {
+    display: grid;
+    gap: 0 14px;
+}
+
+@media (min-width: 640px) {
+    .calendar-field-row {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+.calendar-hint {
+    margin: -6px 0 15px;
+    color: color-mix(in srgb, var(--petrol) 90%, transparent);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.calendar-form-error ul {
+    margin: 0;
+    padding-left: 18px;
+}
+
+/* Datos de una convocatoria comunitaria en el modal de solo lectura. */
+.calendar-readonly-facts {
+    display: grid;
+    gap: 6px;
+    margin: 10px 0;
+}
+
+.calendar-readonly-facts div {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 8px;
+}
+
+.calendar-readonly-facts dt {
+    font-weight: 700;
+}
+
+.calendar-readonly-facts dd {
+    margin: 0;
+}
+
+.calendar-readonly-facts dd:first-letter {
+    text-transform: uppercase;
 }
 
 .calendar-form-error {
@@ -265,18 +349,18 @@
 }
 
 /* FullCalendar (librería externa): recoloreado vía overrides */
-#business-calendar {
+:is(#business-calendar, #community-calendar) {
     font-family: var(--font-sans);
     color: var(--petrol);
 }
 
-#business-calendar .fc-toolbar-title {
+:is(#business-calendar, #community-calendar) .fc-toolbar-title {
     font-size: 18px;
     font-weight: 800;
     color: var(--petrol);
 }
 
-#business-calendar .fc-button-primary {
+:is(#business-calendar, #community-calendar) .fc-button-primary {
     border-color: color-mix(in srgb, var(--petrol) 30%, transparent);
     background: #fff;
     color: var(--petrol);
@@ -285,72 +369,72 @@
     transition: border-color 300ms, background-color 300ms;
 }
 
-#business-calendar .fc-button-primary:not(:disabled):hover,
-#business-calendar .fc-button-primary:not(:disabled):active {
+:is(#business-calendar, #community-calendar) .fc-button-primary:not(:disabled):hover,
+:is(#business-calendar, #community-calendar) .fc-button-primary:not(:disabled):active {
     border-color: var(--emerald);
     background: color-mix(in srgb, var(--emerald) 20%, white);
     color: var(--petrol);
 }
 
-#business-calendar .fc-button-primary:not(:disabled).fc-button-active,
-#business-calendar .fc-button-primary:not(:disabled).fc-button-active:hover {
+:is(#business-calendar, #community-calendar) .fc-button-primary:not(:disabled).fc-button-active,
+:is(#business-calendar, #community-calendar) .fc-button-primary:not(:disabled).fc-button-active:hover {
     border-color: var(--petrol);
     background: var(--petrol);
     color: #fff !important;
 }
 
-#business-calendar .fc-button-primary.fc-button-active * {
+:is(#business-calendar, #community-calendar) .fc-button-primary.fc-button-active * {
     color: #fff !important;
 }
 
-#business-calendar .fc-button-primary:focus,
-#business-calendar .fc-button-primary:not(:disabled).fc-button-active:focus {
+:is(#business-calendar, #community-calendar) .fc-button-primary:focus,
+:is(#business-calendar, #community-calendar) .fc-button-primary:not(:disabled).fc-button-active:focus {
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--emerald) 90%, transparent);
 }
 
-#business-calendar .fc-daygrid-day.fc-day-today {
+:is(#business-calendar, #community-calendar) .fc-daygrid-day.fc-day-today {
     background: color-mix(in srgb, var(--emerald) 16%, white);
 }
 
-#business-calendar .fc-col-header-cell {
+:is(#business-calendar, #community-calendar) .fc-col-header-cell {
     background: color-mix(in srgb, var(--petrol) 6%, white);
 }
 
-#business-calendar .fc-col-header-cell-cushion,
-#business-calendar .fc-daygrid-day-number {
+:is(#business-calendar, #community-calendar) .fc-col-header-cell-cushion,
+:is(#business-calendar, #community-calendar) .fc-daygrid-day-number {
     color: var(--petrol);
     text-decoration: none;
 }
 
-#business-calendar .fc-scrollgrid,
-#business-calendar .fc-scrollgrid-section > *,
-#business-calendar th,
-#business-calendar td {
+:is(#business-calendar, #community-calendar) .fc-scrollgrid,
+:is(#business-calendar, #community-calendar) .fc-scrollgrid-section > *,
+:is(#business-calendar, #community-calendar) th,
+:is(#business-calendar, #community-calendar) td {
     border-color: color-mix(in srgb, var(--petrol) 15%, transparent) !important;
 }
 
-#business-calendar .calendar-event-active {
+:is(#business-calendar, #community-calendar) .calendar-event-active {
     border-color: var(--petrol);
     background: var(--petrol);
 }
 
-#business-calendar .calendar-event-completed {
+:is(#business-calendar, #community-calendar) .calendar-event-completed {
     border-color: var(--emerald);
     background: var(--emerald);
     opacity: 0.85;
 }
 
-#business-calendar .calendar-event-overdue {
+:is(#business-calendar, #community-calendar) .calendar-event-overdue {
     border-color: #b91c1c;
     background: #b91c1c;
 }
 
-#business-calendar .calendar-event-tax {
+:is(#business-calendar, #community-calendar) .calendar-event-tax {
     border-color: var(--teal);
     background: var(--teal);
 }
 
-#business-calendar .calendar-event-fund {
+:is(#business-calendar, #community-calendar) .calendar-event-fund {
     border-color: #7c3aed;
     background: #7c3aed;
 }
@@ -359,29 +443,71 @@
    filas de la vista Lista no usan el texto blanco de FullCalendar y
    heredaban el petróleo del contenedor, quedando invisibles sobre su
    propio fondo. */
-#business-calendar .calendar-event-active,
-#business-calendar .calendar-event-completed,
-#business-calendar .calendar-event-overdue,
-#business-calendar .calendar-event-tax,
-#business-calendar .calendar-event-fund,
-#business-calendar .calendar-event-active *,
-#business-calendar .calendar-event-completed *,
-#business-calendar .calendar-event-overdue *,
-#business-calendar .calendar-event-tax *,
-#business-calendar .calendar-event-fund * {
+:is(#business-calendar, #community-calendar) .calendar-event-active,
+:is(#business-calendar, #community-calendar) .calendar-event-completed,
+:is(#business-calendar, #community-calendar) .calendar-event-overdue,
+:is(#business-calendar, #community-calendar) .calendar-event-tax,
+:is(#business-calendar, #community-calendar) .calendar-event-fund,
+:is(#business-calendar, #community-calendar) .calendar-event-active *,
+:is(#business-calendar, #community-calendar) .calendar-event-completed *,
+:is(#business-calendar, #community-calendar) .calendar-event-overdue *,
+:is(#business-calendar, #community-calendar) .calendar-event-tax *,
+:is(#business-calendar, #community-calendar) .calendar-event-fund * {
     color: #fff;
 }
 
 /* El punto de los eventos con hora y de la vista Lista sale azul por
    defecto; en blanco se distingue sobre el fondo de color. */
-#business-calendar .fc-daygrid-event-dot,
-#business-calendar .fc-list-event-dot {
+:is(#business-calendar, #community-calendar) .fc-daygrid-event-dot,
+:is(#business-calendar, #community-calendar) .fc-list-event-dot {
     border-color: #fff;
+}
+
+/* Convocatorias comunitarias: tinte esmeralda con texto petróleo (el aviso
+   enviado pasa a esmeralda sólido y la cancelada queda tachada). Van
+   después de la regla de texto blanco para ganarle con igual especificidad. */
+:is(#business-calendar, #community-calendar) .calendar-event-community {
+    border-color: color-mix(in srgb, var(--emerald) 95%, transparent);
+    background: color-mix(in srgb, var(--emerald) 40%, white);
+}
+
+:is(#business-calendar, #community-calendar) .calendar-event-community-sent {
+    border-color: var(--emerald);
+    background: var(--emerald);
+}
+
+:is(#business-calendar, #community-calendar) .calendar-event-community-cancelled {
+    border-color: color-mix(in srgb, var(--petrol) 30%, transparent);
+    background: color-mix(in srgb, var(--petrol) 6%, white);
+    opacity: 0.7;
+}
+
+:is(#business-calendar, #community-calendar) .calendar-event-community-cancelled .fc-event-title,
+:is(#business-calendar, #community-calendar) .calendar-event-community-cancelled .fc-list-event-title {
+    text-decoration: line-through;
+}
+
+:is(#business-calendar, #community-calendar) .calendar-event-community,
+:is(#business-calendar, #community-calendar) .calendar-event-community *,
+:is(#business-calendar, #community-calendar) .calendar-event-community-sent,
+:is(#business-calendar, #community-calendar) .calendar-event-community-sent *,
+:is(#business-calendar, #community-calendar) .calendar-event-community-cancelled,
+:is(#business-calendar, #community-calendar) .calendar-event-community-cancelled * {
+    color: var(--petrol);
+}
+
+:is(#business-calendar, #community-calendar) .calendar-event-community .fc-daygrid-event-dot,
+:is(#business-calendar, #community-calendar) .calendar-event-community .fc-list-event-dot,
+:is(#business-calendar, #community-calendar) .calendar-event-community-sent .fc-daygrid-event-dot,
+:is(#business-calendar, #community-calendar) .calendar-event-community-sent .fc-list-event-dot,
+:is(#business-calendar, #community-calendar) .calendar-event-community-cancelled .fc-daygrid-event-dot,
+:is(#business-calendar, #community-calendar) .calendar-event-community-cancelled .fc-list-event-dot {
+    border-color: var(--petrol);
 }
 
 /* Vista Lista: el hover de FullCalendar pone fondo gris claro en las
    celdas y taparía el texto blanco; se mantiene el color de la fila. */
-#business-calendar .fc-list-event:hover td {
+:is(#business-calendar, #community-calendar) .fc-list-event:hover td {
     background: transparent;
 }
 
@@ -404,7 +530,7 @@
         margin-right: 0;
     }
 
-    #business-calendar .fc-header-toolbar {
+    :is(#business-calendar, #community-calendar) .fc-header-toolbar {
         align-items: stretch;
         flex-direction: column;
         gap: 10px;

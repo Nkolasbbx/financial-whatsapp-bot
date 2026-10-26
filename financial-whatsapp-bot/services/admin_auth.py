@@ -17,6 +17,7 @@ from config import ADMIN_ACCOUNTS
 logger = logging.getLogger("financial")
 
 _SESSION_PREFIX = "admin_session:"
+_CSRF_PREFIX = "admin_csrf:"
 SESSION_TTL_SECONDS = 24 * 3600  # sesión de admin, más corta que la del emprendedor
 
 
@@ -62,3 +63,34 @@ async def get_admin_session_account(redis, session_id: str | None) -> dict | Non
 async def destroy_admin_session(redis, session_id: str | None) -> None:
     if session_id:
         await redis.delete(_SESSION_PREFIX + session_id)
+
+
+async def get_or_create_admin_csrf_token(redis, session_id: str) -> str:
+    """Token CSRF de la API JSON del panel (HdU019), mismo patrón que
+    portal_auth.get_or_create_csrf_token pero con prefijo propio."""
+    if not session_id:
+        raise ValueError("Se necesita una sesión válida")
+
+    key = _CSRF_PREFIX + session_id
+    existing = await redis.get(key)
+    if existing:
+        return _as_str(existing)
+
+    token = secrets.token_urlsafe(32)
+    await redis.set(key, token, ex=SESSION_TTL_SECONDS)
+    return token
+
+
+async def validate_admin_csrf_token(
+    redis,
+    session_id: str | None,
+    submitted_token: str | None,
+) -> bool:
+    if not session_id or not submitted_token:
+        return False
+
+    stored_token = await redis.get(_CSRF_PREFIX + session_id)
+    if not stored_token:
+        return False
+
+    return secrets.compare_digest(_as_str(stored_token), submitted_token)

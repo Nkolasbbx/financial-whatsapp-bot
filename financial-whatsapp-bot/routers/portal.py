@@ -612,8 +612,9 @@ def _tarjeta_fechas_personales() -> str:
         <div class="calendar-header">
             <div>
                 <h1>🗓️ Tu calendario del negocio</h1>
-                <p class="subtitulo">Consulta tus fechas personales y obligaciones
-                tributarias. También puedes agendar nuevos compromisos.</p>
+                <p class="subtitulo">Consulta tus fechas personales, obligaciones
+                tributarias y las convocatorias de tu municipio. También puedes
+                agendar nuevos compromisos.</p>
             </div>
             <button
                 type="button"
@@ -627,6 +628,7 @@ def _tarjeta_fechas_personales() -> str:
             <span><i class="calendar-legend-dot personal"></i> Fecha personal</span>
             <span><i class="calendar-legend-dot tax"></i> Fecha tributaria</span>
             <span><i class="calendar-legend-dot fund"></i> Fondo concursable</span>
+            <span><i class="calendar-legend-dot community"></i> Convocatoria comunitaria</span>
             <span><i class="calendar-legend-dot completed"></i> Completada</span>
         </div>
         <div
@@ -699,6 +701,7 @@ def _tarjeta_fechas_personales() -> str:
                 >
                     <strong id="calendar-readonly-heading">Información</strong>
                     <p id="calendar-readonly-description"></p>
+                    <dl id="calendar-readonly-facts" class="calendar-readonly-facts" hidden></dl>
                     <a
                         id="calendar-readonly-link"
                         href="#"
@@ -923,10 +926,11 @@ async def panel(
         {_csrf_meta(csrf_token)}
         <link rel="stylesheet" href="{_versioned_static_url('portal_calendar.css')}">
         """
-        scripts = """
+        scripts = f"""
         <script defer src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
         <script defer src="https://cdn.jsdelivr.net/npm/@fullcalendar/core@6.1.15/locales-all.global.min.js"></script>
-        <script defer src="/static/portal_calendar.js"></script>
+        <script defer src="{_versioned_static_url('calendar_shared.js')}"></script>
+        <script defer src="{_versioned_static_url('portal_calendar.js')}"></script>
         """
 
     elif active_tab == "fondos":

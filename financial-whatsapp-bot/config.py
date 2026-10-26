@@ -91,6 +91,29 @@ CALENDAR_TEMPLATE_LANGUAGE = os.getenv(
 ).strip()
 CALENDAR_DEFAULT_HOUR = int(os.getenv("CALENDAR_DEFAULT_HOUR", "9"))
 CALENDAR_BATCH_SIZE = int(os.getenv("CALENDAR_BATCH_SIZE", "100"))
+# Convocatorias comunitarias (HdU019). El aviso usa el mismo consentimiento
+# global de reminders_enabled y una plantilla propia aprobada en Meta; queda
+# apagado hasta que esa plantilla exista.
+COMMUNITY_NOTICES_ENABLED = (
+    os.getenv("COMMUNITY_NOTICES_ENABLED", "false").strip().lower() == "true"
+)
+COMMUNITY_TEMPLATE_NAME = os.getenv(
+    "COMMUNITY_TEMPLATE_NAME",
+    "aviso_convocatoria_comunitaria",
+).strip()
+COMMUNITY_TEMPLATE_LANGUAGE = os.getenv(
+    "COMMUNITY_TEMPLATE_LANGUAGE",
+    "es_CL",
+).strip()
+COMMUNITY_BATCH_SIZE = int(os.getenv("COMMUNITY_BATCH_SIZE", "100"))
+
+# Réplica de las convocatorias en el Google Calendar de cada municipio
+# mediante una cuenta de servicio (HdU019). El JSON de la clave va completo
+# en una sola variable; el ID del calendario se configura por cuenta admin.
+GOOGLE_CALENDAR_SYNC_ENABLED = (
+    os.getenv("GOOGLE_CALENDAR_SYNC_ENABLED", "false").strip().lower() == "true"
+)
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 # Vercel envía CRON_SECRET como `Authorization: Bearer ...` al ejecutar el cron.
 # El nombre anterior se mantiene solo como respaldo para entornos locales ya creados.
 CRON_SECRET = (
@@ -138,16 +161,22 @@ FORMALIZATION_DIAGNOSTICS_ENABLED = (
 # propósito: solo hay 2 municipalidades clientes por ahora, no se justifica
 # un sistema de registro/roles todavía. Las contraseñas viven acá solo como
 # nombre de variable de entorno — el valor real nunca va en el código.
+# google_calendar_id y ics_token (HdU019) son opcionales: sin ellos la cuenta
+# simplemente no sincroniza con Google ni expone el feed .ics.
 ADMIN_ACCOUNTS = {
     "recoleta": {
         "password": os.getenv("ADMIN_RECOLETA_PASSWORD", ""),
         "comuna": "Recoleta",
         "nombre": "InnovaRecoleta",
+        "google_calendar_id": os.getenv("ADMIN_RECOLETA_GOOGLE_CALENDAR_ID", "").strip(),
+        "ics_token": os.getenv("ADMIN_RECOLETA_ICS_TOKEN", "").strip(),
     },
     "elbosque": {
         "password": os.getenv("ADMIN_ELBOSQUE_PASSWORD", ""),
         "comuna": "El Bosque",
         "nombre": "Municipalidad de El Bosque",
+        "google_calendar_id": os.getenv("ADMIN_ELBOSQUE_GOOGLE_CALENDAR_ID", "").strip(),
+        "ics_token": os.getenv("ADMIN_ELBOSQUE_ICS_TOKEN", "").strip(),
     },
 }
 
@@ -162,6 +191,9 @@ if not 0 <= CALENDAR_DEFAULT_HOUR <= 23:
 
 if CALENDAR_BATCH_SIZE < 1:
     raise ValueError("CALENDAR_BATCH_SIZE debe ser mayor que cero")
+
+if COMMUNITY_BATCH_SIZE < 1:
+    raise ValueError("COMMUNITY_BATCH_SIZE debe ser mayor que cero")
 
 if RATE_LIMIT_MAX_MESSAGES < 1:
     raise ValueError("RATE_LIMIT_MAX_MESSAGES debe ser mayor que cero")

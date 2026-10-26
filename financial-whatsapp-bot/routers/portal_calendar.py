@@ -17,6 +17,7 @@ from core.calendar_service import (
     prepare_event_schedule,
 )
 from core.alertas_tributarias import get_calendario_sii
+from core.community_events import category_label
 from core.fondos import fund_applies_to_user
 from db.calendar import (
     cancel_calendar_event,
@@ -27,6 +28,7 @@ from db.calendar import (
     get_calendar_events_between,
     update_calendar_event,
 )
+from db.community_events import list_community_events_between
 from db.users import get_user
 from db.fondos import list_active_funds_between
 from schemas.calendar import (
@@ -224,6 +226,57 @@ def _fund_events_for_user(
     return sorted(events, key=lambda event: event.event_at)
 
 
+def _serialize_community_event(event: dict) -> CalendarEventResponse:
+    """Convierte una convocatoria comunitaria (HdU019) en un evento de solo
+    lectura, distinto de los recordatorios personales del usuario."""
+    local_timezone = get_calendar_timezone()
+    event_at = parse_stored_datetime(event["event_at"]).astimezone(local_timezone)
+    title = event.get("title") or "Convocatoria comunitaria"
+
+    return CalendarEventResponse(
+        id=f"community:{event['id']}",
+        description=title,
+        event_at=event_at,
+        reminder_at=event_at,
+        reminder_days_before=0,
+        status="informational",
+        source="comunitaria",
+        editable=False,
+        details=event.get("description"),
+        link=event.get("link"),
+        title=title,
+        category=category_label(event.get("category")),
+        location=event.get("location"),
+        organizer=event.get("created_by"),
+    )
+
+
+async def _community_events_between(
+    user: dict,
+    start_at: datetime,
+    end_at: datetime,
+) -> list[CalendarEventResponse]:
+    """Convocatorias vigentes de la comuna del usuario dentro del rango.
+
+    Un fallo al consultarlas (por ejemplo, migración aún no aplicada) no
+    debe impedir que el usuario vea el resto de su calendario.
+    """
+    comuna = user.get("comuna")
+    if not comuna:
+        return []
+    try:
+        events = await run_in_threadpool(
+            list_community_events_between,
+            comuna,
+            start_at,
+            end_at,
+        )
+    except Exception:
+        logger.exception("No se pudieron cargar las convocatorias de %s", comuna)
+        return []
+    return [_serialize_community_event(event) for event in events]
+
+
 async def _clear_conversation_draft(user_id: str) -> None:
     """Evita dejar un borrador de WhatsApp obsoleto tras editar en la web."""
     await run_in_threadpool(clear_calendar_session, user_id)
@@ -277,6 +330,10 @@ async def list_events(
             range_end,
         )
         calendar_events.extend(_fund_events_for_user(user, funds))
+
+    calendar_events.extend(
+        await _community_events_between(user, start_utc, end_utc)
+    )
 
     return sorted(calendar_events, key=lambda event: event.event_at)
 

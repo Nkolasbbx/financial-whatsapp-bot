@@ -14,6 +14,17 @@ async def _run_immediately(function, *args, **kwargs):
 
 
 class PortalCalendarTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Las convocatorias comunitarias (HdU019) tienen sus propias pruebas:
+        # por defecto la comuna del usuario no tiene ninguna.
+        community_patch = patch.object(
+            portal_calendar,
+            "list_community_events_between",
+            return_value=[],
+        )
+        community_patch.start()
+        self.addCleanup(community_patch.stop)
+
     async def test_missing_session_is_rejected(self):
         request = SimpleNamespace(
             app=SimpleNamespace(
@@ -279,6 +290,113 @@ class PortalCalendarTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Capital Semilla", result[0].description)
         self.assertFalse(result[0].editable)
         self.assertTrue(result[0].all_day)
+
+    async def test_user_sees_community_events_of_their_comuna(self):
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(redis=object()),
+            )
+        )
+        community_mock = unittest.mock.Mock(return_value=[
+            {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "title": "Taller de marketing digital",
+                "category": "taller",
+                "description": "Aprende a vender por redes sociales.",
+                "location": "Centro de Emprendimiento",
+                "link": "https://recoleta.cl/taller",
+                "created_by": "InnovaRecoleta",
+                "event_at": "2099-09-20T13:00:00+00:00",
+                "status": "scheduled",
+            }
+        ])
+
+        with (
+            patch.object(
+                portal_calendar,
+                "_authenticated_user",
+                new=AsyncMock(return_value={
+                    "id": "session-user",
+                    "comuna": "Recoleta",
+                }),
+            ),
+            patch.object(
+                portal_calendar,
+                "get_calendar_events_between",
+                return_value=[],
+            ),
+            patch.object(
+                portal_calendar,
+                "list_community_events_between",
+                new=community_mock,
+            ),
+            patch.object(
+                portal_calendar,
+                "run_in_threadpool",
+                new=_run_immediately,
+            ),
+        ):
+            result = await portal_calendar.list_events(
+                request,
+                start=datetime(2099, 9, 1, tzinfo=timezone.utc),
+                end=datetime(2099, 10, 1, tzinfo=timezone.utc),
+                financial_session="session-id",
+            )
+
+        self.assertEqual(community_mock.call_args.args[0], "Recoleta")
+        self.assertEqual(len(result), 1)
+        event = result[0]
+        self.assertEqual(event.source, "comunitaria")
+        self.assertFalse(event.editable)
+        self.assertFalse(event.all_day)
+        self.assertEqual(event.id, "community:11111111-2222-3333-4444-555555555555")
+        self.assertEqual(event.title, "Taller de marketing digital")
+        self.assertEqual(event.category, "Taller")
+        self.assertEqual(event.details, "Aprende a vender por redes sociales.")
+        self.assertEqual(event.location, "Centro de Emprendimiento")
+        self.assertEqual(event.organizer, "InnovaRecoleta")
+
+    async def test_community_events_failure_does_not_break_calendar(self):
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(redis=object()),
+            )
+        )
+
+        with (
+            patch.object(
+                portal_calendar,
+                "_authenticated_user",
+                new=AsyncMock(return_value={
+                    "id": "session-user",
+                    "comuna": "Recoleta",
+                }),
+            ),
+            patch.object(
+                portal_calendar,
+                "get_calendar_events_between",
+                return_value=[],
+            ),
+            patch.object(
+                portal_calendar,
+                "list_community_events_between",
+                side_effect=RuntimeError("tabla no existe"),
+            ),
+            patch.object(
+                portal_calendar,
+                "run_in_threadpool",
+                new=_run_immediately,
+            ),
+            self.assertLogs("financial", level="ERROR"),
+        ):
+            result = await portal_calendar.list_events(
+                request,
+                start=datetime(2099, 9, 1, tzinfo=timezone.utc),
+                end=datetime(2099, 10, 1, tzinfo=timezone.utc),
+                financial_session="session-id",
+            )
+
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

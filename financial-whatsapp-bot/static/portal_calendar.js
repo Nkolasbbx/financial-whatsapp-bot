@@ -7,7 +7,19 @@
             return;
         }
 
-        if (!window.FullCalendar) {
+        const shared = window.FinancialCalendar;
+        const messageElement = document.getElementById("calendar-message");
+
+        function showMessage(message, type) {
+            if (shared) {
+                shared.setMessage(messageElement, message, type);
+            } else if (messageElement) {
+                messageElement.textContent = message || "";
+                messageElement.className = message ? `calendar-message ${type || "info"}` : "";
+            }
+        }
+
+        if (!window.FullCalendar || !shared) {
             showMessage(
                 "No se pudo cargar el calendario visual. Recarga la página para intentarlo nuevamente.",
                 "error"
@@ -19,6 +31,10 @@
             .querySelector('meta[name="financial-csrf-token"]')
             ?.getAttribute("content");
         const defaultHour = container.dataset.defaultHour || "09:00";
+        const requestSettings = {
+            csrfToken: csrfToken,
+            sessionExpiredMessage: "Tu sesión venció. Solicita un nuevo acceso desde WhatsApp.",
+        };
 
         const backdrop = document.getElementById("calendar-modal-backdrop");
         const form = document.getElementById("calendar-event-form");
@@ -36,96 +52,27 @@
         const readonlyInformation = document.getElementById("calendar-readonly-information");
         const readonlyHeading = document.getElementById("calendar-readonly-heading");
         const readonlyDescription = document.getElementById("calendar-readonly-description");
+        const readonlyFacts = document.getElementById("calendar-readonly-facts");
         const readonlyLink = document.getElementById("calendar-readonly-link");
+        const descriptionField = descriptionInput.closest(".calendar-field");
+        const eventAtField = eventAtInput.closest(".calendar-field");
+        const reminderField = reminderInput.closest(".calendar-field");
 
         let calendar;
 
-        function showMessage(message, type) {
-            const element = document.getElementById("calendar-message");
-            if (!element) {
-                return;
-            }
-            element.textContent = message || "";
-            element.className = message
-                ? `calendar-message ${type || "info"}`
-                : "";
-        }
+        const modal = shared.bindModal({
+            backdrop: backdrop,
+            closeButton: closeButton,
+            focusElement: function () {
+                return descriptionField.hidden ? closeButton : descriptionInput;
+            },
+            onClose: function () {
+                setFormError("");
+            },
+        });
 
         function setFormError(message) {
             formError.textContent = message || "";
-        }
-
-        function detailMessage(detail) {
-            if (Array.isArray(detail)) {
-                return detail
-                    .map(function (item) {
-                        return item.msg || "Dato inválido";
-                    })
-                    .join(". ");
-            }
-            return detail || "No se pudo completar la operación";
-        }
-
-        async function calendarRequest(url, options) {
-            const requestOptions = Object.assign({}, options || {});
-            requestOptions.headers = Object.assign(
-                {
-                    "Content-Type": "application/json",
-                    "X-CSRF-Token": csrfToken || "",
-                },
-                requestOptions.headers || {}
-            );
-
-            const response = await fetch(url, requestOptions);
-            let payload = null;
-            try {
-                payload = await response.json();
-            } catch (_error) {
-                payload = null;
-            }
-
-            if (!response.ok) {
-                if (response.status === 401) {
-                    throw new Error(
-                        "Tu sesión venció. Solicita un nuevo acceso desde WhatsApp."
-                    );
-                }
-                throw new Error(detailMessage(payload?.detail));
-            }
-
-            return payload;
-        }
-
-        function chileInputValue(value) {
-            const date = value instanceof Date ? value : new Date(value);
-            const parts = new Intl.DateTimeFormat("sv-SE", {
-                timeZone: "America/Santiago",
-                year: "numeric",
-                month: "2-digit",
-                day: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                hourCycle: "h23",
-            }).formatToParts(date);
-            const values = {};
-            parts.forEach(function (part) {
-                values[part.type] = part.value;
-            });
-            return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
-        }
-
-        function defaultDateTime(selectedDate) {
-            if (selectedDate) {
-                const candidate = `${selectedDate}T${defaultHour}`;
-                const currentLocal = chileInputValue(new Date());
-                if (candidate > currentLocal) {
-                    return candidate;
-                }
-            }
-
-            const nextHour = new Date(Date.now() + 60 * 60 * 1000);
-            nextHour.setMinutes(0, 0, 0);
-            return chileInputValue(nextHour);
         }
 
         function setEditable(enabled) {
@@ -135,19 +82,68 @@
             saveButton.hidden = !enabled;
         }
 
+        function setFieldsVisibility(options) {
+            descriptionField.hidden = Boolean(options.hideMain);
+            eventAtField.hidden = Boolean(options.hideMain);
+            reminderField.hidden = Boolean(options.hideReminder);
+        }
+
+        function renderFacts(facts) {
+            readonlyFacts.replaceChildren();
+            facts.forEach(function (fact) {
+                if (!fact.value) {
+                    return;
+                }
+                const wrapper = document.createElement("div");
+                const term = document.createElement("dt");
+                const detail = document.createElement("dd");
+                term.textContent = fact.label;
+                detail.textContent = fact.value;
+                wrapper.append(term, detail);
+                readonlyFacts.append(wrapper);
+            });
+            readonlyFacts.hidden = readonlyFacts.childElementCount === 0;
+        }
+
         function openCreateModal(dateText) {
             form.reset();
             eventIdInput.value = "";
             descriptionInput.value = "";
-            eventAtInput.value = defaultDateTime(dateText || null);
+            eventAtInput.value = shared.defaultDateTime(dateText || null, defaultHour);
             reminderInput.value = "0";
             modalTitle.textContent = "Nueva fecha importante";
             deleteButton.hidden = true;
             completeButton.hidden = true;
             readonlyInformation.hidden = true;
+            setFieldsVisibility({});
             setEditable(true);
             setFormError("");
-            openModal();
+            modal.open();
+        }
+
+        function openCommunityModal(properties) {
+            // Convocatoria del municipio (HdU019): solo lectura y con sus
+            // datos propios, para distinguirla de las fechas personales.
+            modalTitle.textContent = properties.category
+                ? `Convocatoria comunitaria · ${properties.category}`
+                : "Convocatoria comunitaria";
+            readonlyHeading.textContent = properties.title || properties.description;
+            readonlyDescription.textContent = properties.details || "";
+            renderFacts([
+                { label: "Categoría", value: properties.category },
+                { label: "Fecha", value: shared.formatDate(properties.event_at) },
+                { label: "Hora", value: shared.formatTime(properties.event_at) },
+                { label: "Ubicación", value: properties.location },
+                { label: "Organiza", value: properties.organizer },
+            ]);
+            if (properties.link) {
+                readonlyLink.href = properties.link;
+                readonlyLink.textContent = "Ver enlace de la actividad";
+                readonlyLink.hidden = false;
+            } else {
+                readonlyLink.removeAttribute("href");
+                readonlyLink.hidden = true;
+            }
         }
 
         function openEditModal(info) {
@@ -156,65 +152,61 @@
             const isActive = properties.status === "active";
             const isTaxEvent = properties.source === "tributaria";
             const isFundEvent = properties.source === "fondo";
-            const isReadOnlyEvent = isTaxEvent || isFundEvent;
+            const isCommunityEvent = properties.source === "comunitaria";
+            const isReadOnlyEvent = isTaxEvent || isFundEvent || isCommunityEvent;
 
             form.reset();
             eventIdInput.value = event.id;
             descriptionInput.value = properties.description || event.title;
-            eventAtInput.value = chileInputValue(properties.event_at || event.start);
+            eventAtInput.value = shared.chileInputValue(properties.event_at || event.start);
             reminderInput.value = String(properties.reminder_days_before || 0);
-            if (isTaxEvent) {
-                modalTitle.textContent = "Fecha tributaria importante";
-            } else if (isFundEvent) {
-                modalTitle.textContent = "Cierre de fondo concursable";
-            } else {
-                modalTitle.textContent = isActive
-                    ? "Editar fecha importante"
-                    : "Fecha completada";
-            }
             deleteButton.hidden = isReadOnlyEvent || !isActive;
             completeButton.hidden = isReadOnlyEvent || !isActive;
+            setFieldsVisibility({
+                hideMain: isCommunityEvent,
+                hideReminder: isReadOnlyEvent,
+            });
             setEditable(!isReadOnlyEvent && isActive);
             readonlyInformation.hidden = !isReadOnlyEvent;
-            readonlyHeading.textContent = isFundEvent
-                ? "Información de la convocatoria"
-                : "Información del trámite";
-            readonlyDescription.textContent = isReadOnlyEvent
-                ? properties.details || "Consulta el sitio oficial para conocer más información."
-                : "";
-            if (isReadOnlyEvent && properties.link) {
-                readonlyLink.href = properties.link;
-                readonlyLink.textContent = isFundEvent
-                    ? "Revisar convocatoria"
-                    : "Abrir sitio oficial";
-                readonlyLink.hidden = false;
+            renderFacts([]);
+
+            if (isCommunityEvent) {
+                openCommunityModal(properties);
             } else {
-                readonlyLink.removeAttribute("href");
-                readonlyLink.hidden = true;
+                if (isTaxEvent) {
+                    modalTitle.textContent = "Fecha tributaria importante";
+                } else if (isFundEvent) {
+                    modalTitle.textContent = "Cierre de fondo concursable";
+                } else {
+                    modalTitle.textContent = isActive
+                        ? "Editar fecha importante"
+                        : "Fecha completada";
+                }
+                readonlyHeading.textContent = isFundEvent
+                    ? "Información de la convocatoria"
+                    : "Información del trámite";
+                readonlyDescription.textContent = isReadOnlyEvent
+                    ? properties.details || "Consulta el sitio oficial para conocer más información."
+                    : "";
+                if (isReadOnlyEvent && properties.link) {
+                    readonlyLink.href = properties.link;
+                    readonlyLink.textContent = isFundEvent
+                        ? "Revisar convocatoria"
+                        : "Abrir sitio oficial";
+                    readonlyLink.hidden = false;
+                } else {
+                    readonlyLink.removeAttribute("href");
+                    readonlyLink.hidden = true;
+                }
             }
             setFormError("");
-            openModal();
-        }
-
-        function openModal() {
-            backdrop.classList.add("visible");
-            backdrop.setAttribute("aria-hidden", "false");
-            document.body.classList.add("calendar-modal-open");
-            window.setTimeout(function () {
-                descriptionInput.focus();
-            }, 0);
-        }
-
-        function closeModal() {
-            backdrop.classList.remove("visible");
-            backdrop.setAttribute("aria-hidden", "true");
-            document.body.classList.remove("calendar-modal-open");
-            setFormError("");
+            modal.open();
         }
 
         function toCalendarEvent(event) {
             const isTaxEvent = event.source === "tributaria";
             const isFundEvent = event.source === "fondo";
+            const isCommunityEvent = event.source === "comunitaria";
             const overdue =
                 event.status === "active" && new Date(event.event_at) < new Date();
             let className = "calendar-event-active";
@@ -222,6 +214,8 @@
                 className = "calendar-event-tax";
             } else if (isFundEvent) {
                 className = "calendar-event-fund";
+            } else if (isCommunityEvent) {
+                className = "calendar-event-community";
             } else if (event.status === "completed") {
                 className = "calendar-event-completed";
             } else if (overdue) {
@@ -249,7 +243,7 @@
                 const payload = await response.json();
 
                 if (!response.ok) {
-                    throw new Error(detailMessage(payload?.detail));
+                    throw new Error(shared.detailMessage(payload?.detail));
                 }
 
                 successCallback(payload.map(toCalendarEvent));
@@ -276,7 +270,7 @@
 
             saveButton.disabled = true;
             try {
-                await calendarRequest(
+                await shared.jsonRequest(
                     eventId
                         ? `/portal/api/calendar/events/${encodeURIComponent(eventId)}`
                         : "/portal/api/calendar/events",
@@ -287,9 +281,10 @@
                             event_at: eventAt,
                             reminder_days_before: reminderDays,
                         }),
-                    }
+                    },
+                    requestSettings
                 );
-                closeModal();
+                modal.close();
                 calendar.refetchEvents();
                 showMessage(
                     eventId
@@ -312,11 +307,12 @@
 
             deleteButton.disabled = true;
             try {
-                await calendarRequest(
+                await shared.jsonRequest(
                     `/portal/api/calendar/events/${encodeURIComponent(eventId)}`,
-                    { method: "DELETE" }
+                    { method: "DELETE" },
+                    requestSettings
                 );
-                closeModal();
+                modal.close();
                 calendar.refetchEvents();
                 showMessage("Fecha eliminada del calendario.", "success");
             } catch (error) {
@@ -334,11 +330,12 @@
 
             completeButton.disabled = true;
             try {
-                await calendarRequest(
+                await shared.jsonRequest(
                     `/portal/api/calendar/events/${encodeURIComponent(eventId)}/complete`,
-                    { method: "POST" }
+                    { method: "POST" },
+                    requestSettings
                 );
-                closeModal();
+                modal.close();
                 calendar.refetchEvents();
                 showMessage("Fecha marcada como completada.", "success");
             } catch (error) {
@@ -348,47 +345,23 @@
             }
         }
 
-        calendar = new FullCalendar.Calendar(container, {
-            initialView: window.innerWidth < 640 ? "listMonth" : "dayGridMonth",
-            locale: "es",
-            firstDay: 1,
-            height: "auto",
-            dayMaxEvents: true,
-            nowIndicator: true,
-            headerToolbar: {
-                left: "prev,next today",
-                center: "title",
-                right: "dayGridMonth,listMonth",
-            },
-            buttonText: {
-                today: "Hoy",
-                month: "Mes",
-                list: "Lista",
-            },
-            events: loadEvents,
-            dateClick: function (info) {
-                openCreateModal(info.dateStr.slice(0, 10));
-            },
-            eventClick: openEditModal,
-        });
+        calendar = new FullCalendar.Calendar(
+            container,
+            Object.assign(shared.baseOptions(), {
+                events: loadEvents,
+                dateClick: function (info) {
+                    openCreateModal(info.dateStr.slice(0, 10));
+                },
+                eventClick: openEditModal,
+            })
+        );
 
         calendar.render();
         form.addEventListener("submit", saveEvent);
         createButton.addEventListener("click", function () {
             openCreateModal(null);
         });
-        closeButton.addEventListener("click", closeModal);
         deleteButton.addEventListener("click", deleteEvent);
         completeButton.addEventListener("click", completeEvent);
-        backdrop.addEventListener("click", function (event) {
-            if (event.target === backdrop) {
-                closeModal();
-            }
-        });
-        document.addEventListener("keydown", function (event) {
-            if (event.key === "Escape" && backdrop.classList.contains("visible")) {
-                closeModal();
-            }
-        });
     });
 })();
