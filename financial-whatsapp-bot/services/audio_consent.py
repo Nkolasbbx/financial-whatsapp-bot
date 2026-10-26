@@ -18,6 +18,10 @@ WRONG_ID = "audio_incorrecto"
 _ACCEPT_COMMANDS = {ACCEPT_ID, "aceptar audios", "acepto audios"}
 _REJECT_COMMANDS = {REJECT_ID}
 _WRONG_COMMANDS = {WRONG_ID}
+# Decirlo (por voz o escrito) vale igual que tocar el botón "No es lo que dije".
+_WRONG_PHRASES = (
+    "no es lo que dije", "no fue lo que dije", "no dije eso", "eso no es lo que dije",
+)
 
 _PENDING_PREFIX = "audio_consent_pending:"
 _PENDING_TTL_SECONDS = 60 * 60
@@ -81,7 +85,7 @@ def audio_choice(message: str | None) -> str | None:
         return "accept"
     if raw in _REJECT_COMMANDS:
         return "reject"
-    if raw in _WRONG_COMMANDS:
+    if raw in _WRONG_COMMANDS or any(phrase in raw for phrase in _WRONG_PHRASES):
         return "wrong"
     return None
 

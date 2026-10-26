@@ -345,6 +345,16 @@ async def whatsapp_webhook(request: Request):
                             continue
 
                         message = await _transcribe_incoming_audio(incoming)
+                        if message is not None and audio_choice(message) == "wrong":
+                            # Lo dijo por voz ("no es lo que dije"): mismo efecto
+                            # que el botón, sin mostrar el eco de esa frase.
+                            reply, _ = await _apply_audio_choice(redis, phone, "wrong")
+                            try:
+                                await _send_response(phone, reply)
+                            except WhatsAppAPIError as error:
+                                logger.error("No se pudo responder sobre el audio: %s", error)
+                            processed_messages += 1
+                            continue
                         if message is not None:
                             # Siempre se muestra lo que se entendió, antes de
                             # responder o seguir con cualquier funcionalidad.
