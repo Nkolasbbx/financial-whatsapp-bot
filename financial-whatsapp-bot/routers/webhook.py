@@ -15,6 +15,7 @@ from db.rate_limits import (
     is_rate_limit_exempt,
 )
 from db.calendar import update_calendar_delivery_status
+from db.expert_requests import get_open_expert_request
 from db.reminders import update_reminder_delivery_status
 from db.users import (
     BLOCKED_USER_MESSAGE,
@@ -87,6 +88,17 @@ def _extract_message_text(incoming: dict) -> str | None:
         reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
         return (reply.get("id") or reply.get("title") or "").strip() or None
     return None
+
+
+def _has_open_expert_request(phone: str) -> bool:
+    """¿Está eligiendo tema o conversando con un experto? En ese caso hay una
+    persona del otro lado y no corresponde el filtro de audios ambiguos."""
+    try:
+        user = get_user(phone)
+        return bool(user and user.get("id") and get_open_expert_request(user["id"]))
+    except Exception as error:
+        logger.warning("No se pudo consultar la solicitud de experto: %s", error)
+        return False
 
 
 async def _transcribe_incoming_audio(incoming: dict) -> str | None:
@@ -256,9 +268,22 @@ async def whatsapp_webhook(request: Request):
                     # devolvió texto, pero muy corto o una frase de relleno
                     # típica de ruido/silencio — se le muestra al usuario lo
                     # que se entendió y se le pide repetir, sin tocar su perfil.
+                    # El filtro no aplica cuando hay una persona o una pregunta
+                    # esperando una respuesta corta: un "sí"/"no" dicho por audio
+                    # como confirmación, o cualquier audio mientras el emprendedor
+                    # elige tema o conversa con un experto (que sí lo interpreta).
+                    skip_ambiguity_filter = bool(
+                        message is not None
+                        and is_audio_message
+                        and (
+                            await get_pending_confirmation(redis, phone)
+                            or await asyncio.to_thread(_has_open_expert_request, phone)
+                        )
+                    )
                     if (
                         message is not None
                         and is_audio_message
+                        and not skip_ambiguity_filter
                         and is_ambiguous_transcription(message)
                     ):
                         try:

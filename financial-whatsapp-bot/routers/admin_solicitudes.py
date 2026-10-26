@@ -26,6 +26,7 @@ from db.expert_requests import (
     list_expert_messages,
     list_expert_requests,
     parse_timestamp as _parse_dt,
+    reopen_expert_request,
     resolve_expert_request,
     take_expert_request,
 )
@@ -410,12 +411,25 @@ async def detalle(
         responder = _mensaje_citable(mensajes, request.query_params.get("responder"))
         cuerpo = _bloque_conversacion(request_id, mensajes, restante, nombre, responder)
     else:
-        cierre = f"{_fecha_local(fila.get('resolved_at'))} por {fila.get('closed_by') or '—'}"
+        cerrada_por = fila.get("closed_by") or "—"
+        cierre = f"{_fecha_local(fila.get('resolved_at'))} por {cerrada_por}"
+        aviso = (
+            '<p class="admin-hint">El emprendedor terminó la conversación. Puedes dejarla cerrada o volver a dejarla pendiente.</p>'
+            if str(cerrada_por).startswith("emprendedor") else ""
+        )
         cuerpo = f"""
     <div class="admin-card">
         <h2>Conversación</h2>
         <p class="subtitulo">Resuelta el {html.escape(cierre)}.</p>
         <div class="admin-thread">{_hilo_html(mensajes)}</div>
+        {aviso}
+        <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/reabrir"
+              onsubmit="return confirm('¿Dejar esta solicitud pendiente otra vez?')">
+            <div class="admin-form-actions">
+                <span class="admin-hint">Queda cerrada si no haces nada.</span>
+                <button type="submit" class="admin-btn-secondary">Dejar pendiente</button>
+            </div>
+        </form>
     </div>"""
 
     ventana = (
@@ -560,4 +574,30 @@ async def resolver(request_id: str, request: Request, financial_admin_session: s
         await _set_flash(redis, financial_admin_session, "ok", "Solicitud marcada como resuelta.")
     else:
         await _set_flash(redis, financial_admin_session, "warn", "La solicitud ya estaba cerrada.")
+    return _redirect(f"/admin/solicitudes/{request_id}")
+
+
+@router.post("/{request_id}/reabrir")
+async def reabrir(request_id: str, request: Request, financial_admin_session: str | None = Cookie(default=None)):
+    account = await _auth(request, financial_admin_session)
+    if not account:
+        return _redirect("/admin/login")
+    redis = request.app.state.redis
+
+    fila = get_expert_request(request_id, account["comuna"])
+    if not fila:
+        return Response(status_code=404)
+
+    try:
+        reabierta = reopen_expert_request(request_id, account["comuna"])
+    except Exception as error:
+        # Índice único: el emprendedor ya tiene otra solicitud abierta.
+        logger.warning("No se pudo reabrir la solicitud %s: %s", request_id, error)
+        await _set_flash(redis, financial_admin_session, "error", "No se pudo dejar pendiente: el emprendedor ya tiene otra solicitud abierta.")
+        return _redirect(f"/admin/solicitudes/{request_id}")
+
+    if reabierta:
+        await _set_flash(redis, financial_admin_session, "ok", "La solicitud quedó pendiente otra vez.")
+    else:
+        await _set_flash(redis, financial_admin_session, "warn", "La solicitud no estaba cerrada.")
     return _redirect(f"/admin/solicitudes/{request_id}")
