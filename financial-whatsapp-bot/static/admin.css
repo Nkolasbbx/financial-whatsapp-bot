@@ -1104,3 +1104,19 @@ select:focus-visible {
     background: color-mix(in srgb, var(--emerald) 15%, white);
     font-size: 13px;
 }
+
+/* Aviso de mensaje nuevo (actualización automática de la conversación) */
+.admin-new-msg {
+    margin: 0 0 12px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--emerald) 25%, white);
+    color: var(--petrol);
+    font-size: 13px;
+    font-weight: 700;
+    display: inline-block;
+}
+
+.admin-new-msg[hidden] {
+    display: none;
+}

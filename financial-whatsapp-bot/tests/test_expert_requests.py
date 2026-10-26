@@ -538,5 +538,59 @@ class WebhookExpertCheckTests(unittest.TestCase):
             self.assertFalse(webhook._has_open_expert_request("+56911112222"))
 
 
+class LiveThreadTests(unittest.IsolatedAsyncioTestCase):
+    def _patches(self, row, mensajes=None, auth=True):
+        return [
+            patch.object(panel, "_auth", new=AsyncMock(return_value={"comuna": "Recoleta", "nombre": "InnovaRecoleta"} if auth else None)),
+            patch.object(panel, "get_expert_request", return_value=row),
+            patch.object(panel, "list_expert_messages", return_value=MSGS if mensajes is None else mensajes),
+            patch.object(panel, "_pop_flash", new=AsyncMock(return_value=None)),
+        ]
+
+    async def _call(self, fn, patches, *args):
+        for p_ in patches:
+            p_.start()
+        try:
+            return await fn(*args)
+        finally:
+            for p_ in patches:
+                p_.stop()
+
+    async def test_endpoint_returns_state_signature_and_thread(self):
+        import json
+        response = await self._call(panel.hilo, self._patches(_row()), "abcd1234-0000", _request(), "sid")
+        data = json.loads(response.body)
+        self.assertEqual(data["status"], "in_progress")
+        self.assertEqual(data["sig"], "3:3")
+        self.assertIn("cuanto cuesta la patente", data["hilo_html"])
+        self.assertNotIn("56911112222", response.body.decode())
+
+    async def test_signature_changes_when_a_new_message_arrives(self):
+        import json
+        nuevo = MSGS + [{"id": 4, "sender": "user", "content": "hola", "wa_message_id": "w4", "created_at": _iso(timedelta(minutes=-1))}]
+        a = json.loads((await self._call(panel.hilo, self._patches(_row()), "x", _request(), "sid")).body)
+        b = json.loads((await self._call(panel.hilo, self._patches(_row(), nuevo), "x", _request(), "sid")).body)
+        self.assertNotEqual(a["sig"], b["sig"])
+
+    async def test_endpoint_requires_a_session(self):
+        response = await self._call(panel.hilo, self._patches(_row(), auth=False), "x", _request(), "sid")
+        self.assertEqual(response.status_code, 401)
+
+    async def test_endpoint_hides_requests_from_other_comunas(self):
+        response = await self._call(panel.hilo, self._patches(None), "x", _request(), "sid")
+        self.assertEqual(response.status_code, 404)
+
+    async def test_open_request_page_loads_the_refresh_script(self):
+        response = await self._call(panel.detalle, self._patches(_row()), "abcd1234-0000", _request(), "sid")
+        body = response.body.decode()
+        self.assertIn("admin_solicitudes.js", body)
+        self.assertIn('id="hilo-watch"', body)
+        self.assertIn('id="hilo"', body)
+
+    async def test_resolved_page_does_not_poll(self):
+        response = await self._call(panel.detalle, self._patches(_row("resolved", closed_by="emprendedor")), "abcd1234-0000", _request(), "sid")
+        self.assertNotIn("admin_solicitudes.js", response.body.decode())
+
+
 if __name__ == "__main__":
     unittest.main()

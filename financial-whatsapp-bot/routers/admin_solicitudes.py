@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Form, Request, Response
+from fastapi.responses import JSONResponse
 
 from core.calendar_service import get_calendar_timezone
 from core.expert_flow import TOPIC_LABELS, TOPICS
@@ -257,6 +258,11 @@ def _extracto(texto: str) -> str:
     return texto if len(texto) <= QUOTE_PREVIEW_CHARS else texto[:QUOTE_PREVIEW_CHARS].rstrip() + "…"
 
 
+def _firma(mensajes: list[dict]) -> str:
+    """Cambia cuando llega o se envía un mensaje: el navegador la compara para saber si refrescar."""
+    return f"{len(mensajes)}:{mensajes[-1].get('id') if mensajes else 0}"
+
+
 def _mensaje_citable(mensajes: list[dict], mensaje_id) -> dict | None:
     """Un mensaje del emprendedor que se puede citar (tiene el wamid guardado)."""
     try:
@@ -376,10 +382,42 @@ def _bloque_conversacion(
     return f"""
     <div class="admin-card">
         <h2>Conversación</h2>
-        <div class="admin-thread">{hilo}</div>
+        <div id="nuevo-mensaje" class="admin-new-msg" role="status" aria-live="polite" hidden></div>
+        <div class="admin-thread" id="hilo">{hilo}</div>
         {composer}
     </div>
     <div class="admin-card">{cerrar}</div>"""
+
+
+@router.get("/{request_id}/hilo")
+async def hilo(
+    request_id: str,
+    request: Request,
+    financial_admin_session: str | None = Cookie(default=None),
+):
+    """Estado y conversación en JSON: la página lo consulta cada pocos segundos
+    para mostrar mensajes nuevos sin recargar (y sin borrar lo que se escribe)."""
+    account = await _auth(request, financial_admin_session)
+    if not account:
+        return JSONResponse({"error": "sesion"}, status_code=401)
+
+    fila = get_expert_request(request_id, account["comuna"])
+    if not fila:
+        return JSONResponse({"error": "no encontrada"}, status_code=404)
+
+    mensajes = list_expert_messages(request_id)
+    restante = window_remaining(fila)
+    status = fila["status"]
+    citado = _mensaje_citable(mensajes, request.query_params.get("responder"))
+    return JSONResponse({
+        "status": status,
+        "sig": _firma(mensajes),
+        "hilo_html": _hilo_html(
+            mensajes, request_id, puede_responder=restante > timedelta(0),
+            seleccionado=citado["id"] if citado else None,
+        ),
+        "ventana_html": _ventana_html(restante) if status != "resolved" else "—",
+    })
 
 
 @router.get("/{request_id}")
@@ -433,11 +471,17 @@ async def detalle(
     </div>"""
 
     ventana = (
-        f"{_ventana_html(restante)}<small>se renueva cuando el emprendedor escribe · "
+        f'<span id="ventana-valor">{_ventana_html(restante)}</span><small>se renueva cuando el emprendedor escribe · '
         f'<a href="/admin/solicitudes/{html.escape(request_id)}">Actualizar</a></small>'
         if status != "resolved" else "—"
     )
     tema = TOPIC_LABELS.get(fila.get("topic") or "", "Sin tema")
+    vigia = (
+        f'<div id="hilo-watch" hidden data-request="{html.escape(request_id)}" '
+        f'data-status="{html.escape(status)}" data-sig="{html.escape(_firma(mensajes))}"></div>'
+        '<script src="/static/admin_solicitudes.js"></script>'
+        if status in ("pending", "in_progress") else ""
+    )
     contenido = f"""
     {_flash_html(flash)}
     <div class="admin-card">
@@ -456,6 +500,7 @@ async def detalle(
     </div>
     {_bloque_motivo(fila)}
     {cuerpo}
+    {vigia}
     <p><a href="/admin/solicitudes">← Volver a las solicitudes</a></p>"""
     return Response(content=_pagina_base("Solicitud de experto", contenido, account), media_type="text/html")
 
