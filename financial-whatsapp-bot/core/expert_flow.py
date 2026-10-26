@@ -19,6 +19,7 @@ from db.expert_requests import (
     create_expert_request,
     delete_expert_draft,
     finalize_expert_request,
+    get_last_expert_message,
     get_open_expert_request,
     parse_timestamp,
     resolve_expert_request,
@@ -47,6 +48,8 @@ TOPICS = (
 TOPIC_LABELS = dict(TOPICS)
 
 MAX_REASON_CHARS = 300
+# Si el emprendedor lleva más de esto sin escribir, se le vuelve a acusar recibo.
+ACK_AFTER = timedelta(hours=2)
 DRAFT_TTL = timedelta(minutes=30)
 
 # Plazo que se le promete al emprendedor. La ventana de WhatsApp para texto
@@ -146,6 +149,21 @@ def _detail_widget(topic_label: str) -> dict:
     }
 
 
+def _needs_ack(request_id: str) -> bool:
+    """Acusar recibo solo al empezar una tanda de mensajes: el primero desde que
+    habló el experto (o desde que tomó la solicitud), o tras un rato sin escribir.
+    Sin esto el chat queda en silencio y parece que el bot lo ignora."""
+    try:
+        last = get_last_expert_message(request_id)
+    except Exception as error:
+        logger.warning("No se pudo consultar el último mensaje del experto: %s", error)
+        return False
+    if not last or last.get("sender") == "expert":
+        return True
+    sent = parse_timestamp(last.get("created_at"))
+    return bool(sent and datetime.now(timezone.utc) - sent > ACK_AFTER)
+
+
 def _draft_expired(draft: dict) -> bool:
     created = parse_timestamp(draft.get("created_at"))
     return bool(created and datetime.now(timezone.utc) - created > DRAFT_TTL)
@@ -215,6 +233,7 @@ def handle_expert_message(
                     "con el asistente. Si necesitas al experto otra vez, puedes "
                     "pedirlo desde el menú."
                 )
+            needs_ack = _needs_ack(open_request["id"])
             add_expert_message(open_request["id"], "user", message, wa_message_id=message_id)
             touch_user_message(open_request["id"])
             if is_cancel_intent(message):
@@ -223,6 +242,11 @@ def handle_expert_message(
                 return (
                     "Tu mensaje le llegó al experto. Si quieres volver a hablar "
                     "con el asistente, escribe *terminar*."
+                )
+            if needs_ack:
+                return (
+                    "📨 Le envié tu mensaje al experto. Te responderá por este mismo "
+                    "chat. Si quieres volver a hablar con el asistente, escribe *terminar*."
                 )
             return EXPERT_RELAY
 

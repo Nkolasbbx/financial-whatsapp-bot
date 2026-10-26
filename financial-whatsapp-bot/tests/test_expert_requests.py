@@ -12,7 +12,7 @@ USER = {"id": "user-1", "comuna": "Recoleta"}
 NAMES = (
     "get_open_expert_request", "create_expert_request", "set_expert_topic",
     "finalize_expert_request", "delete_expert_draft", "add_expert_message",
-    "touch_user_message", "resolve_expert_request",
+    "touch_user_message", "resolve_expert_request", "get_last_expert_message",
 )
 
 
@@ -26,6 +26,8 @@ def _flow(message, open_request=None, user=USER, finalize=True):
     mocks["get_open_expert_request"].return_value = open_request
     mocks["create_expert_request"].return_value = {"id": "r1"}
     mocks["finalize_expert_request"].return_value = finalize
+    # Por defecto el último mensaje es del emprendedor, reciente: sin acuse de recibo.
+    mocks["get_last_expert_message"].return_value = {"sender": "user", "created_at": _iso(timedelta(minutes=-1))}
     try:
         result = expert_flow.handle_expert_message(user, message, RESET)
     finally:
@@ -121,7 +123,7 @@ class OpenRequestTests(unittest.TestCase):
         m["touch_user_message"].assert_called_once_with("r1")
 
     def test_relayed_message_keeps_its_whatsapp_id_so_it_can_be_quoted(self):
-        with patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),              patch.object(expert_flow, "add_expert_message") as add,              patch.object(expert_flow, "touch_user_message"):
+        with patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),              patch.object(expert_flow, "get_last_expert_message", return_value=None),              patch.object(expert_flow, "add_expert_message") as add,              patch.object(expert_flow, "touch_user_message"):
             expert_flow.handle_expert_message(USER, "hola", RESET, "wamid.ABC")
         add.assert_called_once_with("r1", "user", "hola", wa_message_id="wamid.ABC")
 
@@ -393,6 +395,29 @@ class AsesorAndReopenTests(unittest.IsolatedAsyncioTestCase):
             result, m = _flow(frase)
             self.assertIsNone(result)
             m["create_expert_request"].assert_not_called()
+
+    def test_first_message_after_the_expert_gets_an_acknowledgement(self):
+        for ultimo in (None, {"sender": "expert", "created_at": _iso(timedelta(minutes=-1))}):
+            with patch.object(expert_flow, "get_last_expert_message", return_value=ultimo),                  patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),                  patch.object(expert_flow, "add_expert_message") as add,                  patch.object(expert_flow, "touch_user_message"):
+                result = expert_flow.handle_expert_message(USER, "hola", RESET)
+            self.assertIn("Le envié tu mensaje al experto", result)
+            add.assert_called_once()  # además se reenvía al panel
+
+    def test_following_messages_in_a_row_are_not_acknowledged_again(self):
+        result, _ = _flow("y otra cosa", open_request={"id": "r1", "status": "in_progress"})
+        self.assertEqual(result, expert_flow.EXPERT_RELAY)
+
+    def test_acknowledgement_returns_after_a_long_silence(self):
+        antiguo = {"sender": "user", "created_at": _iso(timedelta(hours=-3))}
+        with patch.object(expert_flow, "get_last_expert_message", return_value=antiguo),              patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),              patch.object(expert_flow, "add_expert_message"), patch.object(expert_flow, "touch_user_message"):
+            result = expert_flow.handle_expert_message(USER, "sigo aquí", RESET)
+        self.assertIn("Le envié tu mensaje", result)
+
+    def test_database_error_when_checking_ack_does_not_break_the_relay(self):
+        with patch.object(expert_flow, "get_last_expert_message", side_effect=RuntimeError("db")),              patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),              patch.object(expert_flow, "add_expert_message") as add, patch.object(expert_flow, "touch_user_message"):
+            result = expert_flow.handle_expert_message(USER, "hola", RESET)
+        self.assertEqual(result, expert_flow.EXPERT_RELAY)
+        add.assert_called_once()
 
     def test_negation_cancels_a_pending_request(self):
         result, m = _flow("ya no necesito un asesor", open_request={"id": "r1", "status": "pending"})

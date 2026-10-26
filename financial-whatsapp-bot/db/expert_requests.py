@@ -156,6 +156,16 @@ def add_expert_message(
     _client().table("expert_messages").insert(row).execute()
 
 
+def get_last_expert_message(request_id: str) -> dict | None:
+    """Último mensaje de la conversación (de quien sea), para decidir si hay que
+    acusar recibo al emprendedor."""
+    result = (
+        _client().table("expert_messages").select("sender, created_at")
+        .eq("request_id", request_id).order("created_at", desc=True).limit(1).execute()
+    )
+    return result.data[0] if result.data else None
+
+
 def list_expert_messages(request_id: str) -> list[dict]:
     result = (
         _client().table("expert_messages")
