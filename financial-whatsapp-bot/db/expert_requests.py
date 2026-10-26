@@ -118,6 +118,20 @@ def resolve_expert_request(request_id: str, closed_by: str, comuna: str | None =
     return bool(query.execute().data)
 
 
+def reopen_expert_request(request_id: str, comuna: str) -> bool:
+    """resolved -> pending (el admin la deja pendiente). Falla (excepción) si el
+    emprendedor ya tiene otra solicitud abierta: solo se permite una."""
+    result = (
+        _client().table("expert_requests")
+        .update({
+            "status": "pending", "resolved_at": None, "closed_by": None,
+            "taken_at": None, "taken_by": None,
+        })
+        .eq("id", request_id).eq("comuna", comuna).eq("status", "resolved").execute()
+    )
+    return bool(result.data)
+
+
 def touch_user_message(request_id: str) -> None:
     """Registra un mensaje entrante del emprendedor (renueva la ventana de 24 h)."""
     _client().table("expert_requests").update(
@@ -140,6 +154,16 @@ def add_expert_message(
     if reply_to_id:
         row["reply_to_id"] = reply_to_id
     _client().table("expert_messages").insert(row).execute()
+
+
+def get_last_expert_message(request_id: str) -> dict | None:
+    """Último mensaje de la conversación (de quien sea), para decidir si hay que
+    acusar recibo al emprendedor."""
+    result = (
+        _client().table("expert_messages").select("sender, created_at")
+        .eq("request_id", request_id).order("created_at", desc=True).limit(1).execute()
+    )
+    return result.data[0] if result.data else None
 
 
 def list_expert_messages(request_id: str) -> list[dict]:

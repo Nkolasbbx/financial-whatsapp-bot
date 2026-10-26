@@ -5,13 +5,14 @@ from unittest.mock import AsyncMock, patch
 
 from core import expert_flow
 from routers import admin_solicitudes as panel
+from routers import webhook
 
 RESET = {"reiniciar", "menu_reiniciar"}
 USER = {"id": "user-1", "comuna": "Recoleta"}
 NAMES = (
     "get_open_expert_request", "create_expert_request", "set_expert_topic",
     "finalize_expert_request", "delete_expert_draft", "add_expert_message",
-    "touch_user_message", "resolve_expert_request",
+    "touch_user_message", "resolve_expert_request", "get_last_expert_message",
 )
 
 
@@ -25,6 +26,8 @@ def _flow(message, open_request=None, user=USER, finalize=True):
     mocks["get_open_expert_request"].return_value = open_request
     mocks["create_expert_request"].return_value = {"id": "r1"}
     mocks["finalize_expert_request"].return_value = finalize
+    # Por defecto el último mensaje es del emprendedor, reciente: sin acuse de recibo.
+    mocks["get_last_expert_message"].return_value = {"sender": "user", "created_at": _iso(timedelta(minutes=-1))}
     try:
         result = expert_flow.handle_expert_message(user, message, RESET)
     finally:
@@ -120,7 +123,7 @@ class OpenRequestTests(unittest.TestCase):
         m["touch_user_message"].assert_called_once_with("r1")
 
     def test_relayed_message_keeps_its_whatsapp_id_so_it_can_be_quoted(self):
-        with patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),              patch.object(expert_flow, "add_expert_message") as add,              patch.object(expert_flow, "touch_user_message"):
+        with patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),              patch.object(expert_flow, "get_last_expert_message", return_value=None),              patch.object(expert_flow, "add_expert_message") as add,              patch.object(expert_flow, "touch_user_message"):
             expert_flow.handle_expert_message(USER, "hola", RESET, "wamid.ABC")
         add.assert_called_once_with("r1", "user", "hola", wa_message_id="wamid.ABC")
 
@@ -379,6 +382,214 @@ class QuoteReplyTests(unittest.IsolatedAsyncioTestCase):
         body = response.body.decode()
         self.assertIn("Respondiendo a: «cuanto cuesta la patente»", body)
         self.assertIn('name="responder_a" value="1"', body)
+
+
+class AsesorAndReopenTests(unittest.IsolatedAsyncioTestCase):
+    def test_asesor_phrases_start_the_request_flow(self):
+        for frase in ("quiero hablar con un asesor", "Necesito un asesor", "contactar a un asesor por favor"):
+            _, m = _flow(frase)
+            m["create_expert_request"].assert_called_once()
+
+    def test_negated_phrases_do_not_start_a_request(self):
+        for frase in ("no necesito un asesor", "ya no quiero hablar con un experto"):
+            result, m = _flow(frase)
+            self.assertIsNone(result)
+            m["create_expert_request"].assert_not_called()
+
+    def test_first_message_after_the_expert_gets_an_acknowledgement(self):
+        for ultimo in (None, {"sender": "expert", "created_at": _iso(timedelta(minutes=-1))}):
+            with patch.object(expert_flow, "get_last_expert_message", return_value=ultimo),                  patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),                  patch.object(expert_flow, "add_expert_message") as add,                  patch.object(expert_flow, "touch_user_message"):
+                result = expert_flow.handle_expert_message(USER, "hola", RESET)
+            self.assertIn("Le envié tu mensaje al experto", result)
+            add.assert_called_once()  # además se reenvía al panel
+
+    def test_following_messages_in_a_row_are_not_acknowledged_again(self):
+        result, _ = _flow("y otra cosa", open_request={"id": "r1", "status": "in_progress"})
+        self.assertEqual(result, expert_flow.EXPERT_RELAY)
+
+    def test_acknowledgement_returns_after_a_long_silence(self):
+        antiguo = {"sender": "user", "created_at": _iso(timedelta(hours=-3))}
+        with patch.object(expert_flow, "get_last_expert_message", return_value=antiguo),              patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),              patch.object(expert_flow, "add_expert_message"), patch.object(expert_flow, "touch_user_message"):
+            result = expert_flow.handle_expert_message(USER, "sigo aquí", RESET)
+        self.assertIn("Le envié tu mensaje", result)
+
+    def test_database_error_when_checking_ack_does_not_break_the_relay(self):
+        with patch.object(expert_flow, "get_last_expert_message", side_effect=RuntimeError("db")),              patch.object(expert_flow, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}),              patch.object(expert_flow, "add_expert_message") as add, patch.object(expert_flow, "touch_user_message"):
+            result = expert_flow.handle_expert_message(USER, "hola", RESET)
+        self.assertEqual(result, expert_flow.EXPERT_RELAY)
+        add.assert_called_once()
+
+    def test_negation_cancels_a_pending_request(self):
+        result, m = _flow("ya no necesito un asesor", open_request={"id": "r1", "status": "pending"})
+        m["resolve_expert_request"].assert_called_once_with("r1", "emprendedor (canceló)")
+        self.assertIn("cancelé tu solicitud", result)
+
+    def test_negation_discards_a_draft(self):
+        result, m = _flow("no quiero hablar con un experto", open_request=_draft(topic="sii"))
+        m["delete_expert_draft"].assert_called_once_with("r1")
+        self.assertIn("cancelé", result)
+
+    def test_negation_during_conversation_relays_and_reminds_but_does_not_close(self):
+        result, m = _flow("ya no necesito el asesor", open_request={"id": "r1", "status": "in_progress"})
+        m["add_expert_message"].assert_called_once()
+        m["resolve_expert_request"].assert_not_called()
+        self.assertIn("terminar", result)
+
+    def test_unrelated_negation_is_not_a_cancel(self):
+        result, m = _flow("no, eso no lo necesito", open_request={"id": "r1", "status": "in_progress"})
+        self.assertEqual(result, expert_flow.EXPERT_RELAY)
+        m["resolve_expert_request"].assert_not_called()
+
+    def test_user_ending_the_conversation_renews_the_window(self):
+        _, m = _flow("terminar", open_request={"id": "r1", "status": "in_progress"})
+        m["touch_user_message"].assert_called_once_with("r1")
+
+    async def _reabrir(self, row, reopen_result=True, reopen_error=None):
+        patches = [
+            patch.object(panel, "_auth", new=AsyncMock(return_value={"comuna": "Recoleta", "nombre": "InnovaRecoleta"})),
+            patch.object(panel, "get_expert_request", return_value=row),
+            patch.object(panel, "_set_flash", new=AsyncMock()),
+        ]
+        for p_ in patches:
+            p_.start()
+        try:
+            with patch.object(panel, "reopen_expert_request", return_value=reopen_result, side_effect=reopen_error) as reopen:
+                response = await panel.reabrir("r1", _request(), "sid")
+            return response, reopen, patches[2].new if False else None
+        finally:
+            for p_ in patches:
+                p_.stop()
+
+    async def test_admin_can_leave_a_closed_request_pending(self):
+        response, reopen, _ = await self._reabrir(_row("resolved"))
+        reopen.assert_called_once_with("r1", "Recoleta")
+        self.assertEqual(response.status_code, 303)
+
+    async def test_reopen_conflict_is_reported_not_raised(self):
+        response, _, _ = await self._reabrir(_row("resolved"), reopen_error=RuntimeError("duplicate key"))
+        self.assertEqual(response.status_code, 303)
+
+    async def test_reopen_from_another_comuna_is_404(self):
+        response, reopen, _ = await self._reabrir(None)
+        self.assertEqual(response.status_code, 404)
+        reopen.assert_not_called()
+
+    async def test_resolved_page_offers_to_reopen_and_notes_who_closed_it(self):
+        row = _row("resolved", closed_by="emprendedor", resolved_at=_iso(timedelta(minutes=-5)))
+        patches = [
+            patch.object(panel, "_auth", new=AsyncMock(return_value={"comuna": "Recoleta", "nombre": "x"})),
+            patch.object(panel, "get_expert_request", return_value=row),
+            patch.object(panel, "_pop_flash", new=AsyncMock(return_value=None)),
+            patch.object(panel, "list_expert_messages", return_value=[]),
+        ]
+        for p_ in patches:
+            p_.start()
+        try:
+            response = await panel.detalle("abcd1234-0000", _request(), "sid")
+        finally:
+            for p_ in patches:
+                p_.stop()
+        body = response.body.decode()
+        self.assertIn("Dejar pendiente", body)
+        self.assertIn("El emprendedor terminó la conversación", body)
+
+
+class VoiceTests(unittest.TestCase):
+    def test_topic_is_recognised_when_spoken(self):
+        casos = {
+            "Patentes.": "patentes", "es sobre fondos": "fondos", "Formalización": "formalizacion",
+            "SII": "sii", "quiero saber de impuestos": "sii", "Permisos.": "permisos", "Otro": "otro",
+        }
+        for texto, esperado in casos.items():
+            self.assertEqual(expert_flow.topic_from_text(texto), esperado, texto)
+
+    def test_ambiguous_or_unknown_topic_is_not_guessed(self):
+        self.assertIsNone(expert_flow.topic_from_text("patentes y fondos"))
+        self.assertIsNone(expert_flow.topic_from_text("no sé"))
+
+    def test_spoken_topic_advances_the_draft(self):
+        result, m = _flow("Patentes.", open_request=_draft())
+        m["set_expert_topic"].assert_called_once_with("r1", "patentes")
+        self.assertEqual(result["type"], "buttons")
+
+    def test_spoken_skip_and_cancel_with_trailing_period(self):
+        _, m = _flow("Omitir.", open_request=_draft(topic="sii"))
+        m["finalize_expert_request"].assert_called_once_with("r1", None)
+        _, m = _flow("Cancelar.", open_request=_draft(topic="sii"))
+        m["delete_expert_draft"].assert_called_once_with("r1")
+
+    def test_spoken_reset_during_conversation_closes_request(self):
+        result, m = _flow("Reiniciar.", open_request={"id": "r1", "status": "in_progress"})
+        m["resolve_expert_request"].assert_called_once()
+        self.assertIsNone(result)
+
+
+class WebhookExpertCheckTests(unittest.TestCase):
+    def test_open_request_exempts_audio_from_the_ambiguity_filter(self):
+        with patch.object(webhook, "get_user", return_value={"id": "u1"}),              patch.object(webhook, "get_open_expert_request", return_value={"id": "r1", "status": "in_progress"}):
+            self.assertTrue(webhook._has_open_expert_request("+56911112222"))
+
+    def test_no_open_request_keeps_the_filter(self):
+        with patch.object(webhook, "get_user", return_value={"id": "u1"}),              patch.object(webhook, "get_open_expert_request", return_value=None):
+            self.assertFalse(webhook._has_open_expert_request("+56911112222"))
+
+    def test_database_error_keeps_the_filter(self):
+        with patch.object(webhook, "get_user", side_effect=RuntimeError("db")):
+            self.assertFalse(webhook._has_open_expert_request("+56911112222"))
+
+
+class LiveThreadTests(unittest.IsolatedAsyncioTestCase):
+    def _patches(self, row, mensajes=None, auth=True):
+        return [
+            patch.object(panel, "_auth", new=AsyncMock(return_value={"comuna": "Recoleta", "nombre": "InnovaRecoleta"} if auth else None)),
+            patch.object(panel, "get_expert_request", return_value=row),
+            patch.object(panel, "list_expert_messages", return_value=MSGS if mensajes is None else mensajes),
+            patch.object(panel, "_pop_flash", new=AsyncMock(return_value=None)),
+        ]
+
+    async def _call(self, fn, patches, *args):
+        for p_ in patches:
+            p_.start()
+        try:
+            return await fn(*args)
+        finally:
+            for p_ in patches:
+                p_.stop()
+
+    async def test_endpoint_returns_state_signature_and_thread(self):
+        import json
+        response = await self._call(panel.hilo, self._patches(_row()), "abcd1234-0000", _request(), "sid")
+        data = json.loads(response.body)
+        self.assertEqual(data["status"], "in_progress")
+        self.assertEqual(data["sig"], "3:3")
+        self.assertIn("cuanto cuesta la patente", data["hilo_html"])
+        self.assertNotIn("56911112222", response.body.decode())
+
+    async def test_signature_changes_when_a_new_message_arrives(self):
+        import json
+        nuevo = MSGS + [{"id": 4, "sender": "user", "content": "hola", "wa_message_id": "w4", "created_at": _iso(timedelta(minutes=-1))}]
+        a = json.loads((await self._call(panel.hilo, self._patches(_row()), "x", _request(), "sid")).body)
+        b = json.loads((await self._call(panel.hilo, self._patches(_row(), nuevo), "x", _request(), "sid")).body)
+        self.assertNotEqual(a["sig"], b["sig"])
+
+    async def test_endpoint_requires_a_session(self):
+        response = await self._call(panel.hilo, self._patches(_row(), auth=False), "x", _request(), "sid")
+        self.assertEqual(response.status_code, 401)
+
+    async def test_endpoint_hides_requests_from_other_comunas(self):
+        response = await self._call(panel.hilo, self._patches(None), "x", _request(), "sid")
+        self.assertEqual(response.status_code, 404)
+
+    async def test_open_request_page_loads_the_refresh_script(self):
+        response = await self._call(panel.detalle, self._patches(_row()), "abcd1234-0000", _request(), "sid")
+        body = response.body.decode()
+        self.assertIn("admin_solicitudes.js", body)
+        self.assertIn('id="hilo-watch"', body)
+        self.assertIn('id="hilo"', body)
+
+    async def test_resolved_page_does_not_poll(self):
+        response = await self._call(panel.detalle, self._patches(_row("resolved", closed_by="emprendedor")), "abcd1234-0000", _request(), "sid")
+        self.assertNotIn("admin_solicitudes.js", response.body.decode())
 
 
 if __name__ == "__main__":

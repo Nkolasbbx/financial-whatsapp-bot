@@ -500,3 +500,33 @@ def get_users_by_comuna(comuna: str) -> list[dict]:
     except Exception as error:
         logger.error("Supabase get_users_by_comuna error: %s", error)
         return []
+
+
+def set_audio_consent(phone: str, accepted: bool) -> bool:
+    """Guarda si el usuario aceptó (o rechazó) que se procesen sus audios."""
+    import dependencies
+
+    client = dependencies.supabase_admin or dependencies.supabase
+    if client is None:
+        logger.warning("No se guardó el consentimiento de audio: Supabase no está configurado")
+        return False
+
+    fields = {
+        "audio_consent": accepted,
+        "audio_consent_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        result = client.table("users").update(fields).eq("phone", phone).execute()
+        if result.data:
+            return True
+        # Su primer mensaje fue un audio: todavía no existe en `users`. Se crea
+        # con el mismo estado inicial que usa route_message para los nuevos.
+        created = (
+            client.table("users")
+            .upsert({"phone": phone, "onboarding_step": 0, **fields}, on_conflict="phone")
+            .execute()
+        )
+        return bool(created.data)
+    except Exception as error:
+        logger.error("Supabase set_audio_consent error: %s", error)
+        return False
