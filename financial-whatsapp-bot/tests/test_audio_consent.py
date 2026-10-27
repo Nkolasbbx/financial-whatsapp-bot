@@ -62,6 +62,11 @@ class ModuleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(ac.audio_choice("hola"))
         self.assertIsNone(ac.audio_choice(None))
 
+    def test_saying_it_was_not_what_i_said_counts_as_the_button(self):
+        for frase in ("No es lo que dije.", "no, no es lo que dije", "Eso no es lo que dije", "no dije eso"):
+            self.assertEqual(ac.audio_choice(frase), "wrong", frase)
+        self.assertIsNone(ac.audio_choice("no es lo que necesito"))
+
     async def test_pending_audio_is_kept_once(self):
         redis = FakeRedis()
         await ac.stash_pending_audio(redis, PHONE, "media-1")
@@ -211,6 +216,14 @@ class WebhookAudioFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.redis.set(f"pending_confirm:{PHONE}", "reiniciar")
         m = await self._run(self._button(ac.WRONG_ID), consent=True)
         self.assertIsNone(await self.redis.get(f"pending_confirm:{PHONE}"))
+        m.route.assert_not_called()
+        self.assertIn("descarté ese audio", m.send_text.await_args.args[1])
+
+    async def test_saying_it_by_voice_discards_the_audio_without_echo_or_routing(self):
+        await self.redis.set(f"pending_confirm:{PHONE}", "reiniciar")
+        m = await self._run(self._audio(), consent=True, transcript="No es lo que dije.")
+        self.assertIsNone(await self.redis.get(f"pending_confirm:{PHONE}"))
+        m.buttons.assert_not_awaited()  # no se repite el eco de la frase de corrección
         m.route.assert_not_called()
         self.assertIn("descarté ese audio", m.send_text.await_args.args[1])
 
