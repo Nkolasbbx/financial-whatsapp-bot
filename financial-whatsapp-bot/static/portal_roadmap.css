@@ -21,7 +21,7 @@
     background: none;
     color: var(--petrol);
     font: inherit;
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 600;
     text-decoration: underline;
     text-underline-offset: 3px;
@@ -116,7 +116,7 @@
 .roadmap-step-title {
     flex: 1;
     min-width: 0;
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 700;
 }
 
@@ -149,7 +149,7 @@
 .roadmap-step-desc {
     margin: 0;
     color: color-mix(in srgb, var(--petrol) 90%, transparent);
-    font-size: 15px;
+    font-size: 17px;
     line-height: 1.6;
 }
 

@@ -273,8 +273,6 @@ async def dashboard(
             </div>
         </div>
     </div>
-
-    <div class="admin-logout"><a href="/admin/logout">Cerrar sesión</a></div>
     """
 
     return Response(

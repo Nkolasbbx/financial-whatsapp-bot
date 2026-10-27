@@ -17,7 +17,7 @@
     background: #fff;
     color: var(--petrol);
     font: inherit;
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 700;
     cursor: pointer;
 }
@@ -39,10 +39,10 @@
     background: color-mix(in srgb, var(--emerald) 8%, white);
 }
 
-.finance-entry h2 { margin: 0 0 18px; font-size: 18px; }
+.finance-entry h2 { margin: 0 0 18px; font-size: 20px; }
 .finance-entry fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .finance-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
-.finance-form-grid label { display: grid; align-content: start; gap: 7px; font-size: 13px; font-weight: 700; }
+.finance-form-grid label { display: grid; align-content: start; gap: 7px; font-size: 15px; font-weight: 700; }
 .finance-form-grid input,
 .finance-form-grid select {
     box-sizing: border-box;
@@ -59,7 +59,7 @@
 }
 .finance-form-grid input:focus,
 .finance-form-grid select:focus { outline: 2px solid var(--teal); outline-offset: 2px; }
-.finance-form-grid small { font-size: 12px; font-weight: 400; }
+.finance-form-grid small { font-size: 14px; font-weight: 400; }
 .finance-description-field { grid-column: 1 / -1; }
 .finance-form-actions { justify-content: flex-end; margin: 22px 0 0; }
 .finance-status.success { background: #dcfce7; color: #166534; }
@@ -86,7 +86,7 @@
     gap: 6px;
     min-width: 190px;
     color: var(--petrol);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 700;
 }
 
@@ -112,7 +112,7 @@
     border-radius: 12px;
     background: color-mix(in srgb, var(--petrol) 7%, white);
     color: var(--petrol);
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 600;
     text-align: center;
 }
@@ -141,7 +141,7 @@
     display: block;
     margin-bottom: 8px;
     color: color-mix(in srgb, var(--petrol) 78%, transparent);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     letter-spacing: 0.02em;
     text-transform: uppercase;
@@ -151,7 +151,7 @@
     display: block;
     overflow-wrap: anywhere;
     color: var(--petrol);
-    font-size: clamp(20px, 2.4vw, 30px);
+    font-size: clamp(22px, 2.4vw, 32px);
     line-height: 1.1;
 }
 
@@ -191,7 +191,7 @@
 .finance-empty h2 {
     margin: 0 0 16px;
     color: var(--petrol);
-    font-size: 16px;
+    font-size: 18px;
 }
 
 .finance-category-row + .finance-category-row {
@@ -204,7 +204,7 @@
     gap: 12px;
     margin-bottom: 7px;
     color: var(--petrol);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 650;
 }
 
@@ -232,7 +232,7 @@
 .finance-category-empty {
     margin: 0;
     color: color-mix(in srgb, var(--petrol) 72%, transparent);
-    font-size: 13px;
+    font-size: 15px;
 }
 
 .finance-movements-section {
@@ -259,18 +259,18 @@
 .finance-movement-description {
     margin-bottom: 4px;
     color: var(--petrol);
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 700;
 }
 
 .finance-movement-meta {
     color: color-mix(in srgb, var(--petrol) 72%, transparent);
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .finance-movement-amount {
     color: var(--petrol);
-    font-size: 15px;
+    font-size: 17px;
     font-weight: 800;
     white-space: nowrap;
 }

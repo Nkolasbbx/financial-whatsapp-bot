@@ -46,7 +46,7 @@
     height: 44px;
     border-radius: 12px;
     background: color-mix(in srgb, var(--emerald) 40%, white);
-    font-size: 22px;
+    font-size: 24px;
 }
 
 .fund-card.blocked .fund-emoji {
@@ -61,21 +61,21 @@
 .fund-title h2 {
     margin: 0 0 4px;
     color: var(--petrol);
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 700;
 }
 
 .fund-meta {
     margin: 0;
     color: color-mix(in srgb, var(--petrol) 90%, transparent);
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.45;
 }
 
 .fund-percentage {
     flex-shrink: 0;
     color: var(--teal);
-    font-size: 24px;
+    font-size: 26px;
     font-weight: 800;
     line-height: 1;
 }
@@ -83,7 +83,7 @@
 .fund-counts {
     margin: 0;
     color: var(--petrol);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
 }
 
@@ -93,14 +93,14 @@
     border-radius: 12px;
     background: color-mix(in srgb, var(--petrol) 12%, white);
     color: var(--petrol);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 700;
 }
 
 .fund-details summary {
     cursor: pointer;
     color: var(--petrol);
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 700;
 }
 
@@ -126,13 +126,13 @@
 }
 
 .fund-requirement-icon {
-    font-size: 16px;
+    font-size: 18px;
     line-height: 1.4;
 }
 
 .fund-requirement-body {
     min-width: 0;
-    font-size: 14px;
+    font-size: 16px;
 }
 
 .fund-requirement-body strong {
@@ -144,7 +144,7 @@
     display: inline-block;
     margin-top: 2px;
     color: color-mix(in srgb, var(--petrol) 90%, transparent);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
     letter-spacing: 0.025em;
     text-transform: uppercase;
@@ -157,7 +157,7 @@
 .fund-requirement-note {
     margin: 6px 0 0;
     color: color-mix(in srgb, var(--petrol) 90%, transparent);
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.5;
 }
 
@@ -165,7 +165,7 @@
     align-self: flex-start;
     margin-top: auto;
     color: var(--petrol);
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 700;
     transition: color 300ms;
 }
@@ -176,7 +176,7 @@
 
 .funds-field-question {
     color: color-mix(in srgb, var(--petrol) 90%, transparent);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 400;
     line-height: 1.45;
 }

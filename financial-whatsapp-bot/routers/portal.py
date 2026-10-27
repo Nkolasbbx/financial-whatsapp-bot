@@ -116,10 +116,14 @@ def _pagina_base(
         --emerald: #50c887;
         --teal: #139381;
         --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+        /* Ancho fluido, igual que static/admin.css. */
+        --panel-max: 2200px;
+        --panel-gutter: clamp(24px, 3vw, 80px);
     }}
     * {{ box-sizing: border-box; }}
     body {{
         font-family: var(--font-sans);
+        font-size: 18px;
         background: color-mix(in srgb, var(--petrol) 5%, white);
         margin: 0;
         color: var(--petrol);
@@ -134,14 +138,14 @@ def _pagina_base(
         -webkit-backdrop-filter: blur(12px);
     }}
     .portal-topbar-inner {{
-        max-width: 1280px;
+        max-width: var(--panel-max);
         margin: 0 auto;
         min-height: 68px;
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 16px;
-        padding: 16px 24px;
+        padding: 16px var(--panel-gutter);
     }}
     .portal-brand {{
         display: flex;
@@ -152,9 +156,9 @@ def _pagina_base(
     }}
     .portal-brand-logo {{ width: 36px; height: 36px; }}
     .portal-brand-text {{ display: flex; flex-direction: column; line-height: 1.2; }}
-    .portal-brand-name {{ font-size: 16px; font-weight: 800; color: var(--petrol); }}
+    .portal-brand-name {{ font-size: 18px; font-weight: 800; color: var(--petrol); }}
     .portal-brand-sub {{
-        font-size: 10px;
+        font-size: 12px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.05em;
@@ -164,7 +168,7 @@ def _pagina_base(
         border: 1px solid color-mix(in srgb, var(--petrol) 25%, transparent);
         border-radius: 999px;
         padding: 6px 14px;
-        font-size: 13px;
+        font-size: 15px;
         font-weight: 600;
         color: var(--petrol);
         text-decoration: none;
@@ -176,9 +180,9 @@ def _pagina_base(
         color: var(--emerald);
     }}
     .contenedor {{
-        max-width: 1280px;
+        max-width: var(--panel-max);
         margin: 0 auto;
-        padding: 40px 24px 60px;
+        padding: 40px var(--panel-gutter) 60px;
     }}
     .portal-tabs {{
         display: flex;
@@ -196,7 +200,7 @@ def _pagina_base(
         padding: 10px 16px;
         border-radius: 10px;
         color: var(--petrol);
-        font-size: 14px;
+        font-size: 16px;
         font-weight: 700;
         text-align: center;
         text-decoration: none;
@@ -209,16 +213,6 @@ def _pagina_base(
         color: #fff;
         box-shadow: 0 6px 18px rgba(2, 70, 85, 0.16);
     }}
-    @media (min-width: 1024px) {{
-        .contenedor {{
-            padding-left: 32px;
-            padding-right: 32px;
-        }}
-        .portal-topbar-inner {{
-            padding-left: 32px;
-            padding-right: 32px;
-        }}
-    }}
     .tarjeta {{
         background: color-mix(in srgb, white 92%, var(--petrol));
         border: 1px solid color-mix(in srgb, var(--petrol) 20%, transparent);
@@ -226,8 +220,8 @@ def _pagina_base(
         padding: 24px;
         margin-bottom: 16px;
     }}
-    h1 {{ font-size: 20px; font-weight: 800; letter-spacing: -0.025em; margin: 0 0 4px; color: var(--petrol); }}
-    .subtitulo {{ color: color-mix(in srgb, var(--petrol) 90%, transparent); font-size: 14px; margin-bottom: 20px; }}
+    h1 {{ font-size: 22px; font-weight: 800; letter-spacing: -0.025em; margin: 0 0 4px; color: var(--petrol); }}
+    .subtitulo {{ color: color-mix(in srgb, var(--petrol) 90%, transparent); font-size: 16px; margin-bottom: 20px; }}
     .barra-fondo {{ background: color-mix(in srgb, var(--petrol) 12%, white); border-radius: 999px; height: 10px; overflow: hidden; }}
     .barra-progreso {{ background: var(--emerald); height: 100%; }}
     .chat-body {{
@@ -243,7 +237,7 @@ def _pagina_base(
     .mensaje {{
         max-width: 80%;
         padding: 10px 14px;
-        font-size: 13px;
+        font-size: 15px;
         line-height: 1.375;
         white-space: pre-wrap;
         word-wrap: break-word;
@@ -260,7 +254,7 @@ def _pagina_base(
         margin-right: auto;
         border-radius: 16px 16px 16px 4px;
     }}
-    .fecha {{ font-size: 11px; color: color-mix(in srgb, var(--petrol) 90%, transparent); margin: 2px 4px 12px; }}
+    .fecha {{ font-size: 13px; color: color-mix(in srgb, var(--petrol) 90%, transparent); margin: 2px 4px 12px; }}
     .aviso {{ text-align: center; margin-top: 60px; }}
     .hito {{
         display: flex;
@@ -271,8 +265,8 @@ def _pagina_base(
     .hito:first-of-type {{ border-top: none; }}
     .hito.completado {{ opacity: 0.55; }}
     .hito.completado strong {{ text-decoration: line-through; }}
-    .check {{ font-size: 18px; line-height: 1.3; }}
-    .hito-desc {{ font-size: 13px; color: color-mix(in srgb, var(--petrol) 90%, transparent); margin-top: 2px; }}
+    .check {{ font-size: 20px; line-height: 1.3; }}
+    .hito-desc {{ font-size: 15px; color: color-mix(in srgb, var(--petrol) 90%, transparent); margin-top: 2px; }}
     .evento {{
         display: flex;
         gap: 12px;
@@ -283,7 +277,7 @@ def _pagina_base(
     .evento-fecha {{
         min-width: 78px;
         font-weight: 700;
-        font-size: 13px;
+        font-size: 15px;
         color: var(--petrol);
     }}
     .evento.proximo .evento-fecha {{ color: #b91c1c; }}
@@ -294,7 +288,7 @@ def _pagina_base(
         left: 16px;
         background: var(--emerald);
         color: var(--petrol);
-        font-size: 14px;
+        font-size: 16px;
         font-weight: 700;
         padding: 12px 20px;
         border-radius: 12px;
