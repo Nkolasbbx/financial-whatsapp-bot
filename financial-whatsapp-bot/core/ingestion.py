@@ -19,7 +19,7 @@ Diferencias respecto al script original:
 - Sin infer_metadata() por heurística de nombre de archivo: la metadata
   (comuna, rubros, vigencia, etc.) viene siempre explícita desde el panel
   admin, vía el parámetro extra_meta de process_document_to_rows.
-- generate_parent_context_map usa core.ia.llamar_llm (Groq, RES_URL/MODEL/KEY
+- generate_parent_context_map usa core.ia.llamar_llm (OpenRouter, RES_URL/MODEL/KEY
   ya configurados) en vez de un cliente OpenAI apuntando a un LLM aparte.
 """
 import asyncio
@@ -342,13 +342,13 @@ _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 def generate_parent_context_map(doc_title: str, parent_text: str, children: list) -> dict:
     """Genera, en una llamada LLM por lote de children de un mismo parent,
     una frase de contexto por child (técnica "Contextual Retrieval" de
-    Anthropic). Usa el mismo cliente Groq (RES_URL/RES_MODEL/RES_KEY) que ya
+    Anthropic). Usa el mismo modelo de OpenRouter (RES_URL/RES_MODEL/RES_KEY) que ya
     usa el bot para resúmenes de conversación, vía core.ia.llamar_llm.
 
     Ante cualquier falla retorna {} y esos children se embeben sin contexto
     extra: nunca se pierde un chunk por esto. Solo corre si
     INGESTION_ENABLE_CONTEXTUAL=true (ver core.ia.actualizar_resumen_conversacion
-    para el mismo patrón de cliente Groq).
+    para el mismo patrón de cliente).
     """
     if not INGESTION_ENABLE_CONTEXTUAL or not RES_KEY or not children:
         return {}

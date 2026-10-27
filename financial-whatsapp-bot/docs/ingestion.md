@@ -32,7 +32,7 @@ Decisiones concretas:
 - **Embeddings vía API remota de Hugging Face** (`intfloat/multilingual-e5-base`), el mismo modelo que ya usa el bot para las consultas (`core/ia.py`) — se evita cargar `torch`/`sentence-transformers` en producción.
 - **Sin OCR**: se verificó con `pdftotext`/`pdfimages` que los PDFs del proyecto son 100% digitales (texto real, no escaneos). Como red de seguridad barata, se agregó una heurística (`detect_low_text_pages`) que marca páginas con mucha imagen y poco texto para revisión manual, sin bloquear la ingesta. Si en el futuro se necesita OCR real (ej. ordenanzas escaneadas), se puede agregar `pymupdf4llm(use_ocr=True)` sin rediseñar nada.
 - **Ingesta incremental**: se reemplazó el `TRUNCATE` por `DELETE ... WHERE metadata->>'file_name' = ...` + `INSERT`, dentro de una sola transacción — subir o re-subir un documento no afecta a los demás.
-- **Contextual retrieval (frase de contexto por chunk generada con un LLM) queda apagado por defecto** (`INGESTION_ENABLE_CONTEXTUAL=false`) — agrega latencia/costo/un punto de falla externo sin ser necesario para cumplir la HdU. El código está portado y listo (reutiliza el cliente Groq que ya existe vía `RES_URL`/`RES_MODEL`/`RES_KEY`), se activa con un solo env var.
+- **Contextual retrieval (frase de contexto por chunk generada con un LLM) queda apagado por defecto** (`INGESTION_ENABLE_CONTEXTUAL=false`) — agrega latencia/costo/un punto de falla externo sin ser necesario para cumplir la HdU. El código está portado y listo (reutiliza el modelo de resúmenes en OpenRouter que ya existe vía `RES_URL`/`RES_MODEL`/`RES_KEY`), se activa con un solo env var.
 
 ## 3. Flujo
 
@@ -154,9 +154,9 @@ Nuevas para esta funcionalidad (todas con default razonable, no es obligatorio s
 | `INGESTION_STORAGE_BUCKET` | `ingestion-uploads` | Bucket de Supabase Storage usado como almacenamiento temporal mientras se procesa. |
 | `INGESTION_EMBEDDING_BATCH_SIZE` | `16` | Cuántos textos se envían por request a la API de embeddings de Hugging Face. |
 | `INGESTION_JOB_TIMEOUT_SECONDS` | `300` | Timeout del job de arq (también aplica a `process_ai_task`, que normalmente responde en segundos). |
-| `INGESTION_ENABLE_CONTEXTUAL` | `false` | Si es `true`, genera una frase de contexto por chunk con el LLM de Groq (`RES_URL`/`RES_MODEL`/`RES_KEY`) antes de embeberlo — mejora la calidad del retrieval a costa de latencia/costo extra. |
+| `INGESTION_ENABLE_CONTEXTUAL` | `false` | Si es `true`, genera una frase de contexto por chunk con el modelo de resúmenes en OpenRouter (`RES_URL`/`RES_MODEL`/`RES_KEY`) antes de embeberlo — mejora la calidad del retrieval a costa de latencia/costo extra. |
 
-No se necesita ninguna API key nueva: se reutilizan `HF_TOKEN`/`EMBEDDING_MODEL_NAME` (embeddings) y `RES_URL`/`RES_MODEL`/`RES_KEY` (Groq, solo si se activa contextual retrieval).
+No se necesita ninguna API key nueva: se reutilizan `HF_TOKEN`/`EMBEDDING_MODEL_NAME` (embeddings) y `RES_URL`/`RES_MODEL`/`RES_KEY` (OpenRouter, solo si se activa contextual retrieval).
 
 Ejemplo de bloque en `.env` (valores ficticios — nunca pegar credenciales reales en un doc del repo):
 ```bash
@@ -175,9 +175,9 @@ SUPABASE_SERVICE_ROLE_KEY=tu_service_role_key
 DB_DSN=postgresql://usuario:password@host:5432/postgres?sslmode=require
 HF_TOKEN=hf_tu_token
 EMBEDDING_MODEL_NAME=intfloat/multilingual-e5-base
-RES_URL=https://api.groq.com/openai/v1
-RES_MODEL=groq/compound-mini
-RES_KEY=gsk_tu_key
+RES_URL=https://openrouter.ai/api/v1
+RES_MODEL=openai/gpt-4o-mini
+RES_KEY=sk-or-tu_key
 ADMIN_RECOLETA_PASSWORD=una_contraseña
 ADMIN_ELBOSQUE_PASSWORD=otra_contraseña
 ```

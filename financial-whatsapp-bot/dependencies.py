@@ -71,7 +71,7 @@ def meta_whatsapp_configured() -> bool:
     )
 
 def resumen_configured() -> bool:
-    """Indica si están presentes las credenciales del modelo Groq de resúmenes."""
+    """Indica si están presentes las credenciales del modelo de resúmenes (OpenRouter)."""
     return all((RES_URL, RES_MODEL, RES_KEY))
 
 
@@ -147,22 +147,22 @@ async def init_dependencies() -> None:
             if response.status_code == 200:
                 resumen_available = True
                 logger.info(
-                    "Modelo de resúmenes Groq conectado - modelo: %s", RES_MODEL
+                    "Modelo de resúmenes (OpenRouter) conectado - modelo: %s", RES_MODEL
                 )
             else:
                 logger.warning(
-                    "Groq respondió con código %s al verificar el modelo de resúmenes",
+                    "El proveedor de resúmenes respondió con código %s al verificar el modelo",
                     response.status_code,
                 )
         except Exception as error:
             logger.error(
-                "No se pudo conectar al modelo de resúmenes Groq: %s", error
+                "No se pudo conectar al proveedor de resúmenes (OpenRouter): %s", error
             )
             resumen_available = False
     else:
         logger.warning(
             "RES_URL/RES_MODEL/RES_KEY no configurados; "
-            "los resúmenes con Groq quedan deshabilitados"
+            "los resúmenes de conversación quedan deshabilitados"
         )
 
     if SUPABASE_URL and SUPABASE_KEY:

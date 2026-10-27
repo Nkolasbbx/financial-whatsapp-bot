@@ -240,8 +240,10 @@ Todas viven en `financial-whatsapp-bot`; el worker las referencia todas desde ah
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_NUMBER` | Alternativa a Meta si `WHATSAPP_PROVIDER=twilio`. |
 | `WHATSAPP_PROVIDER` | `meta` o `twilio`. |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | Modelo de IA para las respuestas (o Groq si la URL contiene `groq.com`). |
-| `IA_API_KEY` | Key del proveedor de IA. |
-| `RES_URL`, `RES_MODEL`, `RES_KEY` | Modelo de resúmenes (Groq). |
+| `IA_API_KEY` | Key del proveedor de IA (OpenRouter). |
+| `IA_DISABLE_REASONING` | `true` con `OLLAMA_MODEL=anthropic/claude-haiku-5.5`: desactiva el razonamiento por defecto del modelo (latencia y respuestas cortadas). `false` con Ollama. |
+| `RES_URL`, `RES_MODEL`, `RES_KEY` | Modelo de resúmenes de conversación en OpenRouter (`https://openrouter.ai/api/v1`, `openai/gpt-4o-mini`). También lo usa la ingesta contextual. |
+| `RESUMEN_FRECUENCIA_MENSAJES` | Cada cuántos mensajes guardados se actualiza el resumen de la conversación (default `10`). |
 | `HF_TOKEN`, `EMBEDDING_MODEL_NAME` | Modelo de embeddings (Hugging Face) para RAG. |
 | `DEBUG` | Habilita modo debug/Twilio local. |
 | `CRON_SECRET` | Autoriza el cron de recordatorios (`Authorization: Bearer ...`). |
