@@ -21,6 +21,13 @@ META_GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "").strip().strip("
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 IA_API_KEY = os.getenv("IA_API_KEY", "")
+# Desactiva el razonamiento ("thinking") del modelo de chat en OpenRouter.
+# Necesario con anthropic/claude-haiku-5.5: razona por defecto, lo que agrega
+# latencia y consume max_tokens hasta cortar la respuesta. Dejarlo en false
+# con Ollama u otros proveedores que no aceptan el parámetro "reasoning".
+IA_DISABLE_REASONING = (
+    os.getenv("IA_DISABLE_REASONING", "false").strip().lower() == "true"
+)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -30,9 +37,12 @@ EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 SUPABASE_DB_DSN = os.getenv("DB_DSN")
 DB_DSN = SUPABASE_DB_DSN
 
+# Modelo de resúmenes de conversación (OpenRouter, API compatible OpenAI).
 RES_URL=os.getenv("RES_URL")
 RES_MODEL=os.getenv("RES_MODEL")
 RES_KEY=os.getenv("RES_KEY")
+# Cada cuántos mensajes guardados se regenera el resumen de la conversación.
+RESUMEN_FRECUENCIA_MENSAJES = int(os.getenv("RESUMEN_FRECUENCIA_MENSAJES", "10"))
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 # Cola de arq. En local cada dev debe usar una propia (ej. arq:queue:jorsh):
@@ -119,8 +129,8 @@ INGESTION_MAX_BATCH_FILES = int(os.getenv("INGESTION_MAX_BATCH_FILES", "10"))
 INGESTION_MAX_BATCH_MB = int(os.getenv("INGESTION_MAX_BATCH_MB", "100"))
 INGESTION_EMBEDDING_BATCH_SIZE = int(os.getenv("INGESTION_EMBEDDING_BATCH_SIZE", "16"))
 INGESTION_JOB_TIMEOUT_SECONDS = int(os.getenv("INGESTION_JOB_TIMEOUT_SECONDS", "300"))
-# Contextual retrieval (frase de contexto por chunk generada con Groq, ver
-# RES_URL/RES_MODEL/RES_KEY): apagado por defecto, agrega latencia/costo por
+# Contextual retrieval (frase de contexto por chunk generada con el modelo de
+# resúmenes en OpenRouter, ver RES_URL/RES_MODEL/RES_KEY): apagado por defecto, agrega latencia/costo por
 # documento sin ser necesario para cumplir la HdU. Queda listo para activar
 # con este flag si se quiere mejorar la calidad del retrieval más adelante.
 INGESTION_ENABLE_CONTEXTUAL = (
@@ -171,6 +181,9 @@ if RATE_LIMIT_WINDOW_SECONDS < 1:
 
 if RATE_LIMIT_BLOCK_SECONDS < 1:
     raise ValueError("RATE_LIMIT_BLOCK_SECONDS debe ser mayor que cero")
+
+if RESUMEN_FRECUENCIA_MENSAJES < 1:
+    raise ValueError("RESUMEN_FRECUENCIA_MENSAJES debe ser mayor que cero")
 
 if not 0.0 <= RAG_SIMILARITY_THRESHOLD <= 1.0:
     raise ValueError("RAG_SIMILARITY_THRESHOLD debe estar entre 0.0 y 1.0")

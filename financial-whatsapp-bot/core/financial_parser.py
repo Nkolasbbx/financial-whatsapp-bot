@@ -8,7 +8,7 @@ import unicodedata
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from config import IA_API_KEY, OLLAMA_MODEL, OLLAMA_URL, REMINDER_TIMEZONE
+from config import IA_API_KEY, IA_DISABLE_REASONING, OLLAMA_MODEL, OLLAMA_URL, REMINDER_TIMEZONE
 from schemas.financial_movements import (
     EXPENSE_CATEGORIES,
     FINANCIAL_CATEGORIES,
@@ -428,6 +428,7 @@ Mensaje: {json.dumps(message, ensure_ascii=False)}
         ollama_url=OLLAMA_URL,
         ollama_model=OLLAMA_MODEL,
         ia_api_key=IA_API_KEY,
+        disable_reasoning=IA_DISABLE_REASONING,
     )
     return _extract_json_object(response)
 
