@@ -216,6 +216,30 @@ class DiagnosticRoutingTests(unittest.TestCase):
             self.assertEqual(self.route("¿Qué me falta para formalizar?"), "__AI_QUERY__")
             roadmap.assert_not_called()
 
+    def test_natural_personal_data_questions_reach_ai_instead_of_static_roadmap(self):
+        queries = (
+            "¿Cuánto cuesta formalizarme?",
+            "¿Qué me falta para mi meta mensual de $500.000?",
+            "¿Qué me falta para postular a un fondo?",
+            "¿Qué hitos me faltan y cuánto cuestan?",
+            "Cuánto cuesta formalizarme",
+            "Qué me falta para mi meta mensual de $500.000",
+        )
+        with patch.object(
+            message_router, "FORMALIZATION_DIAGNOSTICS_ENABLED", False,
+        ), patch.object(message_router, "get_roadmap_text") as roadmap:
+            for query in queries:
+                with self.subTest(query=query):
+                    self.assertEqual(self.route(query), "__AI_QUERY__")
+            roadmap.assert_not_called()
+
+    def test_explicit_roadmap_menu_still_uses_navigation_response(self):
+        with patch.object(
+            message_router, "FORMALIZATION_DIAGNOSTICS_ENABLED", False,
+        ), patch.object(message_router, "get_roadmap_text", return_value="roadmap") as roadmap:
+            self.assertEqual(self.route("menu_roadmap"), "roadmap")
+            roadmap.assert_called_once_with(self.user)
+
     def test_expert_keeps_priority_and_pauses_diagnostic(self):
         self.start()
         self.mocks["handle_expert_message"].return_value = "__EXPERT_RELAY__"
