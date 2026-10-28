@@ -310,6 +310,434 @@ class DebeActualizarResumenTests(unittest.TestCase):
             self.assertTrue(ia._debe_actualizar_resumen(8))
 
 
+class PersonalizedAssistantContextTests(unittest.TestCase):
+    def test_detects_multiple_personal_data_domains(self):
+        domains = ia._assistant_data_domains(
+            "¿Cuánto me falta para mi meta mensual y qué compromisos tengo en octubre?"
+        )
+
+        self.assertIn("finances", domains)
+        self.assertIn("calendar", domains)
+
+    def test_detects_fund_domain_for_postulacion_and_roadmap_cost_questions(self):
+        self.assertIn(
+            "funds",
+            ia._assistant_data_domains("¿Qué posibilidades de postulación tengo?"),
+        )
+        domains = ia._assistant_data_domains("¿Qué hitos me faltan y cuánto cuestan?")
+        self.assertIn("roadmap", domains)
+        self.assertIn("formalization_costs", domains)
+
+    def test_month_bounds_supports_named_month_and_relative_month(self):
+        today = ia.date(2026, 10, 26)
+
+        self.assertEqual(
+            ia._month_bounds("mis gastos de septiembre", today=today),
+            (ia.date(2026, 9, 1), ia.date(2026, 10, 1), "septiembre de 2026"),
+        )
+        self.assertEqual(
+            ia._month_bounds("el próximo mes", today=today, prefer_future=True),
+            (ia.date(2026, 11, 1), ia.date(2026, 12, 1), "noviembre de 2026"),
+        )
+        self.assertEqual(
+            ia._month_bounds("compromisos en septiembre", today=today, prefer_future=True),
+            (ia.date(2026, 9, 1), ia.date(2026, 10, 1), "septiembre de 2026"),
+        )
+        self.assertEqual(
+            ia._month_bounds("el próximo septiembre", today=today, prefer_future=True),
+            (ia.date(2027, 9, 1), ia.date(2027, 10, 1), "septiembre de 2027"),
+        )
+
+    def test_extracts_chilean_clp_goal_formats(self):
+        for message, expected in (
+            ("Mi meta mensual es llegar a $500.000", 500_000),
+            ("Quiero ahorrar 300 mil al mes", 300_000),
+            ("Mi meta mensual es 1 millón", 1_000_000),
+            ("Mi meta mensual es 2 millones", 2_000_000),
+            ("Mi meta mensual es 1,5 millones", 1_500_000),
+            ("Mi meta mensual es 1.5 millones", 1_500_000),
+            ("Mi meta mensual es $1 millón", 1_000_000),
+            ("Mi meta mensual es $1.500.000", 1_500_000),
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(ia._extract_clp_goal(message), expected)
+        self.assertIsNone(
+            ia._extract_clp_goal("Mi meta para el año 2026 es avanzar"),
+        )
+
+    def test_finance_context_calculates_remaining_amount_and_calendar_context(self):
+        user = {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "roadmap": [],
+        }
+        message = (
+            "Mi meta mensual es $500.000, ¿cuánto me falta según mis ingresos "
+            "y gastos y qué compromisos tengo en octubre?"
+        )
+        event = {
+            "event_at": "2026-10-28T15:00:00+00:00",
+            "description": "Reunión con proveedor",
+            "status": "active",
+        }
+        with (
+            patch.object(ia, "_local_today", return_value=ia.date(2026, 10, 26)),
+            patch.object(
+                ia,
+                "get_financial_month_summary",
+                return_value={
+                    "income_total": 80_000,
+                    "expense_total": 20_000,
+                    "net_total": 60_000,
+                    "movement_count": 3,
+                },
+            ) as summary_mock,
+            patch.object(ia, "get_calendar_events_between", return_value=[event]) as events_mock,
+        ):
+            context = ia._build_personalized_context(user, message)
+
+        summary_mock.assert_called_once_with(
+            user["id"], ia.date(2026, 10, 1), ia.date(2026, 11, 1),
+        )
+        events_mock.assert_called_once()
+        self.assertIn("Monto faltante para alcanzarla: $440.000", context)
+        self.assertIn("Reunión con proveedor", context)
+        self.assertIn("28/10/2026 12:00", context)
+        self.assertIn("octubre de 2026", context)
+
+    def test_formalization_cost_context_uses_saved_items_and_assumptions(self):
+        user = {"id": "00000000-0000-0000-0000-000000000001"}
+        saved_context = {
+            "diagnostic": {
+                "workflow_status": "confirmed",
+                "period_start": "2026-09-01",
+                "result": {
+                    "initial_remaining_min": 100_000,
+                    "initial_remaining_max": 150_000,
+                    "assumptions": ["estimación según antecedentes declarados"],
+                },
+                "missing_fields": ["amount:patente"],
+            },
+            "items": [{
+                "item_key": "patente",
+                "label": "Patente municipal",
+                "amount_clp_min": 100_000,
+                "amount_clp_max": 150_000,
+                "frequency": "annual",
+                "applicability": "applies",
+                "included_in_baseline": False,
+            }],
+        }
+        with patch.object(ia, "get_formalization_context", return_value=saved_context):
+            context = ia._formalization_cost_context(user)
+
+        self.assertIn("costo inicial pendiente mínimo: $100.000", context)
+        self.assertIn("Patente municipal: $100.000–$150.000", context)
+        self.assertIn("estimación según antecedentes declarados", context)
+        self.assertIn("amount:patente", context)
+
+    def test_formalization_cost_context_calculates_known_catalog_cost_for_pending_hito(self):
+        from tests.test_formalization_estimates import small_catalog
+
+        user = {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "rubro": "alimentos",
+            "comuna": "Recoleta",
+            "inicio_sii": "no",
+            "location_type": "local",
+            "roadmap": [{
+                "title": "Inicio de Actividades en el SII",
+                "done": False,
+            }],
+        }
+        with (
+            patch.object(
+                ia,
+                "get_formalization_context",
+                return_value={"diagnostic": None, "items": []},
+            ),
+            patch.object(
+                ia,
+                "get_formalization_estimate_catalog",
+                return_value={
+                    "version": "test-v1",
+                    "review_by": "2026-11-16",
+                    "document": small_catalog(),
+                },
+            ),
+            patch.object(ia, "_local_today", return_value=ia.date(2026, 10, 26)),
+        ):
+            context = ia._formalization_cost_context(
+                user,
+                "¿Cuánto cuesta el inicio de actividades?",
+            )
+
+        self.assertIn("Inicio de Actividades en el SII", context)
+        self.assertIn("Estimaciones orientativas del catálogo activo test-v1", context)
+        self.assertIn("C01: concepto C01: $0 (once)", context)
+        self.assertIn("no equivalen a cotizaciones ni al costo total", context)
+
+    def test_formalization_cost_context_requests_location_before_estimating(self):
+        from tests.test_formalization_estimates import small_catalog
+
+        user = {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "rubro": "alimentos",
+            "comuna": "Recoleta",
+            "inicio_sii": "no",
+            "roadmap": [{
+                "title": "Solicitar patente municipal",
+                "done": False,
+            }],
+        }
+        with (
+            patch.object(
+                ia,
+                "get_formalization_context",
+                return_value={"diagnostic": None, "items": []},
+            ),
+            patch.object(
+                ia,
+                "get_formalization_estimate_catalog",
+                return_value={
+                    "version": "test-v1",
+                    "review_by": "2026-11-16",
+                    "document": small_catalog(),
+                },
+            ),
+            patch.object(ia, "_local_today", return_value=ia.date(2026, 10, 26)),
+        ):
+            context = ia._formalization_cost_context(
+                user,
+                "¿Cuánto me cuesta formalizar?",
+            )
+
+        self.assertIn("Solicitar patente municipal", context)
+        self.assertIn("falta saber si el negocio funcionará en vivienda, local u otra modalidad", context)
+        self.assertNotIn("Estimaciones orientativas del catálogo activo", context)
+
+    def test_formalization_cost_context_uses_answers_to_estimate_related_hito(self):
+        from tests.test_formalization_estimates import small_catalog
+
+        user = {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "rubro": "alimentos",
+            "comuna": "Recoleta",
+            "inicio_sii": "no",
+            "roadmap": [{
+                "title": "Resolución Sanitaria (si aplica)",
+                "done": False,
+            }],
+        }
+        diagnostic = {
+            "workflow_status": "draft",
+            "period_start": "2026-09-01",
+            "location_type": "local",
+            "profile_snapshot": {
+                "rubro": "alimentos",
+                "comuna": "Recoleta",
+                "inicio_sii": "no",
+            },
+            "answers": {
+                "estimate_facts": {
+                    "subtype": "alimentos_preparacion",
+                    "small_installation": True,
+                    "capital_under_10m": True,
+                    "missing_property_documents": False,
+                    "adaptations": "none",
+                    "missing_components": {},
+                    "new_operating_costs_not_in_baseline": False,
+                    "municipal_patent_required": False,
+                    "waste_charge_required": False,
+                },
+            },
+        }
+        with (
+            patch.object(
+                ia,
+                "get_formalization_context",
+                return_value={"diagnostic": diagnostic, "items": []},
+            ),
+            patch.object(
+                ia,
+                "get_formalization_estimate_catalog",
+                return_value={
+                    "version": "test-v1",
+                    "review_by": "2026-11-16",
+                    "document": small_catalog(),
+                },
+            ),
+            patch.object(ia, "_local_today", return_value=ia.date(2026, 10, 26)),
+        ):
+            context = ia._formalization_cost_context(
+                user,
+                "¿Cuánto cuesta la resolución sanitaria?",
+            )
+
+        self.assertIn("C07: concepto C07: $30–$40 (once)", context)
+        self.assertIn("fuentes del catálogo", context)
+
+    def test_finance_context_does_not_treat_missing_movements_as_zero_progress(self):
+        user = {"id": "00000000-0000-0000-0000-000000000001"}
+        with (
+            patch.object(ia, "_local_today", return_value=ia.date(2026, 10, 26)),
+            patch.object(
+                ia,
+                "get_financial_month_summary",
+                return_value={
+                    "income_total": 0,
+                    "expense_total": 0,
+                    "net_total": 0,
+                    "movement_count": 0,
+                },
+            ),
+        ):
+            context = ia._financial_context(user, "Mi meta mensual es $500.000")
+
+        self.assertIn("no es posible calcular el progreso", context)
+        self.assertNotIn("Monto faltante para alcanzarla", context)
+
+    def test_finance_context_does_not_treat_missing_summary_fields_as_zero(self):
+        user = {"id": "00000000-0000-0000-0000-000000000001"}
+        with (
+            patch.object(ia, "_local_today", return_value=ia.date(2026, 10, 26)),
+            patch.object(
+                ia,
+                "get_financial_month_summary",
+                return_value={
+                    "expense_total": 10_000,
+                    "net_total": None,
+                    "movement_count": 2,
+                },
+            ),
+        ):
+            context = ia._financial_context(user, "Mi meta mensual es $500.000")
+
+        self.assertIn("está incompleto", context)
+        self.assertNotIn("Ingresos confirmados: $0", context)
+        self.assertNotIn("Monto faltante para alcanzarla", context)
+
+    def test_calendar_context_queries_next_week_when_period_is_named(self):
+        user = {"id": "00000000-0000-0000-0000-000000000001"}
+        with (
+            patch.object(ia, "_local_today", return_value=ia.date(2026, 10, 26)),
+            patch.object(ia, "get_calendar_events_between", return_value=[]) as events_mock,
+        ):
+            context = ia._calendar_context(user, "¿Qué compromisos tengo la próxima semana?")
+
+        args = events_mock.call_args.args
+        self.assertEqual(args[1].date(), ia.date(2026, 11, 2))
+        self.assertEqual(args[2].date(), ia.date(2026, 11, 9))
+        self.assertIn("semana del 2026-11-02", context)
+
+    def test_fund_context_reports_evaluated_requirements_and_missing_data(self):
+        user = {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "inicio_sii": "no",
+            "rubro": "textil",
+        }
+        funds = [{
+            "nombre": "Capital Semilla Emprende",
+            "fecha_cierre": ia.date(2026, 12, 1),
+            "monto_max": 3_500_000,
+            "activo": True,
+            "requisitos": [
+                {"texto": "Persona mayor de edad", "clave": "mayor_edad"},
+                {
+                    "texto": "Ventas anuales dentro del rango",
+                    "clave": "ventas_semilla",
+                    "recomendacion": "Confirma tus ventas del último año.",
+                },
+            ],
+        }]
+        with (
+            patch.object(ia, "_local_today", return_value=ia.date(2026, 10, 26)),
+            patch.object(ia, "get_available_fund_candidates", return_value=funds),
+            patch.object(ia, "get_requirement_definitions", return_value={}),
+            patch.object(
+                ia,
+                "get_fund_answer_records",
+                return_value={"ventas_semilla": ia.UNKNOWN_ANSWER},
+            ),
+        ):
+            context = ia._funds_context(
+                user,
+                "¿Qué cumplo para postular a Capital Semilla?",
+            )
+
+        self.assertIn("Capital Semilla Emprende", context)
+        self.assertIn("1 cumplen, 0 no cumplen, 1 por confirmar", context)
+        self.assertIn("cumple: Persona mayor de edad", context)
+        self.assertIn("por confirmar: Ventas anuales dentro del rango", context)
+        self.assertIn("Confirma tus ventas del último año", context)
+
+    def test_personalized_context_does_not_duplicate_milestones_with_costs(self):
+        with (
+            patch.object(ia, "_roadmap_context", return_value="roadmap duplicado") as roadmap,
+            patch.object(ia, "_formalization_cost_context", return_value="hitos y costos") as costs,
+        ):
+            context = ia._build_personalized_context(
+                {"id": "00000000-0000-0000-0000-000000000001"},
+                "¿Qué hitos me faltan y cuánto cuestan?",
+            )
+
+        self.assertEqual(context.count("hitos y costos"), 1)
+        self.assertNotIn("roadmap duplicado", context)
+        roadmap.assert_not_called()
+        costs.assert_called_once()
+
+    def test_fund_context_reports_when_results_are_truncated(self):
+        user = {"id": "00000000-0000-0000-0000-000000000001"}
+        funds = [
+            {"nombre": f"Fondo {index}", "fecha_cierre": None, "monto_max": None}
+            for index in range(6)
+        ]
+        evaluations = [
+            {
+                "fund": fund,
+                "met": 0,
+                "failed": 0,
+                "unknown": 0,
+                "requirements": [],
+            }
+            for fund in funds
+        ]
+        with (
+            patch.object(ia, "_local_today", return_value=ia.date(2026, 10, 26)),
+            patch.object(ia, "get_available_fund_candidates", return_value=funds),
+            patch.object(ia, "get_requirement_definitions", return_value={}),
+            patch.object(ia, "get_fund_answer_records", return_value={}),
+            patch.object(ia, "evaluate_available_funds", return_value=evaluations),
+        ):
+            context = ia._funds_context(user, "¿Qué fondos vigentes tengo?")
+
+        self.assertIn("Se muestran 5 de 6 fondos", context)
+        self.assertNotIn("Fondo 5:", context)
+
+    def test_database_failure_is_explicit_instead_of_being_treated_as_zero(self):
+        user = {"id": "00000000-0000-0000-0000-000000000001"}
+        with patch.object(
+            ia,
+            "get_financial_month_summary",
+            side_effect=RuntimeError("storage unavailable"),
+        ):
+            context = ia._build_personalized_context(user, "¿Cómo va mi meta mensual?")
+
+        self.assertIn("no fue posible consultar los datos guardados", context)
+        self.assertIn("No asumir que están vacíos", context)
+
+    def test_invalid_personal_data_shape_returns_partial_context(self):
+        def load_invalid_data():
+            raise ValueError("invalid event date")
+
+        context = ia._personal_data_section(
+            "Calendario",
+            load_invalid_data,
+        )
+
+        self.assertIn("formato inválido", context)
+        self.assertIn("otras secciones disponibles", context)
+
+
 class GetAiResponseMemoriaTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, total_mensajes):
         user = {
@@ -330,6 +758,11 @@ class GetAiResponseMemoriaTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ia, "RESUMEN_FRECUENCIA_MENSAJES", 10),
             patch.object(ia, "IA_DISABLE_REASONING", True),
             patch.object(ia, "actualizar_resumen_en_background", self.background_mock),
+            patch.object(
+                ia,
+                "_build_personalized_context",
+                return_value="[DATOS PERSONALES Y FUNCIONALIDADES DISPONIBLES]\ncontexto verificado",
+            ),
         ):
             await ia.get_ai_response(user, "¿Y lo de la patente?", True)
 
@@ -339,6 +772,7 @@ class GetAiResponseMemoriaTests(unittest.IsolatedAsyncioTestCase):
         messages = self.llm_mock.call_args.kwargs["messages"]
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn("Averiguar costo de la patente", messages[0]["content"])
+        self.assertIn("contexto verificado", messages[0]["content"])
         self.assertEqual(messages[1:3], HISTORIAL)
         self.assertEqual(messages[-1], {"role": "user", "content": "¿Y lo de la patente?"})
         self.get_messages_mock.assert_called_once_with("56911111111", limit=10)

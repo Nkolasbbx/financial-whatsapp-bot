@@ -4,8 +4,12 @@ import os
 import threading
 import re
 import unicodedata
+from datetime import date, datetime, timedelta, timezone
+from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import httpx
+from postgrest.exceptions import APIError
 
 
 import dependencies
@@ -19,11 +23,25 @@ from config import (
     OLLAMA_MODEL,
     OLLAMA_URL,
     RAG_SIMILARITY_THRESHOLD,
+    REMINDER_TIMEZONE,
     RES_KEY,
     RES_MODEL,
     RES_URL,
     RESUMEN_FRECUENCIA_MENSAJES,
     TWILIO_WHATSAPP_NUMBER,
+)
+from core.fondos import evaluate_available_funds, get_available_fund_candidates
+from core.formalization_estimates import select_cost_estimates
+from db.calendar import get_active_calendar_events, get_calendar_events_between
+from db.financial_movements import get_financial_month_summary
+from db.fondos import (
+    UNKNOWN_ANSWER,
+    get_fund_answer_records,
+    get_requirement_definitions,
+)
+from db.formalization_diagnostics import (
+    get_formalization_context,
+    get_formalization_estimate_catalog,
 )
 from db.users import (
     contar_mensajes,
@@ -354,7 +372,7 @@ REGLAS ESTRICTAS:
 - Úsalas juntas para dar continuidad natural: no vuelvas a pedir datos que el usuario ya entregó ni repitas explicaciones ya dadas, salvo que te lo pida.
 - Si hay pendientes en el resumen relacionados con lo que pregunta el usuario, retómalos.
 - El resumen es MEMORIA de lo conversado, NO una fuente oficial: puede contener respuestas tuyas anteriores que no estaban respaldadas por documentos. Úsalo para saber de qué se habló, nunca como respaldo de datos.
-- Plazos, costos, montos, requisitos, ordenanzas, siglas y nombres de trámites o sistemas solo puedes afirmarlos si están en [INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE]. Si un dato aparece en el resumen pero no en ese bloque, no lo repitas como cierto: di que no puedes confirmarlo con la información oficial disponible.
+- Plazos, costos, requisitos, ordenanzas y nombres de trámites municipales solo puedes afirmarlos si están en [INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE]. Montos, movimientos, eventos, respuestas de fondos y estimaciones personales solo puedes afirmarlos si están en [DATOS PERSONALES Y FUNCIONALIDADES DISPONIBLES]. El resumen nunca es fuente de datos; si solo aparece allí, no lo repitas como cierto.
 - Si el usuario pregunta qué le dijiste antes sobre un dato que no está en la información oficial, puedes recordarle de qué se habló, pero aclara que ese dato no está confirmado por la información oficial disponible y que es mejor verificarlo en la municipalidad o el organismo correspondiente.
 - Si el resumen indica que ya intentaste ayudar y no tenías información, reconócelo y ofrece alternativa.
 - Si el usuario se refiere a algo conversado antes (ej. "lo que hablamos", "lo del otro día", "lo que me dijiste") y ni el resumen ni los mensajes recientes lo contienen, o no queda claro a qué se refiere, NO inventes ni supongas lo que se habló: dile brevemente que no tienes ese detalle y hazle UNA pregunta corta de aclaración.
@@ -362,7 +380,7 @@ REGLAS ESTRICTAS:
 📋 REGLA ESTRICTA DE CONTROL RAG (PROHIBIDO INVENTAR):
 - Solo manejas información municipal de DOS comunas: *Recoleta* y *El Bosque*.
 - El usuario está registrado en *{comuna}*.
-- Si no está escrito en el contexto, no lo digas. Prohibido inventar plazos, departamentos, costos o requisitos.
+- Si no está escrito en [INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE], no afirmes información municipal. Para datos personales usa solo [DATOS PERSONALES Y FUNCIONALIDADES DISPONIBLES]. Prohibido inventar plazos, departamentos, costos o requisitos.
 
 CONTEXTO ACTUAL DEL EMPRENDEDOR:
 - *Rubro*: {rubro}
@@ -374,15 +392,17 @@ CONTEXTO ACTUAL DEL EMPRENDEDOR:
 {reformulate_section}
 
 [RESUMEN DE INTERACCIONES PREVIAS]:
-(Memoria de lo conversado, NO es fuente oficial. Ningún plazo, costo, sigla, requisito u ordenanza de aquí se puede afirmar como cierto si no aparece también en [INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE].)
+(Memoria de lo conversado, NO es fuente de datos actuales. No afirmes como actuales cifras, eventos, respuestas de fondos ni estados de roadmap que solo aparezcan aquí: usa [DATOS PERSONALES Y FUNCIONALIDADES DISPONIBLES]. Ningún plazo, costo, sigla, requisito u ordenanza municipal de aquí se puede afirmar como cierto si no aparece también en [INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE].)
 {resumen_conversacion}
 
 [INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE]:
 Usa prioritariamente este contexto para responder.
 {contexto_rag}
 
+LOS DATOS PERSONALES Y FUNCIONALES que aparecen a continuación provienen de los registros del usuario, el calendario, el roadmap, el diagnóstico de costos y el catálogo vigente de fondos. Úsalos para responder consultas de esas funcionalidades, no como información municipal oficial. Si faltan datos, dilo y pide completarlos; nunca inventes registros, requisitos ni montos. Explica los supuestos de periodo o significado de una meta y combina los datos relevantes cuando la pregunta abarque varias funcionalidades.
+
 ⚠️ VERIFICACIÓN FINAL ANTES DE RESPONDER:
-Revisa cada sigla, definición, plazo, costo, requisito u ordenanza de tu respuesta. Si sale del [RESUMEN DE INTERACCIONES PREVIAS] y NO está en [INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE], no lo afirmes: di que lo conversaron antes pero que no puedes confirmarlo con la información oficial disponible, y sugiere verificarlo con la municipalidad o el organismo correspondiente.
+Revisa cada dato municipal en [INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE] y cada dato personal en [DATOS PERSONALES Y FUNCIONALIDADES DISPONIBLES]. Si un dato solo sale del [RESUMEN DE INTERACCIONES PREVIAS], no lo afirmes como cierto.
 """
 
 async def obtener_contexto_rag(
@@ -683,6 +703,669 @@ def detectar_comuna(message: str, comuna_perfil: str) -> dict:
     }
 
 
+_MONTH_NAMES = {
+    name: month
+    for month, name in enumerate(
+        (
+            "",
+            "enero", "febrero", "marzo", "abril", "mayo", "junio",
+            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+        )
+    )
+    if name
+}
+
+
+def _assistant_data_domains(message: str) -> set[str]:
+    normalized = _normalizar_mensaje(message)
+    domains = set()
+    if any(term in normalized for term in ("roadmap", "hito", "formaliz", "tramite", "permiso", "patente", "cuesta", "costo")):
+        domains.add("roadmap")
+    if any(term in normalized for term in ("meta", "ingreso", "gasto", "finanza", "ahorro", "ahorrar", "ventas", "cuanto falta", "balance")):
+        domains.add("finances")
+    if any(term in normalized for term in ("calendario", "evento", "compromiso", "cita", "reunion", "agenda", "cuando tengo", "que tengo")):
+        domains.add("calendar")
+    if any(term in normalized for term in (
+        "fondo", "postular", "postulacion", "postulaciones", "requisito",
+        "elegibilidad", "cumplo", "sercotec", "corfo",
+    )):
+        domains.add("funds")
+    asks_cost = any(term in normalized for term in ("costo", "cuesta", "presupuesto"))
+    asks_formalization = any(
+        term in normalized for term in ("formaliz", "tramite", "permiso", "patente")
+    )
+    if asks_cost and ("funds" not in domains or asks_formalization):
+        domains.add("formalization_costs")
+    return domains
+
+
+def _local_today() -> date:
+    return datetime.now(ZoneInfo(REMINDER_TIMEZONE)).date()
+
+
+def _month_bounds(
+    message: str,
+    *,
+    today: date | None = None,
+    prefer_future: bool = False,
+) -> tuple[date, date, str]:
+    current = today or _local_today()
+    normalized = _normalizar_mensaje(message)
+    year, month = current.year, current.month
+
+    if "mes pasado" in normalized or "mes anterior" in normalized:
+        if month == 1:
+            year, month = year - 1, 12
+        else:
+            month -= 1
+    elif "proximo mes" in normalized or "siguiente mes" in normalized:
+        if month == 12:
+            year, month = year + 1, 1
+        else:
+            month += 1
+    else:
+        requested_month = next(
+            (number for name, number in _MONTH_NAMES.items() if re.search(rf"\b{name}\b", normalized)),
+            None,
+        )
+        if requested_month is not None:
+            requested_year = re.search(r"\b(20\d{2})\b", normalized)
+            month = requested_month
+            if requested_year:
+                year = int(requested_year.group(1))
+            elif prefer_future and month < current.month:
+                month_name = _MONTH_NAMES_INV[month]
+                if re.search(rf"\b(?:proximo|siguiente)\s+{month_name}\b", normalized):
+                    year += 1
+
+    start = date(year, month, 1)
+    end = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    return start, end, f"{_MONTH_NAMES_INV[month]} de {year}"
+
+
+_MONTH_NAMES_INV = {month: name for name, month in _MONTH_NAMES.items()}
+
+
+def _format_clp(value: int | float | None) -> str:
+    if value is None:
+        return "sin dato"
+    return "$" + f"{int(value):,}".replace(",", ".")
+
+
+def _valid_user_id(user_id) -> bool:
+    if not user_id:
+        return False
+    try:
+        UUID(str(user_id))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
+def _roadmap_context(user: dict) -> str:
+    roadmap = user.get("roadmap") or []
+    if not roadmap:
+        return "Roadmap: no hay hitos cargados en el perfil."
+
+    pending = [hito for hito in roadmap if not hito.get("done")]
+    if not pending:
+        return f"Roadmap: todos los {len(roadmap)} hitos registrados están completados."
+
+    lines = ["Hitos pendientes del roadmap:"]
+    lines.extend(
+        f"- {hito.get('title', 'Hito sin nombre')}"
+        for hito in pending
+    )
+    return "\n".join(lines)
+
+
+_MILESTONE_COST_TERMS = {
+    "C01": ("inicio de actividades", "sii"),
+    "C07": ("sanitaria", "seremi", "alimentos"),
+    "C08": ("textil", "taller", "calificacion", "calificacion"),
+    "C09": ("document",),
+    "C12": ("arreglo", "adaptacion", "habilit"),
+    "C13": ("equipo", "maquina"),
+    "C16": ("patente",),
+    "C17": ("aseo", "residuo"),
+    "C24": ("gasto", "servicio", "operativo"),
+}
+
+
+_COST_MISSING_LABELS = {
+    "subtype": "tipo específico de actividad",
+    "missing_components": "equipos que todavía necesita comprar",
+    "small_installation_and_capital": "confirmar si la instalación es pequeña y el capital está dentro del rango",
+    "food_storage_and_scale": "necesidad de refrigeración, tamaño y condiciones del negocio",
+    "technical_review": "si corresponde informe técnico, calificación o ninguno",
+    "missing_property_documents": "documentos del lugar que falten",
+    "adaptations": "si el lugar necesita arreglos",
+    "new_operating_costs_not_in_baseline": "gastos operativos nuevos que no estén en su presupuesto",
+    "municipal_patent_required": "confirmar si la patente aplica al caso",
+    "capital_base_min": "capital mínimo del negocio",
+    "capital_base_max": "capital máximo del negocio",
+    "dated_utm": "valor y fecha de la UTM",
+    "waste_charge_required_and_uncovered": "si existe cobro de aseo y si aún no está cubierto",
+}
+
+
+def _cost_codes_for_text(value: str) -> set[str]:
+    normalized = _normalizar_mensaje(value)
+    return {
+        code
+        for code, terms in _MILESTONE_COST_TERMS.items()
+        if any(term in normalized for term in terms)
+    }
+
+
+def _estimate_context_from_catalog(
+    user: dict,
+    diagnostic: dict | None,
+    items: list[dict],
+    message: str,
+) -> list[str]:
+    if items:
+        # A saved diagnostic already contains the exact catalog decisions it used.
+        return []
+
+    catalog = get_formalization_estimate_catalog()
+    if not catalog:
+        return [
+            "No hay un catálogo activo de costos disponible para generar estimaciones nuevas."
+        ]
+
+    review_by = catalog.get("review_by")
+    try:
+        valid_through = date.fromisoformat(str(review_by))
+    except (TypeError, ValueError):
+        return ["El catálogo de costos no tiene una fecha de revisión válida; no se calcularon estimaciones nuevas."]
+    if valid_through < _local_today():
+        return [
+            f"El catálogo de costos venció el {valid_through.isoformat()}; "
+            "no se calcularon estimaciones nuevas."
+        ]
+
+    profile = dict((diagnostic or {}).get("profile_snapshot") or {})
+    profile.update({key: value for key, value in user.items() if value is not None})
+    if diagnostic:
+        profile["location_type"] = diagnostic.get("location_type") or profile.get("location_type")
+
+    if profile.get("location_type") not in {"vivienda", "local", "otra"}:
+        return [
+            f"Catálogo activo {catalog.get('version')} (revisado hasta {valid_through.isoformat()}).",
+            "No se calculó un costo todavía: falta saber si el negocio funcionará en vivienda, local u otra modalidad.",
+            "El roadmap muestra los hitos pendientes; completar esa información en el diagnóstico para calcular los costos aplicables.",
+        ]
+
+    answer_data = (diagnostic or {}).get("answers") or {}
+    answers = dict(answer_data.get("estimate_facts") or {})
+    if answer_data.get("estimate_flow") == "short-v1":
+        short = answer_data.get("short_answers") or {}
+        answers.update({
+            "subtype": short.get("subtype"),
+            "adaptations": short.get("adaptations"),
+            "small_installation": True,
+            "capital_under_10m": True,
+            "mef_route": "not_applicable",
+            "new_operating_costs_not_in_baseline": True,
+        })
+        if short.get("equipment_level") == "all":
+            answers["missing_components"] = {}
+
+    try:
+        selection = select_cost_estimates(catalog["document"], profile, answers)
+    except ValueError as error:
+        logger.info("No se pudo calcular costo orientativo desde el catálogo: %s", error)
+        return [
+            f"Catálogo activo {catalog.get('version')} (revisado hasta {valid_through.isoformat()}).",
+            "No hay datos suficientes o el perfil está fuera del alcance del catálogo para estimar estos costos.",
+            "Completa el diagnóstico de formalización con tu rubro, comuna, lugar de trabajo y respuestas sobre los costos aplicables.",
+        ]
+
+    relevant_codes = _cost_codes_for_text(message)
+    for milestone in (user.get("roadmap") or []):
+        if not milestone.get("done"):
+            relevant_codes.update(_cost_codes_for_text(milestone.get("title") or ""))
+
+    decisions = selection.get("decisions") or []
+    selected = [
+        decision for decision in decisions
+        if decision.get("status") == "ready"
+        and (not relevant_codes or decision.get("code") in relevant_codes)
+    ]
+    pending = [
+        decision for decision in decisions
+        if decision.get("status") == "pending"
+        and (not relevant_codes or decision.get("code") in relevant_codes)
+    ]
+    lines = [
+        f"Estimaciones orientativas del catálogo activo {catalog.get('version')} "
+        f"(revisado hasta {valid_through.isoformat()}); no equivalen a cotizaciones ni al costo total."
+    ]
+    if answer_data.get("estimate_flow") == "short-v1":
+        lines.append(
+            "Supuestos aceptados en el diagnóstico breve: instalación pequeña, "
+            "capital de hasta $10.000.000 y sin obras estructurales ni actividades especiales."
+        )
+    if selected:
+        for decision in selected:
+            low, high = decision.get("amount_clp_min"), decision.get("amount_clp_max")
+            amount = _format_clp(low) if low == high else f"{_format_clp(low)}–{_format_clp(high)}"
+            frequency = decision.get("frequency") or "frecuencia pendiente"
+            title = decision.get("title") or decision.get("code")
+            if title == decision.get("code"):
+                title = f"concepto {title}"
+            lines.append(
+                f"- {decision.get('code')}: {title}: {amount} "
+                f"({frequency}); base: {decision.get('basis') or 'catálogo'}; "
+                f"fuentes del catálogo: {', '.join(decision.get('source_ids') or []) or 'sin identificadores'}."
+            )
+        lines.append("Son partidas conocidas; no sumarlas como costo total de formalización.")
+    elif not pending:
+        lines.append("No hay costos estimados aplicables a los hitos consultados con los datos actuales.")
+    for decision in pending:
+        missing = decision.get("missing") or "datos de aplicabilidad"
+        reason = decision.get("reason") or "falta confirmar si aplica"
+        missing_label = _COST_MISSING_LABELS.get(
+            missing,
+            missing.replace("_", " "),
+        )
+        lines.append(
+            f"- {decision.get('code')}: {decision.get('title')}: pendiente "
+            f"({reason}; falta confirmar: {missing_label})."
+        )
+    return lines
+
+
+def _formalization_cost_context(user: dict, message: str = "") -> str:
+    if not _valid_user_id(user.get("id")):
+        return "Costos de formalización: no se pudo identificar un diagnóstico guardado para este perfil."
+
+    context = get_formalization_context(str(user["id"]))
+    diagnostic = context.get("diagnostic")
+    items = context.get("items") or []
+    lines = ["Hitos pendientes del roadmap:"]
+    pending_milestones = [
+        milestone for milestone in (user.get("roadmap") or [])
+        if not milestone.get("done")
+    ]
+    if pending_milestones:
+        lines.extend(f"- {milestone.get('title', 'Hito sin nombre')}" for milestone in pending_milestones)
+    else:
+        lines.append("- No hay hitos pendientes registrados.")
+
+    if diagnostic:
+        lines.extend([
+            "Diagnóstico de formalización guardado:",
+            f"- Estado: {diagnostic.get('workflow_status', 'sin estado')}",
+            f"- Periodo: {str(diagnostic.get('period_start') or 'no informado')[:7]}",
+        ])
+        result = diagnostic.get("result") or {}
+        for key, label in (
+            ("initial_remaining_min", "costo inicial pendiente mínimo"),
+            ("initial_remaining_max", "costo inicial pendiente máximo"),
+            ("future_known_operating_result", "resultado operativo futuro conocido mensual"),
+            ("known_initial_cash_gap", "brecha de caja inicial conocida"),
+        ):
+            value = result.get(key)
+            if value is not None:
+                lines.append(f"- {label}: {_format_clp(value)}")
+
+        if items:
+            lines.append("Partidas registradas (no sumar las marcadas como incluidas en la base):")
+            for item in items:
+                applicability = item.get("applicability", "sin confirmar")
+                low, high = item.get("amount_clp_min"), item.get("amount_clp_max")
+                if low is None or high is None:
+                    amount = "monto pendiente de confirmar"
+                elif low == high:
+                    amount = _format_clp(low)
+                else:
+                    amount = f"{_format_clp(low)}–{_format_clp(high)}"
+                lines.append(
+                    f"- {item.get('label', item.get('item_key', 'Partida'))}: "
+                    f"{amount}; {item.get('frequency', 'frecuencia no informada')}; "
+                    f"aplicabilidad {applicability}; "
+                    f"incluido en gastos base: {'sí' if item.get('included_in_baseline') else 'no'}."
+                )
+        else:
+            lines.append("- El diagnóstico no tiene partidas de costo guardadas.")
+
+        assumptions = result.get("assumptions") or []
+        if assumptions:
+            lines.append("Supuestos del diagnóstico: " + "; ".join(str(item) for item in assumptions))
+        missing = diagnostic.get("missing_fields") or []
+        if missing:
+            lines.append("Datos pendientes: " + ", ".join(str(item) for item in missing))
+    else:
+        lines.append(
+            "No hay un diagnóstico de formalización guardado. No se supone un costo ni una ubicación del negocio."
+        )
+
+    lines.extend(_estimate_context_from_catalog(user, diagnostic, items, message))
+    return "\n".join(lines)
+
+
+def _extract_clp_goal(message: str) -> int | None:
+    amount_pattern = r"(\d+(?:[.,]\d+)*)"
+    suffix_pattern = r"(mill[oó]n(?:es)?|mil)?"
+    patterns = (
+        rf"(?:meta|objetivo|ahorrar|ahorro|ingresos?|ventas?|llegar\s+a)"
+        rf"[^0-9$]{{0,40}}\$?\s*{amount_pattern}\s*{suffix_pattern}",
+        rf"\$\s*{amount_pattern}\s*{suffix_pattern}",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, message, re.IGNORECASE)
+        if not match:
+            continue
+
+        raw_number = match.group(1)
+        suffix = _normalizar_mensaje(match.group(2) or "")
+        has_explicit_currency = "$" in match.group(0)
+        separators = [
+            index for index, character in enumerate(raw_number) if character in ".,"
+        ]
+        if not separators:
+            value = float(raw_number)
+        else:
+            last_separator = separators[-1]
+            fraction_digits = len(raw_number) - last_separator - 1
+            separator_count = len(separators)
+            if (
+                suffix.startswith("millon")
+                and separator_count == 1
+                and fraction_digits in {1, 2}
+            ):
+                value = float(raw_number.replace(",", "."))
+            elif fraction_digits in {1, 2} and separator_count == 1 and not has_explicit_currency:
+                value = float(raw_number.replace(",", "."))
+            else:
+                value = float(re.sub(r"[.,]", "", raw_number))
+
+        if suffix == "mil":
+            value *= 1_000
+        elif suffix.startswith("millon"):
+            value *= 1_000_000
+        elif not has_explicit_currency and suffix == "":
+            digits = re.sub(r"\D", "", raw_number)
+            if len(digits) < 4 or 1900 <= value <= 2200:
+                continue
+        return int(value)
+    return None
+
+
+def _financial_context(user: dict, message: str) -> str:
+    if not _valid_user_id(user.get("id")):
+        return "Finanzas: no se pudo identificar el perfil para consultar movimientos guardados."
+
+    start, end, period_label = _month_bounds(message)
+    summary = get_financial_month_summary(str(user["id"]), start, end)
+    required_fields = ("income_total", "expense_total", "movement_count")
+    if not isinstance(summary, dict) or any(
+        field not in summary or summary[field] is None
+        for field in required_fields
+    ):
+        return (
+            f"Resumen financiero de {period_label}: está incompleto; "
+            "no calcular una meta ni asumir que los montos faltantes son cero. "
+            "Pedir que se vuelva a consultar o revisar los movimientos registrados."
+        )
+    try:
+        income = int(summary["income_total"])
+        expenses = int(summary["expense_total"])
+        movement_count = int(summary["movement_count"])
+        net = int(summary["net_total"]) if summary.get("net_total") is not None else income - expenses
+    except (TypeError, ValueError, OverflowError):
+        return (
+            f"Resumen financiero de {period_label}: contiene montos incompletos o inválidos; "
+            "no calcular una meta ni tratar los datos como cero."
+        )
+    goal = _extract_clp_goal(message)
+    normalized = _normalizar_mensaje(message)
+    income_goal = re.search(
+        r"(?:meta|objetivo|llegar a|alcanzar)[^.!?]{0,40}"
+        r"(?:ingreso|venta|facturar)",
+        normalized,
+    )
+    metric = "income_total" if income_goal else "net_total"
+    progress = income if metric == "income_total" else net
+
+    lines = [
+        f"Resumen financiero registrado para {period_label} (periodo {start.isoformat()} a {end.isoformat()}, fin excluido):",
+        f"- Ingresos confirmados: {_format_clp(income)}",
+        f"- Gastos confirmados: {_format_clp(expenses)}",
+        f"- Resultado neto (ingresos menos gastos): {_format_clp(net)}",
+        f"- Cantidad de movimientos confirmados: {movement_count}",
+    ]
+    if movement_count == 0:
+        lines.append("- No hay movimientos confirmados registrados en este periodo.")
+        if goal is not None:
+            lines.append(
+                f"- Meta detectada: {_format_clp(goal)}, pero no es posible calcular el progreso "
+                "ni cuánto falta sin movimientos registrados."
+            )
+        else:
+            lines.append("- No se identificó un monto de meta; solicita el monto y los movimientos del periodo.")
+    elif goal is None:
+        lines.append(
+            "- No se identificó un monto de meta en el mensaje y el perfil no guarda una meta mensual. "
+            "Solicita el monto para calcular cuánto falta."
+        )
+    else:
+        missing = max(goal - progress, 0)
+        metric_label = "ingresos" if metric == "income_total" else "resultado neto (supuesto: meta de ahorro/ganancia)"
+        lines.append(f"- Meta detectada: {_format_clp(goal)} de {metric_label}.")
+        lines.append(f"- Progreso usado para esa meta: {_format_clp(progress)}.")
+        lines.append(f"- Monto faltante para alcanzarla: {_format_clp(missing)}.")
+    return "\n".join(lines)
+
+
+def _calendar_context(user: dict, message: str) -> str:
+    if not _valid_user_id(user.get("id")):
+        return "Calendario: no se pudo identificar el perfil para consultar eventos guardados."
+
+    normalized = _normalizar_mensaje(message)
+    today = _local_today()
+    if "esta semana" in normalized or "semana actual" in normalized:
+        start = today - timedelta(days=today.weekday())
+        end = start + timedelta(days=7)
+        period = f"semana del {start.isoformat()} al {end.isoformat()} (fin excluido)"
+    elif "proxima semana" in normalized or "siguiente semana" in normalized:
+        start = today - timedelta(days=today.weekday()) + timedelta(days=7)
+        end = start + timedelta(days=7)
+        period = f"semana del {start.isoformat()} al {end.isoformat()} (fin excluido)"
+    elif "hoy" in normalized:
+        start, end = today, today + timedelta(days=1)
+        period = f"hoy ({today.isoformat()})"
+    elif re.search(r"(?:proximos|siguientes)\s+\d{1,3}\s+dias", normalized):
+        days = int(re.search(r"(?:proximos|siguientes)\s+(\d{1,3})\s+dias", normalized).group(1))
+        start, end = today, today + timedelta(days=max(days, 1))
+        period = f"los próximos {days} días ({start.isoformat()} a {end.isoformat()}, fin excluido)"
+    elif any(term in normalized for term in ("este mes", "mes actual", "mes pasado", "mes anterior", "proximo mes", "siguiente mes")) or any(
+        re.search(rf"\b{name}\b", normalized) for name in _MONTH_NAMES
+    ):
+        start, end, label = _month_bounds(message, prefer_future=True)
+        period = label
+    else:
+        start = end = None
+        period = "próximos eventos activos registrados (periodo no especificado)"
+
+    if start is not None and end is not None:
+        local_zone = ZoneInfo(REMINDER_TIMEZONE)
+        events = get_calendar_events_between(
+            str(user["id"]),
+            datetime.combine(start, datetime.min.time(), tzinfo=local_zone),
+            datetime.combine(end, datetime.min.time(), tzinfo=local_zone),
+            statuses=("active", "completed"),
+        )
+    else:
+        events = get_active_calendar_events(str(user["id"]), limit=20)
+
+    lines = [f"Eventos del calendario para {period}, ordenados por fecha:"]
+    if not events:
+        lines.append("- No hay eventos registrados para el periodo consultado.")
+    else:
+        lines.extend(
+            f"- {_calendar_event_time(event.get('event_at'))}: "
+            f"{event.get('description', 'evento sin descripción')} "
+            f"(estado: {event.get('status', 'sin estado')})."
+            for event in events
+        )
+    return "\n".join(lines)
+
+
+def _calendar_event_time(value: str | datetime | None) -> str:
+    if not value:
+        return "fecha no informada"
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(
+        str(value).replace("Z", "+00:00")
+    )
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(ZoneInfo(REMINDER_TIMEZONE)).strftime("%d/%m/%Y %H:%M")
+
+
+def _funds_context(user: dict, message: str) -> str:
+    if not _valid_user_id(user.get("id")):
+        return "Fondos: no se pudo identificar el perfil para consultar requisitos y respuestas guardadas."
+
+    today = _local_today()
+    funds = get_available_fund_candidates(user, today=today)
+    definitions = get_requirement_definitions()
+    records = get_fund_answer_records(str(user["id"]))
+    answers = {
+        key: None if value == UNKNOWN_ANSWER else value
+        for key, value in records.items()
+    }
+    evaluations = evaluate_available_funds(
+        user,
+        today=today,
+        definitions=definitions,
+        answers=answers,
+        funds=funds,
+        answered_keys=set(records),
+    )
+
+    normalized_query = _normalizar_mensaje(message)
+    ignored_name_words = {
+        "fondo", "fondos", "postular", "postulacion", "postulaciones",
+        "posibilidades", "requisitos", "cumplo", "puedo", "para", "con",
+        "que", "cuales", "cual", "tengo", "vigente", "vigentes",
+        "de", "del", "el", "la", "los", "las", "un", "una", "en", "al",
+        "a", "mi", "mis", "me", "para",
+    }
+    query_words = set(normalized_query.split()) - ignored_name_words
+    named = []
+    for evaluation in evaluations:
+        normalized_name = _normalizar_mensaje(evaluation["fund"].get("nombre", ""))
+        name_words = set(normalized_name.split()) - ignored_name_words
+        if normalized_name in normalized_query or (
+            query_words and query_words <= name_words
+        ):
+            named.append(evaluation)
+    if not named and query_words:
+        partial_matches = [
+            evaluation
+            for evaluation in evaluations
+            if query_words
+            & (set(_normalizar_mensaje(evaluation["fund"].get("nombre", "")).split()) - ignored_name_words)
+        ]
+        if len(partial_matches) == 1:
+            named = partial_matches
+    if named:
+        evaluations = named
+
+    lines = ["Evaluación de fondos vigentes basada en el perfil y las respuestas guardadas:"]
+    if not evaluations:
+        lines.append("- No hay fondos vigentes evaluables para este perfil en el catálogo actual.")
+        return "\n".join(lines)
+
+    if len(evaluations) > 5:
+        lines.append(
+            f"- Se muestran 5 de {len(evaluations)} fondos; indica el nombre del fondo "
+            "para consultar su evaluación específica."
+        )
+    for evaluation in evaluations[:5]:
+        fund = evaluation["fund"]
+        close = fund.get("fecha_cierre")
+        lines.append(
+            f"- {fund.get('nombre', 'Fondo sin nombre')}: "
+            f"cierra {close.isoformat() if hasattr(close, 'isoformat') else close or 'fecha no informada'}; "
+            f"monto máximo publicado {_format_clp(fund.get('monto_max'))}; "
+            f"{evaluation['met']} cumplen, {evaluation['failed']} no cumplen, "
+            f"{evaluation['unknown']} por confirmar."
+        )
+        for requirement in evaluation["requirements"]:
+            status = {
+                True: "cumple",
+                False: "no cumple",
+                None: "por confirmar",
+            }[requirement.get("cumple")]
+            detail = f"  • {status}: {requirement.get('texto') or requirement.get('clave', 'requisito')}"
+            recommendation = requirement.get("recomendacion") or requirement.get("question")
+            if recommendation:
+                detail += f"; siguiente paso/dato: {recommendation}"
+            lines.append(detail)
+    return "\n".join(lines)
+
+
+def _personal_data_section(label: str, loader, *args) -> str:
+    try:
+        return loader(*args)
+    except (APIError, httpx.HTTPError, RuntimeError) as error:
+        logger.error("No se pudo consultar %s para el asesor IA: %s", label, error)
+        return (
+            f"{label}: no fue posible consultar los datos guardados en este momento. "
+            "No asumir que están vacíos ni inferir resultados; indicar que se intente nuevamente."
+        )
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        logger.exception("Los datos de %s tienen un formato inválido para el asesor IA: %s", label, error)
+        return (
+            f"{label}: los datos recuperados están incompletos o tienen un formato inválido. "
+            "Presentar solo las otras secciones disponibles y pedir que se revise o complete esta información."
+        )
+
+
+def _build_personalized_context(user: dict, message: str) -> str:
+    domains = _assistant_data_domains(message)
+    if not domains:
+        return ""
+
+    sections = []
+    if "roadmap" in domains and "formalization_costs" not in domains:
+        sections.append(_roadmap_context(user))
+    if "formalization_costs" in domains:
+        sections.append(_personal_data_section(
+            "Costos de formalización",
+            _formalization_cost_context,
+            user,
+            message,
+        ))
+    if "finances" in domains:
+        sections.append(_personal_data_section(
+            "Finanzas",
+            _financial_context,
+            user,
+            message,
+        ))
+    if "calendar" in domains:
+        sections.append(_personal_data_section(
+            "Calendario",
+            _calendar_context,
+            user,
+            message,
+        ))
+    if "funds" in domains:
+        sections.append(_personal_data_section(
+            "Fondos",
+            _funds_context,
+            user,
+            message,
+        ))
+    return "[DATOS PERSONALES Y FUNCIONALIDADES DISPONIBLES]\n" + "\n\n".join(sections)
+
+
 async def get_ai_response(
     user: dict,
     message: str,
@@ -704,6 +1387,11 @@ async def get_ai_response(
     else:
         contexto_texto = "No se requiere información documental para este mensaje."
         fuentes_rag = []
+    contexto_personal = await asyncio.to_thread(
+        _build_personalized_context,
+        user,
+        message,
+    )
  
     # ── 2. PROMPT AUMENTADO (perfil + progreso) ──
 
@@ -730,6 +1418,8 @@ async def get_ai_response(
         resumen_conversacion=resumen_previo,
         contexto_rag=contexto_texto,
     )
+    if contexto_personal:
+        system += f"\n\n{contexto_personal}"
 
     # 3. Historial
     history = get_messages(phone, limit=10) if phone else user.get("conversation_history", [])[-10:]

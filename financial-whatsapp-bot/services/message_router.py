@@ -504,7 +504,14 @@ def route_message(
         "formalizar", "mis pasos", "mi ruta", "plan de crecimiento",
         "mi plan de crecimiento", "menu_roadmap"
     ]
-    if any(trigger in msg_lower for trigger in roadmap_triggers):
+    asks_personal_data = any(
+        term in msg_lower
+        for term in (
+            "cuanto", "cuánto", "costo", "cuesta", "meta", "me falta",
+            "me faltan", "postul",
+        )
+    )
+    if any(trigger in msg_lower for trigger in roadmap_triggers) and not asks_personal_data:
         _record_activity_safely(phone)
         return get_roadmap_text(user)
 
