@@ -18,6 +18,7 @@ from supabase import Client as SupabaseClient
 from supabase import create_client
 
 from redis_settings import get_redis_settings
+from services.performance import instrument_supabase
 
 from config import (
     ARQ_QUEUE_NAME,
@@ -167,7 +168,7 @@ async def init_dependencies() -> None:
 
     if SUPABASE_URL and SUPABASE_KEY:
         try:
-            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            supabase = instrument_supabase(create_client(SUPABASE_URL, SUPABASE_KEY))
             logger.info("Cliente de Supabase inicializado")
         except Exception as error:
             logger.error("No se pudo inicializar Supabase: %s", error)
@@ -176,10 +177,10 @@ async def init_dependencies() -> None:
 
     if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
         try:
-            supabase_admin = create_client(
+            supabase_admin = instrument_supabase(create_client(
                 SUPABASE_URL,
                 SUPABASE_SERVICE_ROLE_KEY,
-            )
+            ))
             logger.info("Cliente administrativo de Supabase inicializado")
         except Exception as error:
             logger.error(

@@ -7,6 +7,7 @@ import re
 import unicodedata
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+from services.performance import measure
 
 from config import IA_API_KEY, IA_DISABLE_REASONING, OLLAMA_MODEL, OLLAMA_URL, REMINDER_TIMEZONE
 from schemas.financial_movements import (
@@ -433,6 +434,7 @@ Mensaje: {json.dumps(message, ensure_ascii=False)}
     return _extract_json_object(response)
 
 
+@measure("financial_parse")
 def extract_financial_movement(
     message: str,
     existing_draft: dict | None = None,

@@ -15,6 +15,7 @@ from services.alertas_tributarias import send_tax_alerts
 from services.calendar_reminders import send_due_calendar_reminders
 from services.community_notices import send_due_community_notices
 from services.financial_movements import process_financial_movement_and_send
+from services.performance import observe_financial_job
 from services.google_calendar import sync_pending_google_events
 
 from services.ingestion_jobs import STORAGE_BUCKET
@@ -87,11 +88,13 @@ async def process_ai_task(
             await release_phone_lock(ctx["redis"], phone, lock_token)
 
 
+@observe_financial_job
 async def process_financial_movement_task(
     ctx,
     phone: str,
     message: str,
     lock_token: str | None = None,
+    performance_context: dict | None = None,
 ):
     """Interpreta un movimiento sin bloquear el webhook de WhatsApp."""
     logger.info("Procesando movimiento financiero para %s", phone)

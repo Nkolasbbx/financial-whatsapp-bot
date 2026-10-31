@@ -1,4 +1,5 @@
 import logging
+from services.performance import observe_route, set_case
 
 from config import FINANCIAL_MOVEMENTS_ENABLED, FORMALIZATION_DIAGNOSTICS_ENABLED
 from core.formalization_flow import (
@@ -187,6 +188,7 @@ def _clear_financial_session_safely(user_id: str | None) -> None:
         logger.error("No se pudo limpiar la sesión financiera: %s", error)
 
 
+@observe_route
 def route_message(
     phone: str,
     message: str,
@@ -213,6 +215,7 @@ def route_message(
     if user.get("onboarding_step") != "done" and not bypass_onboarding:
         response = process_onboarding(user, message, update_onboarding_profile)
         if response:
+            set_case("onboarding")
             return response
 
     # ── Contacto con un experto (HdU16) ──
@@ -220,6 +223,7 @@ def route_message(
     # emprendedor, el asistente de IA queda en pausa para él.
     expert_response = handle_expert_message(user, message, RESET_COMMANDS, message_id)
     if expert_response is not None:
+        set_case("expert")
         if FORMALIZATION_DIAGNOSTICS_ENABLED:
             # El relé humano mantiene prioridad y no deja una pregunta numérica
             # del diagnóstico activa para cuando termine la conversación.
@@ -229,6 +233,7 @@ def route_message(
     # Los usuarios antiguos completan solo los datos faltantes. La conversación
     # con un experto mantiene prioridad y su roadmap nunca se reinicia aquí.
     if not bypass_onboarding and needs_onboarding(user):
+        set_case("onboarding")
         return process_onboarding(user, message, update_onboarding_profile)
     if msg_lower in {PROFILE_BACK_ID, PROFILE_SKIP_ADDRESS_ID}:
         return get_menu_widget(user, prefix="✅ Tu perfil ya está completo. Ese botón corresponde a una pregunta anterior.\n\n")
@@ -248,6 +253,7 @@ def route_message(
             message_id=message_id,
         )
         if diagnostic_response is not None:
+            set_case("diagnostic")
             if is_diagnostic_entry(message):
                 _clear_calendar_session_safely(user.get("id"))
                 _clear_financial_session_safely(user.get("id"))
@@ -302,6 +308,7 @@ def route_message(
 
     # ── Reset command ──
     if msg_lower in RESET_COMMANDS:
+        set_case("onboarding")
         _clear_calendar_session_safely(user.get("id"))
         _clear_financial_session_safely(user.get("id"))
         new_user = reset_user_profile(phone, user)
@@ -313,6 +320,7 @@ def route_message(
         return process_onboarding(new_user, message, update_onboarding_profile)
 
     if msg_lower == "menu_recordatorios":
+        set_case("reminders")
         return {"type": "buttons", "body": "¿Qué quieres hacer con tus recordatorios?",
                 "options": [("menu_recordatorios_on", "Activar"), ("menu_recordatorios_off", "Pausar"), *MENU_BUTTON]}
 
@@ -323,6 +331,7 @@ def route_message(
         "menu_recordatorios_on",
     }
     if msg_lower in activation_commands:
+        set_case("reminders")
         try:
             reminders_were_enabled = enable_reminders(phone)
         except Exception as error:
@@ -348,6 +357,7 @@ def route_message(
         }
 
     if msg_lower.rstrip(".") in PAUSE_REMINDERS_COMMANDS:
+        set_case("reminders")
         _record_reply_safely(phone, reply_to_message_id)
         try:
             reminders_were_disabled = disable_reminders(phone)
@@ -407,6 +417,7 @@ def route_message(
             financial_session = None
 
         if should_handle_financial_message(message, financial_session):
+            set_case("finances")
             try:
                 if financial_entry:
                     _clear_calendar_session_safely(user.get("id"))
@@ -463,6 +474,7 @@ def route_message(
         calendar_session = None
 
     if should_handle_calendar_message(message, calendar_session):
+        set_case("calendar")
         try:
             if calendar_entry:
                 try:
@@ -489,6 +501,7 @@ def route_message(
     # Se procesa antes del roadmap y de la IA para que respuestas breves como
     # "sí", "no" o una cifra se asocien a la pregunta pendiente del fondo.
     if handles_fund:
+        set_case("funds")
         try:
             return handle_fund_message(user, message, fund_session, fund_definition)
         except Exception as error:
@@ -512,6 +525,7 @@ def route_message(
         )
     )
     if any(trigger in msg_lower for trigger in roadmap_triggers) and not asks_personal_data:
+        set_case("roadmap")
         _record_activity_safely(phone)
         return get_roadmap_text(user)
 
@@ -521,6 +535,7 @@ def route_message(
         "ya esta", "siguiente", "menu_listo", HITO_LISTO_ID
     ]
     if any(trigger in msg_lower for trigger in done_triggers):
+        set_case("roadmap")
         response = mark_hito_done(user, save_user)
         if get_pending_milestone(user) is None:
             _clear_completed_roadmap_safely(phone)
@@ -530,6 +545,7 @@ def route_message(
 
     # ── Revert last hito (deshacer paso) ──
     if msg_lower in [HITO_VOLVER_ID, "deshacer", "deshacer paso"]:
+        set_case("roadmap")
         response = revert_last_hito(user, save_user)
         _record_activity_safely(phone)
         return response
@@ -544,6 +560,7 @@ def route_message(
 
     # ── Panel web (login sin contraseña vía link de un solo uso) ──
     if msg_lower == "menu_panel_web":
+        set_case("panel")
         return "__WEB_PANEL_LINK__"
 
     # ── Menu FinancIAl ──
@@ -552,6 +569,7 @@ def route_message(
         "menu_financial", MENU_FINANCIAL_ID
     ]
     if any(trigger == msg_lower for trigger in menu_triggers) or _mentions_menu(msg_lower):
+        set_case("menu")
         return get_menu_widget(user)
     
     # ── Manejo de insatisfacción ──
@@ -577,6 +595,7 @@ def route_message(
 
     # ── Botón "Ver más información" de alerta tributaria (HdU07) ─────────────
     if msg_lower in VER_MAS_INFO_TRIGGERS:
+        set_case("tax_info")
         return (
             "📋 *Cómo declarar el F29 (IVA mensual)*\n\n"
             "1️⃣ Entra a *sii.cl* con tu RUT y clave\n"
@@ -589,6 +608,7 @@ def route_message(
  
     # ── Botón "Ya lo realicé" de alerta tributaria (HdU07) ───────────────────
     if msg_lower in YA_LO_REALICE_TRIGGERS:
+        set_case("tax_info")
         return (
             "✅ *¡Excelente!* Gracias por confirmar que realizaste el trámite.\n\n"
             "Recuerda que el próximo F29 vence el *día 12 del mes siguiente*.\n\n"
@@ -600,6 +620,7 @@ def route_message(
     # (menú, insatisfacción, alertas), para que un botón concreto como
     # "menu_financial" siempre gane sobre este fallback genérico.
     if replied_to_reminder:
+        set_case("roadmap")
         _record_activity_safely(phone)
         return get_roadmap_text(user)
 

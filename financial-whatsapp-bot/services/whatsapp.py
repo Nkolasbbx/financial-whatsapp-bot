@@ -3,6 +3,7 @@ import hmac
 import logging
 
 import httpx
+from services.performance import observe_meta_send
 
 from config import (
     META_APP_SECRET,
@@ -50,6 +51,7 @@ def _messages_url() -> str:
     )
 
 
+@observe_meta_send
 async def _post_message(payload: dict) -> dict:
     import dependencies
 

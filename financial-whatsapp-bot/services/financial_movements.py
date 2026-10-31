@@ -14,6 +14,7 @@ from db.financial_movements import (
 )
 from db.users import get_user
 from schemas.financial_movements import FinancialMovementConfirm
+from services.performance import measure
 from services.whatsapp import (
     WhatsAppAPIError,
     send_interactive_buttons,
@@ -38,6 +39,7 @@ async def _send_widget(phone: str, widget: dict | str) -> None:
     await send_text(phone, widget.get("body", ""))
 
 
+@measure("financial_processing")
 async def prepare_financial_movement(
     phone: str,
     message: str,

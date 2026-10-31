@@ -2,6 +2,8 @@ import asyncio
 import logging
 import uuid
 
+from services.performance import measure
+
 logger = logging.getLogger("financial")
 
 _LOCK_KEY_PREFIX = "phone_lock:"
@@ -22,6 +24,7 @@ return 0
 """
 
 
+@measure("phone_lock_wait")
 async def acquire_phone_lock(redis, phone: str) -> str:
     """Adquiere el lock de orden de respuesta para un teléfono.
 

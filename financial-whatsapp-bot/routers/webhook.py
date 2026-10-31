@@ -47,6 +47,7 @@ from services.pending_confirmation import (
     set_pending_confirmation,
 )
 from services.portal_auth import create_access_token
+from services.performance import financial_queue_kwargs, observe_webhook
 from services.transcription import is_ambiguous_transcription, transcribe_audio
 from services.whatsapp import (
     WhatsAppAPIError,
@@ -206,6 +207,7 @@ async def verify_whatsapp_webhook(
 
 
 @router.post("/webhook/whatsapp")
+@observe_webhook
 async def whatsapp_webhook(request: Request):
     """Recibe mensajes y estados de WhatsApp Cloud API. Todo el trabajo pesado
     se encola en Redis; este endpoint solo valida, parsea y encola."""
@@ -554,6 +556,7 @@ async def whatsapp_webhook(request: Request):
                                 phone,
                                 message,
                                 lock_token=lock_token,
+                                **financial_queue_kwargs(),
                             )
                             hand_off_to_worker = True
 
