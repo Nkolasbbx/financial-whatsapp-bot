@@ -245,22 +245,44 @@ def build_parent_child_chunks(
 
 
 def extract_markdown_frontmatter(text: str) -> tuple[dict, str]:
-    """Separa el frontmatter YAML-ish (--- ... ---) de un .md, si existe."""
+    """Separa el frontmatter YAML-ish (--- ... ---) de un .md, si existe.
+
+    Soporta pares `clave: valor` y listas simples:
+
+        source_urls:
+          - "https://..."
+
+    Las listas se devuelven como list[str]; el resto como str. No es un
+    parser YAML completo: alcanza para el formato del corpus preparado
+    (title, jurisdiction, reviewed_at, source_urls...)."""
     lines = text.splitlines()
     meta = {}
     content = text
     if lines and lines[0].strip() == "---":
         try:
             end = next(i for i, line in enumerate(lines[1:], start=1) if line.strip() == "---")
-            for line in lines[1:end]:
-                if not line.strip() or line.lstrip().startswith("#"):
-                    continue
-                k, sep, v = line.partition(":")
-                if sep:
-                    meta[k.strip()] = v.strip().strip('"\'')
-            content = "\n".join(lines[end + 1:]).strip()
         except StopIteration:
-            pass
+            return meta, content
+
+        current_list_key = None
+        for line in lines[1:end]:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("- ") and current_list_key:
+                meta[current_list_key].append(stripped[2:].strip().strip('"\''))
+                continue
+            k, sep, v = line.partition(":")
+            if not sep or line[:1].isspace():
+                continue
+            key, value = k.strip(), v.strip().strip('"\'')
+            if value:
+                meta[key] = value
+                current_list_key = None
+            else:
+                meta[key] = []
+                current_list_key = key
+        content = "\n".join(lines[end + 1:]).strip()
     return meta, content
 
 

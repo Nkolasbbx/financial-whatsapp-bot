@@ -22,7 +22,9 @@ from config import (
     MODEL_NAME,
     OLLAMA_MODEL,
     OLLAMA_URL,
+    RAG_CANDIDATES,
     RAG_SIMILARITY_THRESHOLD,
+    RAG_TOP_PARENTS,
     REMINDER_TIMEZONE,
     RES_KEY,
     RES_MODEL,
@@ -381,6 +383,8 @@ REGLAS ESTRICTAS:
 - Solo manejas información municipal de DOS comunas: *Recoleta* y *El Bosque*.
 - El usuario está registrado en *{comuna}*.
 - Si no está escrito en [INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE], no afirmes información municipal. Para datos personales usa solo [DATOS PERSONALES Y FUNCIONALIDADES DISPONIBLES]. Prohibido inventar plazos, departamentos, costos o requisitos.
+- Si toda la información disponible tiene Ámbito General (nacional), acláralo: es la norma nacional y la municipalidad puede exigir requisitos adicionales.
+- Si el contexto empieza con AVISO de comuna sin cobertura, dilo en una frase y entrega igual la información nacional que sí le aplica.
 
 CONTEXTO ACTUAL DEL EMPRENDEDOR:
 - *Rubro*: {rubro}
@@ -405,25 +409,105 @@ LOS DATOS PERSONALES Y FUNCIONALES que aparecen a continuación provienen de los
 Revisa cada dato municipal en [INFORMACIÓN MUNICIPAL OFICIAL DISPONIBLE] y cada dato personal en [DATOS PERSONALES Y FUNCIONALIDADES DISPONIBLES]. Si un dato solo sale del [RESUMEN DE INTERACCIONES PREVIAS], no lo afirmes como cierto.
 """
 
+# Ajustes de puntaje sobre la similitud coseno (ver obtener_contexto_rag).
+# Son chicos a propósito: reordenan candidatos parecidos, no hacen aparecer
+# un fragmento irrelevante. Calibrarlos con scripts/evaluar_rag.py.
+RAG_BONO_RUBRO = 0.03          # el documento es del rubro del usuario
+RAG_CASTIGO_OTRO_RUBRO = 0.05  # el documento es solo de otro(s) rubro(s)
+RAG_BONO_COMUNA = 0.02         # documento municipal sobre uno nacional
+AMBITO_GENERAL = "general"
+# pgvector filtra DESPUÉS de recorrer el índice HNSW: con el ef_search por
+# defecto (40) y filtro por comuna podrían volver menos de RAG_CANDIDATES.
+RAG_HNSW_EF_SEARCH = 100
+
+
+def _rubros_documento(meta: dict) -> list[str]:
+    rubros = meta.get("rubros")
+    if isinstance(rubros, str):
+        rubros = [rubros]
+    return [str(r).lower().strip() for r in (rubros or []) if str(r).strip()]
+
+
+def _puntaje_fragmento(similarity: float, meta: dict, rubro_usuario: str) -> float:
+    """Similitud ajustada por rubro (preferencia suave) y por ámbito.
+
+    Un documento sin rubros (cargado con el script antiguo) o marcado
+    "general" se trata como aplicable a todos los rubros."""
+    score = similarity
+    rubros = _rubros_documento(meta)
+    if rubro_usuario and rubros:
+        if rubro_usuario in rubros:
+            score += RAG_BONO_RUBRO
+        elif AMBITO_GENERAL not in rubros:
+            score -= RAG_CASTIGO_OTRO_RUBRO
+    if (meta.get("comuna") or AMBITO_GENERAL).lower() != AMBITO_GENERAL:
+        score += RAG_BONO_COMUNA
+    return score
+
+
+def _seleccionar_fragmentos(resultados, rubro_usuario: str) -> tuple[list[tuple], int]:
+    """Filtra por umbral, puntúa y deja un solo fragmento por bloque padre.
+
+    Cada fila de `documents` guarda el bloque padre completo en `content`:
+    varios hijos del mismo padre repetirían el mismo texto en el prompt.
+    Devuelve ([(content, meta, score)], descartados_por_umbral)."""
+    descartados = 0
+    mejores: dict[str, tuple] = {}
+    for content, meta, distance in resultados:
+        meta = meta or {}
+        similarity = 1 - distance
+        if similarity < RAG_SIMILARITY_THRESHOLD:
+            descartados += 1
+            continue
+        score = _puntaje_fragmento(similarity, meta, rubro_usuario)
+        clave = meta.get("parent_id") or content
+        if clave not in mejores or score > mejores[clave][2]:
+            mejores[clave] = (content, meta, score)
+
+    seleccion = sorted(mejores.values(), key=lambda item: item[2], reverse=True)
+    return seleccion[:RAG_TOP_PARENTS], descartados
+
+
 async def obtener_contexto_rag(
     message: str,
     comuna_usuario: str,
     query_vector: list[float] | None = None,
+    rubro_usuario: str = "",
+    mensaje_actual: str | None = None,
 ) -> dict:
-    """Devuelve el contexto RAG para la comuna correcta.
+    """Devuelve el contexto RAG para la comuna y el rubro del usuario.
 
-    query_vector permite reutilizar un embedding ya calculado (p.ej. por
-    requiere_rag() al resolver un mensaje ambiguo) en vez de pedirlo de nuevo.
+    Busca siempre en los documentos nacionales ("general") y, si la comuna
+    está soportada, también en los de esa comuna. Si no lo está (o el perfil
+    no tiene comuna), entrega igual lo nacional con un aviso para el LLM.
+
+    `message` es el texto de búsqueda ya preparado por get_ai_response
+    (datos personales redactados y, en seguimientos, con la pregunta
+    anterior). query_vector permite reutilizar un embedding ya calculado
+    (p.ej. por requiere_rag() al resolver un mensaje ambiguo).
+
+    mensaje_actual (solo el último mensaje) manda al detectar la comuna: en
+    "¿y en El Bosque?" tras una pregunta sobre Recoleta gana El Bosque. Si no
+    nombra ninguna, se hereda la de la pregunta anterior incluida en message.
     """
-    deteccion = detectar_comuna(message, comuna_usuario)
+    deteccion = detectar_comuna(mensaje_actual or message, comuna_usuario)
+    if mensaje_actual and not deteccion["explicita"]:
+        deteccion = detectar_comuna(message, comuna_usuario)
     comuna_busqueda = deteccion["comuna"]
 
-    if not deteccion["soportada"]:
-        return {
-            "contexto": f"SIN COBERTURA: no manejamos información de la comuna '{comuna_busqueda}'. Solo Recoleta y El Bosque están disponibles.",
-            "fuentes": [],
-        }
+    aviso = ""
+    if deteccion["soportada"]:
+        ambitos = [comuna_busqueda, AMBITO_GENERAL]
+    else:
+        ambitos = [AMBITO_GENERAL]
+        nombre_comuna = comuna_busqueda or "sin comuna registrada"
+        aviso = (
+            f"AVISO: no hay información municipal de la comuna '{nombre_comuna}' "
+            "(solo cubrimos Recoleta y El Bosque). Lo que sigue es información "
+            "nacional, aplicable en cualquier comuna.\n"
+        )
 
+    rubro_usuario = (rubro_usuario or "").lower().strip()
     contexto = ""
     fuentes = []
     try:
@@ -436,37 +520,35 @@ async def obtener_contexto_rag(
         conn = dependencies.db_pool.getconn()
         try:
             with conn.cursor() as cur:
+                # SET LOCAL dura solo esta transacción; el pool hace rollback
+                # al devolver la conexión.
+                cur.execute(f"SET LOCAL hnsw.ef_search = {RAG_HNSW_EF_SEARCH};", None)
                 cur.execute(
                     """
                     SELECT content, metadata, embedding <=> %s::vector AS distance
                     FROM documents
-                    WHERE (metadata->>'comuna' ILIKE %s OR metadata->>'comuna' ILIKE '%%general%%')
+                    WHERE lower(coalesce(metadata->>'comuna', 'general')) = ANY(%s)
                       AND (
                           metadata->>'vigencia_hasta' IS NULL
                           OR metadata->>'vigencia_hasta' = ''
                           OR (metadata->>'vigencia_hasta')::date >= CURRENT_DATE
                       )
                     ORDER BY distance
-                    LIMIT 4;
+                    LIMIT %s;
                 """,
-                    (query_vector, f"%{comuna_busqueda}%"),
+                    (query_vector, ambitos, RAG_CANDIDATES),
                 )
 
                 resultados = cur.fetchall()
         finally:
             dependencies.db_pool.putconn(conn)
 
-        descartados = 0
-        for res in resultados:
-            similarity = 1 - res[2]
-            if similarity < RAG_SIMILARITY_THRESHOLD:
-                descartados += 1
-                continue
+        seleccion, descartados = _seleccionar_fragmentos(resultados, rubro_usuario)
 
-            meta = res[1] if res[1] else {}
+        for content, meta, _score in seleccion:
             file_name = meta.get("file_name", "Municipal")
-            comuna_doc = meta.get("comuna", "general")
-            if comuna_doc.lower() == "general":
+            comuna_doc = meta.get("comuna", AMBITO_GENERAL)
+            if comuna_doc.lower() == AMBITO_GENERAL:
                 comuna_doc = "General (Aplica a todas las comunas del país)"
             source = meta.get("source", file_name)
             source_url = meta.get("source_url", "")
@@ -479,7 +561,7 @@ async def obtener_contexto_rag(
             contexto += (
                 f"\n[Documento Oficial: {file_name}] | [Ámbito: {comuna_doc}]\n"
                 f"[Fuente: {source}] | [URL: {source_url}] | [Fecha de revisión: {source_date}]\n"
-                f"{res[0]}\n"
+                f"{content}\n"
             )
 
         if descartados:
@@ -497,7 +579,7 @@ async def obtener_contexto_rag(
         logger.error(f"❌ Error RAG Supabase: {e}")
         contexto = "Error temporal al acceder a las normativas municipales."
 
-    return {"contexto": contexto, "fuentes": fuentes}
+    return {"contexto": aviso + contexto, "fuentes": fuentes}
 
 
 COMUNAS_SOPORTADAS = ["recoleta", "el bosque"]
@@ -645,7 +727,9 @@ async def requiere_rag(message: str) -> tuple[bool, list[float] | None]:
 # otra comuna que no cubrimos"). Amplía esta lista si quieres más cobertura.
 OTRAS_COMUNAS_CONOCIDAS = [
     "providencia",
-    "santiago",
+    # "santiago" a secas se usa también como región ("Región Metropolitana de
+    # Santiago"): solo se reconoce la comuna con su nombre completo.
+    "santiago centro",
     "ñuñoa",
     "nunoa",
     "maipú",
@@ -683,16 +767,23 @@ OTRAS_COMUNAS_CONOCIDAS = [
 ]
 
 
+def _menciona(mensaje_normalizado: str, comuna: str) -> bool:
+    """Coincidencia por palabra completa y sin tildes: "lamparas" no debe
+    leerse como la comuna de Lampa."""
+    nombre = " ".join(_normalizar_mensaje(comuna).split())
+    return re.search(rf"\b{re.escape(nombre)}\b", mensaje_normalizado) is not None
+
+
 def detectar_comuna(message: str, comuna_perfil: str) -> dict:
     """Determina sobre qué comuna debe responder el asistente."""
-    mensaje_lower = message.lower()
+    mensaje_normalizado = " ".join(_normalizar_mensaje(message).split())
 
     for comuna in COMUNAS_SOPORTADAS:
-        if comuna in mensaje_lower:
+        if _menciona(mensaje_normalizado, comuna):
             return {"comuna": comuna, "soportada": True, "explicita": True}
 
     for comuna in OTRAS_COMUNAS_CONOCIDAS:
-        if comuna in mensaje_lower:
+        if _menciona(mensaje_normalizado, comuna):
             return {"comuna": comuna, "soportada": False, "explicita": True}
 
     comuna_perfil_normalizada = (comuna_perfil or "").lower().strip()
@@ -701,6 +792,59 @@ def detectar_comuna(message: str, comuna_perfil: str) -> dict:
         "soportada": comuna_perfil_normalizada in COMUNAS_SOPORTADAS,
         "explicita": False,
     }
+
+
+# --- Texto de búsqueda del RAG (no cambia lo que recibe el LLM de chat) ---
+
+_PATRONES_DATOS_PERSONALES = (
+    # Correo antes que RUT/teléfono: un correo puede contener dígitos.
+    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "[CORREO]"),
+    (re.compile(r"\b\d{1,2}\.?\d{3}\.?\d{3}\s?-\s?[\dkK]\b"), "[RUT]"),
+    (re.compile(r"(?<!\d)(?:\+?56\s?)?9\s?\d{4}\s?\d{4}(?!\d)"), "[TELÉFONO]"),
+)
+
+
+def _redactar_datos_personales(texto: str) -> str:
+    """Quita RUT, teléfonos y correos del texto que se envía a Hugging Face
+    para calcular el embedding: no aportan a la búsqueda y son datos
+    personales del usuario."""
+    for patron, reemplazo in _PATRONES_DATOS_PERSONALES:
+        texto = patron.sub(reemplazo, texto)
+    return texto
+
+
+_SEGUIMIENTO_MAX_PALABRAS = 8
+_TERMINOS_SEGUIMIENTO = (
+    "eso", "esa", "ese", "esto", "esta", "este", "ahi", "alla",
+    "tambien", "lo mismo", "en ese caso", "y si",
+)
+
+
+def _es_seguimiento(message: str) -> bool:
+    """Mensaje corto que depende de lo conversado antes ("¿y cuánto sale?",
+    "¿y eso cada cuánto se paga?"). Embebido solo, no dice de qué tema se
+    trata."""
+    palabras = _normalizar_mensaje(message).split()
+    if not palabras or len(palabras) > _SEGUIMIENTO_MAX_PALABRAS:
+        return False
+    if palabras[0] == "y":
+        return True
+    texto = " ".join(palabras)
+    return any(re.search(rf"\b{termino}\b", texto) for termino in _TERMINOS_SEGUIMIENTO)
+
+
+def _texto_busqueda_rag(message: str, history: list[dict]) -> str:
+    """Texto con que se consulta el RAG: en seguimientos se antepone la
+    pregunta anterior del usuario; siempre sin datos personales."""
+    texto = message
+    if _es_seguimiento(message):
+        previo = next(
+            (m.get("content", "") for m in reversed(history or []) if m.get("role") == "user"),
+            "",
+        )
+        if previo:
+            texto = f"{previo} {message}"
+    return _redactar_datos_personales(texto)
 
 
 _MONTH_NAMES = {
@@ -1378,10 +1522,21 @@ async def get_ai_response(
     comuna_usuario = (user.get("comuna") or "").lower().strip()
 
  
+    # Historial antes del RAG: sirve para armar la búsqueda de los mensajes
+    # de seguimiento y luego como contexto del LLM (misma lectura).
+    history = get_messages(phone, limit=10) if phone else user.get("conversation_history", [])[-10:]
+
     # ── 1. RECUPERACIÓN RAG solo para consultas informativas ──
-    usa_rag, query_vector = await requiere_rag(message)
+    texto_busqueda = _texto_busqueda_rag(message, history)
+    usa_rag, query_vector = await requiere_rag(texto_busqueda)
     if usa_rag:
-        contexto_rag = await obtener_contexto_rag(message, comuna_usuario, query_vector=query_vector)
+        contexto_rag = await obtener_contexto_rag(
+            texto_busqueda,
+            comuna_usuario,
+            query_vector=query_vector,
+            rubro_usuario=user.get("rubro") or "",
+            mensaje_actual=_redactar_datos_personales(message),
+        )
         contexto_texto = contexto_rag["contexto"]
         fuentes_rag = contexto_rag["fuentes"]
     else:
@@ -1421,8 +1576,7 @@ async def get_ai_response(
     if contexto_personal:
         system += f"\n\n{contexto_personal}"
 
-    # 3. Historial
-    history = get_messages(phone, limit=10) if phone else user.get("conversation_history", [])[-10:]
+    # 3. Historial (leído al inicio)
     messages = [{"role": "system", "content": system}]
     messages.extend(history)
     messages.append({"role": "user", "content": message})

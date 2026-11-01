@@ -21,7 +21,7 @@ class DeleteIngestedDocumentTests(unittest.TestCase):
         db_pool, fake_dependencies = _fake_dependencies_with(conn)
 
         with patch.dict(sys.modules, {"dependencies": fake_dependencies}):
-            result = delete_ingested_document("tramite.md", "job-1", "InnovaRecoleta")
+            result = delete_ingested_document("tramite.md", "Recoleta", "job-1", "InnovaRecoleta")
 
         self.assertEqual(result, 3)
         conn.commit.assert_called_once()
@@ -31,6 +31,9 @@ class DeleteIngestedDocumentTests(unittest.TestCase):
         update_sql = cur.execute.call_args_list[1].args[0]
         update_params = cur.execute.call_args_list[1].args[1]
         self.assertIn("DELETE FROM documents", delete_sql)
+        # La comuna es parte de la clave: no borra el archivo homónimo de otra comuna.
+        self.assertIn("lower(metadata->>'comuna') = lower(%s)", delete_sql)
+        self.assertEqual(cur.execute.call_args_list[0].args[1], ("tramite.md", "Recoleta"))
         self.assertIn("UPDATE ingestion_jobs", update_sql)
         self.assertIn("deleted_at = now()", update_sql)
         self.assertEqual(update_params, ("InnovaRecoleta", "job-1"))
@@ -44,7 +47,7 @@ class DeleteIngestedDocumentTests(unittest.TestCase):
 
         with patch.dict(sys.modules, {"dependencies": fake_dependencies}):
             with self.assertRaises(RuntimeError):
-                delete_ingested_document("tramite.md", "job-1", "InnovaRecoleta")
+                delete_ingested_document("tramite.md", "Recoleta", "job-1", "InnovaRecoleta")
 
         conn.rollback.assert_called_once()
         conn.commit.assert_not_called()

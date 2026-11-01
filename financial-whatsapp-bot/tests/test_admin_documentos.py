@@ -1,5 +1,6 @@
 import json
 import unittest
+import unittest.mock
 from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
@@ -57,6 +58,7 @@ class SubirDocumentosTests(unittest.TestCase):
         for target, new in (
             ("get_admin_session_account", AsyncMock(return_value=ACCOUNT)),
             ("list_recent_jobs", lambda *a, **k: []),
+            ("list_active_documents", lambda *a, **k: []),
         ):
             patcher = patch.object(admin, target, new)
             patcher.start()
@@ -177,6 +179,184 @@ class SubirDocumentosTests(unittest.TestCase):
         html_page = self.client.get("/admin/documentos").text
         self.assertNotIn("<img src=x>", html_page)
         self.assertIn("&lt;img src=x&gt;", html_page)
+
+    def test_municipio_no_puede_elegir_ambito(self):
+        self.client.post(
+            "/admin/documentos/subir",
+            files=[("archivos", ("a.md", b"# a", "text/markdown"))],
+            data={"ambito_0": "general"},
+        )
+        self.assertEqual(self.enqueue.await_args.kwargs["comuna"], "Recoleta")
+
+    def test_fuente_opcional_viaja_al_job(self):
+        self.client.post(
+            "/admin/documentos/subir",
+            files=[
+                ("archivos", ("a.pdf", b"%PDF", "application/pdf")),
+                ("archivos", ("b.md", b"# b", "text/markdown")),
+            ],
+            data={"fuente_0": "Ordenanza de patentes", "fuente_url_0": "https://muni.cl/ordenanza.pdf"},
+        )
+        primero, segundo = (c.kwargs for c in self.enqueue.await_args_list)
+        self.assertEqual(primero["source"], "Ordenanza de patentes")
+        self.assertEqual(primero["source_url"], "https://muni.cl/ordenanza.pdf")
+        self.assertIsNone(segundo["source"])
+        self.assertIsNone(segundo["source_url"])
+
+    def test_url_de_fuente_invalida_rechaza_solo_ese_archivo(self):
+        self.client.post(
+            "/admin/documentos/subir",
+            files=[
+                ("archivos", ("a.md", b"# a", "text/markdown")),
+                ("archivos", ("b.md", b"# b", "text/markdown")),
+            ],
+            data={"fuente_url_0": "javascript:alert(1)"},
+        )
+        self.assertEqual([c.kwargs["file_name"] for c in self.enqueue.await_args_list], ["b.md"])
+        self.assertTrue(any("URL" in d for d in self._flash()["details"]))
+
+    def test_municipio_ve_documentos_nacionales_sin_eliminar(self):
+        nacional = {
+            "id": "job-n", "file_name": "inicio_sii.md", "comuna": "general",
+            "rubros": ["general"], "vigencia_hasta": None, "status": "done",
+        }
+        with patch.object(admin, "list_active_documents", lambda *a, **k: [nacional, dict(nacional, id="job-viejo")]):
+            page = self.client.get("/admin/documentos").text
+
+        tabla = page.split("Documentos nacionales (FinancIAl)")[1]
+        self.assertEqual(tabla.count("inicio_sii.md"), 1)  # re-subida: solo el más reciente
+        self.assertNotIn("Eliminar", tabla)
+        self.assertNotIn("ambitos", page)  # el selector de ámbito es solo del equipo
+
+
+EQUIPO = {"comuna": "general", "nombre": "Equipo FinancIAl", "rol": "equipo"}
+
+
+class EquipoDocumentosTests(unittest.TestCase):
+    def setUp(self):
+        self.redis = FakeRedis()
+        app = FastAPI()
+        app.state.redis = self.redis
+        app.include_router(admin.router)
+        self.client = TestClient(app, follow_redirects=False)
+        self.client.cookies.set("financial_admin_session", "sesion-equipo")
+
+        self.session_mock = AsyncMock(return_value=EQUIPO)
+        self.list_recent = unittest.mock.MagicMock(return_value=[])
+        for target, new in (
+            ("get_admin_session_account", self.session_mock),
+            ("list_recent_jobs", self.list_recent),
+            ("list_active_documents", lambda *a, **k: []),
+        ):
+            patcher = patch.object(admin, target, new)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self.enqueue = AsyncMock(return_value="job-id")
+        patcher = patch.object(admin, "enqueue_document_ingestion", self.enqueue)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_equipo_elige_ambito_por_archivo(self):
+        self.client.post(
+            "/admin/documentos/subir",
+            files=[
+                ("archivos", ("nacional.md", b"# a", "text/markdown")),
+                ("archivos", ("bosque.md", b"# b", "text/markdown")),
+            ],
+            data={"ambito_0": "general", "ambito_1": "El Bosque"},
+        )
+        self.assertEqual([c.kwargs["comuna"] for c in self.enqueue.await_args_list], ["general", "El Bosque"])
+        self.assertEqual(self.enqueue.await_args.kwargs["uploaded_by"], "Equipo FinancIAl")
+
+    def test_ambito_fuera_de_la_lista_se_rechaza(self):
+        self.client.post(
+            "/admin/documentos/subir",
+            files=[("archivos", ("a.md", b"# a", "text/markdown"))],
+            data={"ambito_0": "Providencia"},
+        )
+        self.enqueue.assert_not_awaited()
+        self.assertEqual(json.loads(self.redis.data["admin_flash:sesion-equipo"])["kind"], "error")
+
+    def test_rutas_de_documentos_habilitan_al_equipo(self):
+        self.client.get("/admin/documentos")
+        self.assertTrue(self.session_mock.await_args.kwargs.get("allow_equipo"))
+
+    def test_pagina_muestra_selector_e_historial_de_todas_las_comunas(self):
+        page = self.client.get("/admin/documentos").text
+        self.list_recent.assert_called_once_with(None, limit=20)
+        self.assertIn("Nacional (todas las comunas)", page)
+        self.assertIn("<th>Ámbito</th>", page)
+        self.assertNotIn("Documentos nacionales (FinancIAl)", page)
+        self.assertNotIn('href="/admin/emprendedores"', page)
+
+    def test_equipo_consulta_y_elimina_jobs_de_cualquier_comuna(self):
+        job = {"id": "job-1", "file_name": "patentes.md", "comuna": "El Bosque", "status": "done"}
+        with patch.object(admin, "get_ingestion_job", return_value=job), \
+             patch.object(admin, "delete_ingested_document") as delete_mock:
+            estado = self.client.get("/admin/documentos/estado/job-1")
+            self.client.post("/admin/documentos/job-1/eliminar")
+
+        self.assertEqual(estado.status_code, 200)
+        delete_mock.assert_called_once_with("patentes.md", "El Bosque", "job-1", "Equipo FinancIAl")
+
+    def test_dashboard_redirige_al_equipo_a_documentos(self):
+        response = self.client.get("/admin")
+        self.assertEqual(response.headers["location"], "/admin/documentos")
+
+
+class MunicipioPermisosTests(unittest.TestCase):
+    def setUp(self):
+        app = FastAPI()
+        app.state.redis = FakeRedis()
+        app.include_router(admin.router)
+        self.client = TestClient(app, follow_redirects=False)
+        self.client.cookies.set("financial_admin_session", "sesion-1")
+        patcher = patch.object(admin, "get_admin_session_account", AsyncMock(return_value=ACCOUNT))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_municipio_no_ve_jobs_nacionales(self):
+        job = {"id": "job-n", "file_name": "inicio_sii.md", "comuna": "general", "status": "done"}
+        with patch.object(admin, "get_ingestion_job", return_value=job), \
+             patch.object(admin, "delete_ingested_document") as delete_mock:
+            estado = self.client.get("/admin/documentos/estado/job-n")
+            eliminar = self.client.post("/admin/documentos/job-n/eliminar")
+
+        self.assertEqual(estado.status_code, 404)
+        self.assertEqual(eliminar.status_code, 404)
+        delete_mock.assert_not_called()
+
+
+class AdminAuthEquipoTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cuenta_del_equipo_solo_con_allow_equipo(self):
+        from services import admin_auth
+
+        redis = FakeRedis()
+        cuentas = {
+            "financial": {"password": "x", "comuna": "general", "nombre": "Equipo FinancIAl", "rol": "equipo"},
+            "recoleta": {"password": "y", "comuna": "Recoleta", "nombre": "InnovaRecoleta", "rol": "municipio"},
+        }
+        with patch.object(admin_auth, "ADMIN_ACCOUNTS", cuentas):
+            sesion_equipo = await admin_auth.create_admin_session(redis, "financial")
+            sesion_muni = await admin_auth.create_admin_session(redis, "recoleta")
+
+            self.assertIsNone(await admin_auth.get_admin_session_account(redis, sesion_equipo))
+            self.assertEqual(
+                (await admin_auth.get_admin_session_account(redis, sesion_equipo, allow_equipo=True))["comuna"],
+                "general",
+            )
+            self.assertEqual((await admin_auth.get_admin_session_account(redis, sesion_muni))["comuna"], "Recoleta")
+            self.assertEqual(admin_auth.comunas_municipales(), ["Recoleta"])
+
+    def test_login_del_equipo_redirige_a_documentos(self):
+        app = FastAPI()
+        app.state.redis = FakeRedis()
+        app.include_router(admin.router)
+        client = TestClient(app, follow_redirects=False)
+        with patch.object(admin, "authenticate_admin", return_value=EQUIPO):
+            response = client.post("/admin/login", data={"username": "financial", "password": "x"})
+        self.assertEqual(response.headers["location"], "/admin/documentos")
 
 
 if __name__ == "__main__":

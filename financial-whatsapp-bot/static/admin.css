@@ -629,13 +629,34 @@ select:focus-visible {
     background-color: color-mix(in srgb, var(--emerald) 30%, transparent);
 }
 
+/* Ámbito (solo cuenta del equipo FinancIAl) y fuente opcional. */
+.admin-upload-form select,
+.admin-upload-form input[type="text"],
+.admin-upload-form input[type="url"] {
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--petrol) 30%, transparent);
+    background: color-mix(in srgb, var(--petrol) 5%, white);
+    border-radius: 12px;
+    font-size: 16px;
+    font-family: inherit;
+    font-weight: 400;
+    color: var(--petrol);
+    transition: border-color 300ms, box-shadow 300ms;
+}
+
 .admin-upload-form input[type="file"]:hover,
-.admin-upload-form input[type="date"]:hover {
+.admin-upload-form input[type="date"]:hover,
+.admin-upload-form select:hover,
+.admin-upload-form input[type="text"]:hover,
+.admin-upload-form input[type="url"]:hover {
     border-color: color-mix(in srgb, var(--emerald) 60%, transparent);
 }
 
 .admin-upload-form input[type="file"]:focus,
-.admin-upload-form input[type="date"]:focus {
+.admin-upload-form input[type="date"]:focus,
+.admin-upload-form select:focus,
+.admin-upload-form input[type="text"]:focus,
+.admin-upload-form input[type="url"]:focus {
     outline: none;
     border-color: var(--emerald);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--emerald) 90%, transparent);

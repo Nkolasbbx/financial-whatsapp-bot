@@ -32,6 +32,26 @@ class ChunkingTests(unittest.TestCase):
         self.assertEqual(items[0]["child_index"], 0)
 
 
+class ExtractMarkdownFrontmatterTests(unittest.TestCase):
+    def test_parsea_pares_y_listas(self):
+        meta, content = ingestion.extract_markdown_frontmatter(
+            '---\ntitle: "Patentes"\njurisdiction: CL-RM-EL_BOSQUE\n'
+            'source_urls:\n  - "https://a.cl/x"\n  - https://b.cl/y\n'
+            'source_publication_date: null\n---\n# Cuerpo\n\ntexto'
+        )
+        self.assertEqual(meta["title"], "Patentes")
+        self.assertEqual(meta["jurisdiction"], "CL-RM-EL_BOSQUE")
+        self.assertEqual(meta["source_urls"], ["https://a.cl/x", "https://b.cl/y"])
+        self.assertEqual(content, "# Cuerpo\n\ntexto")
+
+    def test_sin_frontmatter_devuelve_el_texto_igual(self):
+        self.assertEqual(ingestion.extract_markdown_frontmatter("# Hola"), ({}, "# Hola"))
+
+    def test_frontmatter_sin_cierre_no_se_toca(self):
+        texto = "---\ntitle: x\n# Hola"
+        self.assertEqual(ingestion.extract_markdown_frontmatter(texto), ({}, texto))
+
+
 class ProcessDocumentToRowsTests(unittest.TestCase):
     def setUp(self):
         patcher = patch.object(ingestion, "INGESTION_ENABLE_CONTEXTUAL", False)

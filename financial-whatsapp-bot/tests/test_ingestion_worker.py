@@ -38,7 +38,7 @@ class ProcessDocumentIngestionTaskTests(unittest.IsolatedAsyncioTestCase):
         extract_mock.assert_not_called()  # no es PDF, no debe intentar extraer
         rows_mock.assert_called_once()
         embed_mock.assert_awaited_once_with(["texto a embeber"], prefix="passage")
-        upsert_mock.assert_called_once_with("doc.md", rows)
+        upsert_mock.assert_called_once_with("doc.md", "Recoleta", rows)
 
         status_calls = [c.kwargs for c in update_mock.call_args_list]
         self.assertEqual(status_calls[0], {"status": "processing"})
@@ -83,6 +83,61 @@ class ProcessDocumentIngestionTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final_call["status"], "done")
         self.assertTrue(final_call["review_flag"])
         self.assertEqual(final_call["review_details"], {"flagged_pages": [{"page": 3}]})
+
+    async def _run_markdown(self, raw: bytes, comuna: str = "general", **kwargs):
+        self.fake_supabase_admin.storage.from_.return_value.download.return_value = raw
+        rows = [{"content": "p", "embed_text": "child", "meta": {}}]
+        with patch.object(worker, "process_document_to_rows", return_value=rows) as rows_mock, \
+             patch.object(worker, "embed_batch_remoto", AsyncMock(return_value=[[0.1]])), \
+             patch.object(worker, "upsert_document", return_value=1), \
+             patch.object(worker, "update_ingestion_job") as update_mock:
+            await worker.process_document_ingestion_task(
+                {},
+                job_id="job-3",
+                storage_path="hash/sii.md",
+                file_name="sii.md",
+                content_type="text/markdown",
+                comuna=comuna,
+                rubros=["general"],
+                vigencia_desde=None,
+                vigencia_hasta=None,
+                content_hash="hash",
+                uploaded_by="Equipo FinancIAl",
+                **kwargs,
+            )
+        _file_name, text, _file_type, extra_meta = rows_mock.call_args.args
+        return text, extra_meta, update_mock.call_args_list[-1].kwargs
+
+    _MD_CON_FRONTMATTER = (
+        b'---\ntitle: "Inicio de actividades"\njurisdiction: CL\nreviewed_at: "2026-10-15"\n'
+        b'source_urls:\n  - "https://www.sii.cl/a"\n  - "https://www.sii.cl/b"\n---\n# Inicio\n\ntexto'
+    )
+
+    async def test_markdown_frontmatter_aporta_la_fuente_y_no_se_embebe(self):
+        text, meta, final = await self._run_markdown(self._MD_CON_FRONTMATTER)
+
+        self.assertTrue(text.startswith("# Inicio"))
+        self.assertNotIn("source_urls", text)
+        self.assertEqual(meta["source"], "Inicio de actividades")
+        self.assertEqual(meta["source_url"], "https://www.sii.cl/a")
+        self.assertEqual(meta["source_date"], "2026-10-15")
+        self.assertEqual(meta["jurisdiction"], "CL")
+        self.assertFalse(final["review_flag"])
+
+    async def test_fuente_del_panel_tiene_prioridad_sobre_el_frontmatter(self):
+        _text, meta, _final = await self._run_markdown(
+            self._MD_CON_FRONTMATTER, source="Circular SII", source_url="https://www.sii.cl/circular"
+        )
+        self.assertEqual(meta["source"], "Circular SII")
+        self.assertEqual(meta["source_url"], "https://www.sii.cl/circular")
+
+    async def test_documento_nacional_cargado_como_comuna_queda_para_revision(self):
+        _text, meta, final = await self._run_markdown(self._MD_CON_FRONTMATTER, comuna="Recoleta")
+
+        self.assertTrue(meta["review_flag"])
+        self.assertTrue(final["review_flag"])
+        self.assertIn("Recoleta", final["review_details"]["jurisdiction_warning"])
+        self.assertEqual(final["status"], "done")  # no bloquea la ingesta
 
     async def test_failure_marks_job_failed_reraises_and_still_cleans_storage(self):
         with patch.object(worker, "process_document_to_rows", side_effect=RuntimeError("boom")), \

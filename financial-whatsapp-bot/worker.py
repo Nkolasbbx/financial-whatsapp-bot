@@ -5,9 +5,14 @@ import os
 from arq import cron
 
 import dependencies
-from config import ARQ_QUEUE_NAME, INGESTION_JOB_TIMEOUT_SECONDS
+from config import ADMIN_COMUNA_GENERAL, ARQ_QUEUE_NAME, INGESTION_JOB_TIMEOUT_SECONDS
 from core.ia import process_ai_and_send
-from core.ingestion import embed_batch_remoto, extract_pdf_to_markdown, process_document_to_rows
+from core.ingestion import (
+    embed_batch_remoto,
+    extract_markdown_frontmatter,
+    extract_pdf_to_markdown,
+    process_document_to_rows,
+)
 from db.documents import get_stale_ingestion_jobs, update_ingestion_job, upsert_document
 from phone_lock import release_phone_lock
 from redis_settings import get_redis_settings
@@ -169,6 +174,8 @@ async def process_document_ingestion_task(
     vigencia_hasta: str | None,
     content_hash: str,
     uploaded_by: str,
+    source: str | None = None,
+    source_url: str | None = None,
 ):
     """Job de arq (HdU15): descarga el documento subido desde el panel admin,
     lo convierte a filas parent-child con embeddings, y las inserta de forma
@@ -189,6 +196,7 @@ async def process_document_ingestion_task(
         raw_bytes = dependencies.supabase_admin.storage.from_(STORAGE_BUCKET).download(storage_path)
 
         flagged_pages: list[dict] = []
+        frontmatter: dict = {}
         if file_name.lower().endswith(".pdf"):
             tmp_path = f"/tmp/ingestion_{job_id}.pdf"
             with open(tmp_path, "wb") as f:
@@ -200,8 +208,18 @@ async def process_document_ingestion_task(
                     os.remove(tmp_path)
             file_type = "pdf"
         else:
-            text = raw_bytes.decode("utf-8")
+            # El frontmatter (title, source_urls, jurisdiction...) se separa
+            # del cuerpo: aporta la fuente de la cita y no debe embeberse.
+            frontmatter, text = extract_markdown_frontmatter(raw_bytes.decode("utf-8"))
             file_type = "markdown"
+
+        fuente = _fuente_del_documento(source, source_url, frontmatter, uploaded_by)
+        jurisdiction_warning = _aviso_jurisdiccion(frontmatter.get("jurisdiction"), comuna)
+        review_details = {}
+        if flagged_pages:
+            review_details["flagged_pages"] = flagged_pages
+        if jurisdiction_warning:
+            review_details["jurisdiction_warning"] = jurisdiction_warning
 
         extra_meta = {
             "comuna": comuna,
@@ -211,11 +229,11 @@ async def process_document_ingestion_task(
             "content_hash": content_hash,
             "uploaded_by": uploaded_by,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
-            "source": f"Panel admin — {uploaded_by}",
-            "source_url": "",
-            "source_date": datetime.now(timezone.utc).date().isoformat(),
-            "review_flag": bool(flagged_pages),
+            **fuente,
+            "review_flag": bool(review_details),
         }
+        if frontmatter.get("jurisdiction"):
+            extra_meta["jurisdiction"] = frontmatter["jurisdiction"]
 
         rows = await asyncio.to_thread(process_document_to_rows, file_name, text, file_type, extra_meta)
 
@@ -225,14 +243,14 @@ async def process_document_ingestion_task(
             for row, vector in zip(rows, vectors):
                 row["embedding"] = vector
 
-        chunks_written = upsert_document(file_name, rows)
+        chunks_written = upsert_document(file_name, comuna, rows)
 
         update_ingestion_job(
             job_id,
             status="done",
             chunks_written=chunks_written,
-            review_flag=bool(flagged_pages),
-            review_details={"flagged_pages": flagged_pages} if flagged_pages else None,
+            review_flag=bool(review_details),
+            review_details=review_details or None,
         )
         logger.info("Ingesta completada: %s -> %d chunks (job %s)", file_name, chunks_written, job_id)
     except Exception as exc:
@@ -249,6 +267,46 @@ async def process_document_ingestion_task(
             dependencies.supabase_admin.storage.from_(STORAGE_BUCKET).remove([storage_path])
         except Exception:
             logger.warning("No se pudo limpiar el objeto temporal de Storage: %s", storage_path)
+
+
+def _fuente_del_documento(
+    source: str | None,
+    source_url: str | None,
+    frontmatter: dict,
+    uploaded_by: str,
+) -> dict:
+    """Fuente que se citará al usuario. Lo ingresado en el panel manda; si
+    viene vacío se usa el frontmatter del .md, y si tampoco hay, el valor
+    genérico de antes ("Panel admin — <cuenta>", sin URL, fecha de hoy)."""
+    from datetime import datetime, timezone
+
+    urls = frontmatter.get("source_urls")
+    url_frontmatter = urls[0] if isinstance(urls, list) and urls else ""
+    reviewed_at = frontmatter.get("reviewed_at")
+    return {
+        "source": (source or "").strip() or frontmatter.get("title") or f"Panel admin — {uploaded_by}",
+        "source_url": (source_url or "").strip() or url_frontmatter,
+        "source_date": (
+            reviewed_at
+            if isinstance(reviewed_at, str) and reviewed_at
+            else datetime.now(timezone.utc).date().isoformat()
+        ),
+    }
+
+
+def _aviso_jurisdiccion(jurisdiction: str | None, comuna: str) -> str | None:
+    """Detecta un ámbito elegido en el panel que no calza con la jurisdicción
+    declarada en el frontmatter (ej. un documento nacional "CL" subido como
+    Recoleta). No bloquea la ingesta: queda marcado para revisión."""
+    if not jurisdiction:
+        return None
+    es_nacional = jurisdiction.strip().upper() == "CL"
+    es_general = comuna.strip().lower() == ADMIN_COMUNA_GENERAL
+    if es_nacional and not es_general:
+        return f"El documento declara jurisdicción nacional (CL) pero se cargó como {comuna}."
+    if not es_nacional and es_general:
+        return f"El documento declara jurisdicción {jurisdiction} pero se cargó como nacional."
+    return None
 
 
 STALE_INGESTION_JOB_MINUTES = 60

@@ -13,7 +13,7 @@ import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
 
-from config import ADMIN_ACCOUNTS
+from config import ADMIN_ACCOUNTS, ADMIN_ROL_EQUIPO
 from db.expert_requests import (
     add_expert_message,
     create_expert_request,
@@ -99,7 +99,11 @@ def topic_from_text(message: str) -> str | None:
 
 
 def _served_comunas() -> set[str]:
-    return {account["comuna"].strip().lower() for account in ADMIN_ACCOUNTS.values()}
+    return {
+        account["comuna"].strip().lower()
+        for account in ADMIN_ACCOUNTS.values()
+        if account.get("rol") != ADMIN_ROL_EQUIPO
+    }
 
 
 _NEGATIONS = ("no necesito", "no quiero", "no requiero", "ya no necesito", "ya no quiero")

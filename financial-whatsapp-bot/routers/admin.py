@@ -24,15 +24,22 @@ from fastapi import APIRouter, Cookie, Form, Request, Response
 from core.onboarding import RUBRO_DISPLAY, RUBROS_ACTIVOS
 from core.roadmaps import get_pending_milestone
 from services.admin_insights import get_admin_insights
-from db.documents import delete_ingested_document, get_ingestion_job, list_recent_jobs
+from db.documents import (
+    delete_ingested_document,
+    get_ingestion_job,
+    list_active_documents,
+    list_recent_jobs,
+)
 from db.users import get_users_by_comuna
 from services.admin_auth import (
     authenticate_admin,
+    comunas_municipales,
     create_admin_session,
     destroy_admin_session,
+    es_equipo,
     get_admin_session_account,
 )
-from config import INGESTION_MAX_BATCH_FILES, INGESTION_MAX_BATCH_MB
+from config import ADMIN_COMUNA_GENERAL, INGESTION_MAX_BATCH_FILES, INGESTION_MAX_BATCH_MB
 from services.ingestion_jobs import enqueue_document_ingestion, validate_batch, validate_upload
 
 logger = logging.getLogger("financial")
@@ -52,13 +59,20 @@ def _pagina_base(
 ) -> str:
     cuenta_html = ""
     if cuenta:
-        cuenta_html = f"""
-        <nav class="admin-nav" aria-label="Cuenta">
-            <a href="/admin">Panel</a>
+        # El equipo FinancIAl solo usa Documentos; el resto del panel es
+        # por comuna y lo rechaza (ver services/admin_auth.py).
+        enlaces = (
+            '<a href="/admin/documentos">Documentos</a>'
+            if es_equipo(cuenta)
+            else """<a href="/admin">Panel</a>
             <a href="/admin/emprendedores">Emprendedores</a>
             <a href="/admin/documentos">Documentos</a>
             <a href="/admin/solicitudes">Solicitudes</a>
-            <a href="/admin/convocatorias">Convocatorias</a>
+            <a href="/admin/convocatorias">Convocatorias</a>"""
+        )
+        cuenta_html = f"""
+        <nav class="admin-nav" aria-label="Cuenta">
+            {enlaces}
             <span class="admin-nav-session">
                 <span class="admin-nav-account">{html.escape(cuenta.get("nombre", ""))}</span>
                 <a href="/admin/logout" class="admin-nav-logout">Cerrar sesión</a>
@@ -145,7 +159,8 @@ async def login(
     redis = request.app.state.redis
     session_id = await create_admin_session(redis, username.strip().lower())
 
-    response = Response(status_code=303, headers={"Location": "/admin"})
+    destino = "/admin/documentos" if es_equipo(account) else "/admin"
+    response = Response(status_code=303, headers={"Location": destino})
     response.set_cookie(
         _SESSION_COOKIE,
         session_id,
@@ -175,10 +190,12 @@ async def dashboard(
     financial_admin_session: str | None = Cookie(default=None),
 ):
     redis = request.app.state.redis
-    account = await get_admin_session_account(redis, financial_admin_session)
+    account = await get_admin_session_account(redis, financial_admin_session, allow_equipo=True)
 
     if not account:
         return Response(status_code=303, headers={"Location": "/admin/login"})
+    if es_equipo(account):
+        return Response(status_code=303, headers={"Location": "/admin/documentos"})
 
     comuna = account["comuna"]
     usuarios = get_users_by_comuna(comuna)
@@ -426,7 +443,13 @@ _ESTADO_LABELS = {
 }
 
 
-def _fila_ingestion_job(job: dict) -> str:
+def _ambito_label(comuna: str | None) -> str:
+    if (comuna or "").lower() == ADMIN_COMUNA_GENERAL:
+        return "Nacional (todas las comunas)"
+    return comuna or "—"
+
+
+def _fila_ingestion_job(job: dict, mostrar_ambito: bool = False) -> str:
     label, badge_clase = _ESTADO_LABELS.get(job["status"], (job["status"], "en-cola"))
     rubros = ", ".join(RUBRO_DISPLAY.get(r, r) for r in (job.get("rubros") or [])) or "—"
     vigencia = job.get("vigencia_hasta")
@@ -441,7 +464,13 @@ def _fila_ingestion_job(job: dict) -> str:
     elif job["status"] == "failed" and job.get("error_message"):
         detalle = f'<div class="subtitulo">{html.escape(job["error_message"][:200])}</div>'
     elif job.get("review_flag"):
-        detalle = '<div class="subtitulo">⚠️ Revisar: puede haber contenido no legible (tablas/imágenes).</div>'
+        review = job.get("review_details") if isinstance(job.get("review_details"), dict) else {}
+        avisos = []
+        if review.get("jurisdiction_warning"):
+            avisos.append(f"⚠️ Revisar ámbito: {html.escape(review['jurisdiction_warning'])}")
+        if review.get("flagged_pages") or not avisos:
+            avisos.append("⚠️ Revisar: puede haber contenido no legible (tablas/imágenes).")
+        detalle = "".join(f'<div class="subtitulo">{aviso}</div>' for aviso in avisos)
 
     if job["status"] == "done" and not job.get("deleted_at"):
         acciones = f'''<form method="post" action="/admin/documentos/{job["id"]}/eliminar"
@@ -452,8 +481,11 @@ def _fila_ingestion_job(job: dict) -> str:
     pendiente = job["status"] in ("queued", "processing") and not job.get("deleted_at")
     data_attrs = f' data-job-id="{html.escape(str(job["id"]))}"' if pendiente else ""
 
+    ambito = f"<td>{html.escape(_ambito_label(job.get('comuna')))}</td>" if mostrar_ambito else ""
+
     return f"""<tr{data_attrs}>
         <td>{html.escape(job["file_name"])}{detalle}</td>
+        {ambito}
         <td>{html.escape(rubros)}</td>
         <td>{html.escape(vigencia_txt)}</td>
         <td class="js-estado"><span class="admin-badge {badge_clase}">{html.escape(label)}</span></td>
@@ -496,22 +528,101 @@ def _flash_html(flash: dict | None) -> str:
     return f'<div class="admin-flash {kind}" role="status"><strong>{html.escape(flash.get("title", ""))}</strong>{lista}</div>'
 
 
+def _ambitos_permitidos(account: dict) -> list[str]:
+    """Comunas con las que una cuenta puede etiquetar documentos: el equipo
+    FinancIAl elige entre nacional y cualquier comuna; un municipio, solo
+    la suya (nunca desde el formulario)."""
+    if es_equipo(account):
+        return [ADMIN_COMUNA_GENERAL] + comunas_municipales()
+    return [account["comuna"]]
+
+
+def _puede_gestionar(account: dict, job: dict | None) -> bool:
+    return bool(job) and (es_equipo(account) or job["comuna"] == account["comuna"])
+
+
+def _fila_documento_nacional(job: dict) -> str:
+    rubros = ", ".join(RUBRO_DISPLAY.get(r, r) for r in (job.get("rubros") or [])) or "—"
+    vigencia = job.get("vigencia_hasta")
+    vigencia_txt = f"hasta {vigencia}" if vigencia else "sin vencimiento"
+    return f"""<tr>
+        <td>{html.escape(job["file_name"])}</td>
+        <td>{html.escape(rubros)}</td>
+        <td>{html.escape(vigencia_txt)}</td>
+    </tr>"""
+
+
+def _tabla_documentos_nacionales() -> str:
+    """Documentos nacionales que cargó el equipo FinancIAl, de solo lectura
+    para los municipios: les muestra qué no necesitan subir ellos."""
+    vistos: set[str] = set()
+    jobs = []
+    # Una re-subida deja más de un job "done" para el mismo archivo: se
+    # muestra solo el más reciente (vienen ordenados por fecha descendente).
+    for job in list_active_documents(ADMIN_COMUNA_GENERAL):
+        if job["file_name"] not in vistos:
+            vistos.add(job["file_name"])
+            jobs.append(job)
+    filas = "\n".join(_fila_documento_nacional(job) for job in jobs) or (
+        '<tr><td colspan="3">El equipo FinancIAl todavía no ha cargado documentos nacionales.</td></tr>'
+    )
+    return f"""
+    <div class="admin-card">
+        <h2>Documentos nacionales (FinancIAl)</h2>
+        <p class="subtitulo">
+            Normativa de alcance nacional (SII, patente municipal, autorización
+            sanitaria…) que el asistente ya usa para todas las comunas. La
+            mantiene el equipo FinancIAl: no necesitas subirla.
+        </p>
+        <table class="admin-table">
+            <thead><tr><th>Documento</th><th>Rubros</th><th>Vigencia</th></tr></thead>
+            <tbody>
+                {filas}
+            </tbody>
+        </table>
+    </div>
+    """
+
+
 def _pagina_documentos(account: dict, flash: dict | None = None) -> str:
+    equipo = es_equipo(account)
     rubros_config = [{"value": "general", "label": "General (todos los rubros)"}] + [
         {"value": rubro, "label": RUBRO_DISPLAY.get(rubro, rubro)} for rubro in RUBROS_ACTIVOS
     ]
-    config_js = json.dumps(
-        {
-            "rubros": rubros_config,
-            "maxFiles": INGESTION_MAX_BATCH_FILES,
-            "maxBatchMb": INGESTION_MAX_BATCH_MB,
-            "estados": {k: list(v) for k, v in _ESTADO_LABELS.items()},
-        }
+    config = {
+        "rubros": rubros_config,
+        "maxFiles": INGESTION_MAX_BATCH_FILES,
+        "maxBatchMb": INGESTION_MAX_BATCH_MB,
+        "estados": {k: list(v) for k, v in _ESTADO_LABELS.items()},
+    }
+    if equipo:
+        config["ambitos"] = [
+            {"value": comuna, "label": _ambito_label(comuna)} for comuna in _ambitos_permitidos(account)
+        ]
+    config_js = json.dumps(config)
+
+    jobs = list_recent_jobs(None if equipo else account["comuna"], limit=20)
+    columnas = 7 if equipo else 6
+    filas = "\n".join(_fila_ingestion_job(job, mostrar_ambito=equipo) for job in jobs) or (
+        f'<tr><td colspan="{columnas}">Todavía no se han subido documentos.</td></tr>'
     )
-    jobs = list_recent_jobs(account["comuna"], limit=20)
-    filas = "\n".join(_fila_ingestion_job(job) for job in jobs) or (
-        '<tr><td colspan="6">Todavía no se han subido documentos.</td></tr>'
-    )
+
+    if equipo:
+        intro = f"""
+            Elige el ámbito de cada archivo: <strong>Nacional</strong> para
+            normativa que aplica a todas las comunas, o una comuna específica.
+            Puedes subir hasta {INGESTION_MAX_BATCH_FILES} archivos
+            ({INGESTION_MAX_BATCH_MB} MB en total)."""
+        titulo_historial = "Últimas subidas (todas las comunas)"
+        cabecera_ambito = "<th>Ámbito</th>"
+    else:
+        intro = f"""
+            Se etiquetan automáticamente con la comuna de tu cuenta
+            ({html.escape(account["comuna"])}). Puedes subir hasta
+            {INGESTION_MAX_BATCH_FILES} archivos ({INGESTION_MAX_BATCH_MB} MB en
+            total)."""
+        titulo_historial = f"Últimas subidas de {html.escape(account['comuna'])}"
+        cabecera_ambito = ""
 
     contenido = f"""
     {_flash_html(flash)}
@@ -519,11 +630,9 @@ def _pagina_documentos(account: dict, flash: dict | None = None) -> str:
     <div class="admin-card">
         <h2>Subir documentos</h2>
         <p class="subtitulo">
-            Se etiquetan automáticamente con la comuna de tu cuenta
-            ({html.escape(account["comuna"])}). Puedes subir hasta
-            {INGESTION_MAX_BATCH_FILES} archivos ({INGESTION_MAX_BATCH_MB} MB en
-            total) y definir rubros y vigencia por cada uno. El procesamiento
-            ocurre en segundo plano: el estado se actualiza aquí mismo.
+            {intro} Define rubros, vigencia y, si quieres, la fuente que se
+            citará al usuario. El procesamiento ocurre en segundo plano: el
+            estado se actualiza aquí mismo.
         </p>
         <form id="upload-form" class="admin-upload-form" method="post" action="/admin/documentos/subir"
               enctype="multipart/form-data" data-config="{html.escape(config_js, quote=True)}">
@@ -538,16 +647,17 @@ def _pagina_documentos(account: dict, flash: dict | None = None) -> str:
     </div>
 
     <div class="admin-card">
-        <h2>Últimas subidas de {html.escape(account["comuna"])}</h2>
+        <h2>{titulo_historial}</h2>
         <table class="admin-table">
             <thead>
-                <tr><th>Documento</th><th>Rubros</th><th>Vigencia</th><th>Estado</th><th>Chunks</th><th>Acciones</th></tr>
+                <tr><th>Documento</th>{cabecera_ambito}<th>Rubros</th><th>Vigencia</th><th>Estado</th><th>Chunks</th><th>Acciones</th></tr>
             </thead>
             <tbody>
                 {filas}
             </tbody>
         </table>
     </div>
+    {"" if equipo else _tabla_documentos_nacionales()}
     <script src="/static/admin_documentos.js"></script>
     """
     return _pagina_base("Documentos", contenido, account)
@@ -559,7 +669,7 @@ async def documentos_form(
     financial_admin_session: str | None = Cookie(default=None),
 ):
     redis = request.app.state.redis
-    account = await get_admin_session_account(redis, financial_admin_session)
+    account = await get_admin_session_account(redis, financial_admin_session, allow_equipo=True)
     if not account:
         return Response(status_code=303, headers={"Location": "/admin/login"})
 
@@ -575,6 +685,22 @@ def _parse_vigencia(valor: str | None) -> str | None:
     return valor.strip()
 
 
+_MAX_FUENTE_CHARS = 200
+_MAX_URL_CHARS = 500
+
+
+def _parse_fuente(nombre: str | None, url: str | None) -> tuple[str | None, str | None]:
+    """Valida la fuente opcional de un archivo. Lanza ValueError con el
+    motivo si la URL no es http(s) o algún campo es demasiado largo."""
+    nombre = (nombre or "").strip() or None
+    url = (url or "").strip() or None
+    if nombre and len(nombre) > _MAX_FUENTE_CHARS:
+        raise ValueError(f"el nombre de la fuente supera {_MAX_FUENTE_CHARS} caracteres.")
+    if url and (len(url) > _MAX_URL_CHARS or not url.lower().startswith(("http://", "https://"))):
+        raise ValueError("la URL de la fuente debe comenzar con http:// o https://.")
+    return nombre, url
+
+
 def _redirect_documentos() -> Response:
     return Response(status_code=303, headers={"Location": "/admin/documentos"})
 
@@ -585,10 +711,11 @@ async def subir_documento(
     financial_admin_session: str | None = Cookie(default=None),
 ):
     redis = request.app.state.redis
-    account = await get_admin_session_account(redis, financial_admin_session)
+    account = await get_admin_session_account(redis, financial_admin_session, allow_equipo=True)
     if not account:
         return Response(status_code=303, headers={"Location": "/admin/login"})
 
+    ambitos = _ambitos_permitidos(account)
     form = await request.form()
     try:
         # El navegador manda una parte vacía si no se eligió ningún archivo.
@@ -607,13 +734,23 @@ async def subir_documento(
             raw_bytes = await archivo.read()
 
             error = validate_upload(nombre, archivo.content_type, len(raw_bytes))
-            vigencia_desde = vigencia_hasta = None
+            vigencia_desde = vigencia_hasta = fuente = fuente_url = None
+            # Un municipio siempre sube con su comuna, nunca desde el form:
+            # evita etiquetar documentos de otra comuna. Solo el equipo elige.
+            comuna = form.get(f"ambito_{i}") if es_equipo(account) else account["comuna"]
+            if error is None and comuna not in ambitos:
+                error = "elige un ámbito válido para el documento."
             if error is None:
                 try:
                     vigencia_desde = _parse_vigencia(form.get(f"vigencia_desde_{i}"))
                     vigencia_hasta = _parse_vigencia(form.get(f"vigencia_hasta_{i}"))
                 except ValueError:
                     error = "las fechas de vigencia deben tener el formato AAAA-MM-DD."
+            if error is None:
+                try:
+                    fuente, fuente_url = _parse_fuente(form.get(f"fuente_{i}"), form.get(f"fuente_url_{i}"))
+                except ValueError as exc:
+                    error = str(exc)
 
             if error is None:
                 try:
@@ -622,11 +759,13 @@ async def subir_documento(
                         raw_bytes=raw_bytes,
                         file_name=nombre,
                         content_type=archivo.content_type,
-                        comuna=account["comuna"],  # nunca desde el form: evita etiquetar documentos de otra comuna
+                        comuna=comuna,
                         uploaded_by=account.get("nombre", account["comuna"]),
                         rubros=form.getlist(f"rubros_{i}") or ["general"],
                         vigencia_desde=vigencia_desde,
                         vigencia_hasta=vigencia_hasta,
+                        source=fuente,
+                        source_url=fuente_url,
                     )
                 except Exception:
                     logger.exception("No se pudo encolar la ingesta de %s", nombre)
@@ -657,12 +796,12 @@ async def estado_ingesta(
     financial_admin_session: str | None = Cookie(default=None),
 ):
     redis = request.app.state.redis
-    account = await get_admin_session_account(redis, financial_admin_session)
+    account = await get_admin_session_account(redis, financial_admin_session, allow_equipo=True)
     if not account:
         return Response(status_code=401)
 
     job = get_ingestion_job(job_id)
-    if not job or job["comuna"] != account["comuna"]:
+    if not _puede_gestionar(account, job):
         return Response(status_code=404)
 
     return Response(content=json.dumps(job, default=str), media_type="application/json")
@@ -678,12 +817,12 @@ async def eliminar_documento(
     filas de `documents`); el registro de auditoría en `ingestion_jobs`
     queda marcado con deleted_at/deleted_by, no se borra."""
     redis = request.app.state.redis
-    account = await get_admin_session_account(redis, financial_admin_session)
+    account = await get_admin_session_account(redis, financial_admin_session, allow_equipo=True)
     if not account:
         return Response(status_code=303, headers={"Location": "/admin/login"})
 
     job = get_ingestion_job(job_id)
-    if not job or job["comuna"] != account["comuna"]:
+    if not _puede_gestionar(account, job):
         return Response(status_code=404)
 
     if job["status"] != "done" or job.get("deleted_at"):
@@ -694,7 +833,7 @@ async def eliminar_documento(
         return _redirect_documentos()
 
     delete_ingested_document(
-        job["file_name"], job_id, account.get("nombre", account["comuna"])
+        job["file_name"], job["comuna"], job_id, account.get("nombre", account["comuna"])
     )
 
     await _set_flash(redis, financial_admin_session, "ok", f"«{job['file_name']}» fue eliminado del asistente.")

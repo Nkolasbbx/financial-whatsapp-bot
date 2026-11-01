@@ -161,6 +161,171 @@ class ObtenerContextoRagThresholdTests(unittest.IsolatedAsyncioTestCase):
         embedding_mock.assert_not_awaited()
 
 
+class RecordingCursor(FakeCursor):
+    def __init__(self, rows, calls):
+        super().__init__(rows)
+        self._calls = calls
+
+    def execute(self, query, params):
+        self._calls.append((query, params))
+
+
+class RecordingPool(FakePool):
+    def __init__(self, rows):
+        super().__init__(rows)
+        self.calls = []
+
+    def getconn(self):
+        pool = self
+
+        class _Conn:
+            def cursor(self):
+                return RecordingCursor(pool._rows, pool.calls)
+
+        return _Conn()
+
+    def select_params(self):
+        return next(params for query, params in self.calls if "SELECT" in query)
+
+
+def _row(content, distance, **meta):
+    return (content, meta, distance)
+
+
+class ObtenerContextoRagAmbitoTests(unittest.IsolatedAsyncioTestCase):
+    async def _buscar(self, rows, comuna="recoleta", rubro="", message="cuanto cuesta la patente", **kwargs):
+        self.pool = RecordingPool(rows)
+        with (
+            patch.object(dependencies, "db_pool", self.pool),
+            patch.object(ia, "RAG_SIMILARITY_THRESHOLD", 0.6),
+            patch.object(ia, "RAG_TOP_PARENTS", 3),
+        ):
+            return await ia.obtener_contexto_rag(
+                message, comuna, query_vector=[0.1], rubro_usuario=rubro, **kwargs
+            )
+
+    async def test_comuna_soportada_busca_en_la_comuna_y_en_lo_nacional(self):
+        await self._buscar([])
+        _vector, ambitos, limite = self.pool.select_params()
+        self.assertEqual(ambitos, ["recoleta", "general"])
+        self.assertEqual(limite, ia.RAG_CANDIDATES)
+        self.assertTrue(any("hnsw.ef_search" in query for query, _ in self.pool.calls))
+
+    async def test_comuna_no_soportada_entrega_lo_nacional_con_aviso(self):
+        rows = [_row("Inicio de actividades en el SII", 0.1, file_name="sii.md", comuna="general")]
+        resultado = await self._buscar(rows, comuna="maipu")
+
+        self.assertEqual(self.pool.select_params()[1], ["general"])
+        self.assertTrue(resultado["contexto"].startswith("AVISO: no hay información municipal de la comuna 'maipu'"))
+        self.assertIn("Inicio de actividades en el SII", resultado["contexto"])
+        self.assertEqual(len(resultado["fuentes"]), 1)
+
+    async def test_perfil_sin_comuna_tambien_busca_lo_nacional(self):
+        await self._buscar([], comuna="")
+        self.assertEqual(self.pool.select_params()[1], ["general"])
+
+    async def test_un_solo_bloque_por_padre(self):
+        rows = [
+            _row("Bloque patentes", 0.10, file_name="p.md", parent_id="p1", comuna="Recoleta"),
+            _row("Bloque patentes", 0.12, file_name="p.md", parent_id="p1", comuna="Recoleta"),
+            _row("Bloque patentes", 0.15, file_name="p.md", parent_id="p1", comuna="Recoleta"),
+            _row("Bloque SII", 0.20, file_name="sii.md", parent_id="s1", comuna="general"),
+        ]
+        resultado = await self._buscar(rows)
+
+        self.assertEqual(resultado["contexto"].count("Bloque patentes"), 1)
+        self.assertIn("Bloque SII", resultado["contexto"])
+        self.assertEqual(len(resultado["fuentes"]), 2)
+
+    async def test_entrega_como_maximo_rag_top_parents_bloques(self):
+        rows = [_row(f"Bloque {i}", 0.1 + i / 100, parent_id=f"p{i}", comuna="general") for i in range(6)]
+        resultado = await self._buscar(rows)
+        self.assertEqual(len(resultado["fuentes"]), 3)
+        self.assertIn("Bloque 0", resultado["contexto"])
+        self.assertNotIn("Bloque 5", resultado["contexto"])
+
+    async def test_rubro_es_preferencia_suave(self):
+        rows = [
+            _row("Ficha alimentos", 0.20, parent_id="a", comuna="general", rubros=["alimentos"]),
+            _row("Ficha general", 0.21, parent_id="g", comuna="general", rubros=["general"]),
+        ]
+        textil = await self._buscar(rows, rubro="Textil")
+        alimentos = await self._buscar(rows, rubro="alimentos")
+
+        # Para textil la ficha de alimentos baja, pero no desaparece.
+        self.assertLess(textil["contexto"].index("Ficha general"), textil["contexto"].index("Ficha alimentos"))
+        self.assertLess(alimentos["contexto"].index("Ficha alimentos"), alimentos["contexto"].index("Ficha general"))
+
+    async def test_documento_municipal_gana_el_empate_con_el_nacional(self):
+        rows = [
+            _row("Marco nacional", 0.20, parent_id="n", comuna="general"),
+            _row("Ordenanza local", 0.21, parent_id="l", comuna="Recoleta"),
+        ]
+        resultado = await self._buscar(rows)
+        self.assertLess(resultado["contexto"].index("Ordenanza local"), resultado["contexto"].index("Marco nacional"))
+
+    async def test_filas_antiguas_sin_rubros_ni_parent_id_no_se_castigan(self):
+        rows = [_row("Fila legacy", 0.2, file_name="viejo.pdf", comuna="recoleta")]
+        resultado = await self._buscar(rows, rubro="textil")
+        self.assertIn("Fila legacy", resultado["contexto"])
+
+    async def test_mensaje_actual_manda_al_detectar_la_comuna(self):
+        await self._buscar(
+            [],
+            message="cuanto cuesta la patente en recoleta y en el bosque?",
+            mensaje_actual="y en el bosque?",
+        )
+        self.assertEqual(self.pool.select_params()[1], ["el bosque", "general"])
+
+    async def test_seguimiento_sin_comuna_hereda_la_de_la_pregunta_anterior(self):
+        await self._buscar(
+            [],
+            comuna="recoleta",
+            message="cuanto cuesta la patente en el bosque? y eso cada cuanto se paga?",
+            mensaje_actual="y eso cada cuanto se paga?",
+        )
+        self.assertEqual(self.pool.select_params()[1], ["el bosque", "general"])
+
+
+class DetectarComunaTests(unittest.TestCase):
+    def test_palabra_completa_no_confunde_lamparas_con_lampa(self):
+        deteccion = ia.detectar_comuna("¿Qué permisos necesito para vender lamparas?", "Recoleta")
+        self.assertEqual(deteccion, {"comuna": "recoleta", "soportada": True, "explicita": False})
+
+    def test_santiago_como_region_no_es_comuna_sin_cobertura(self):
+        self.assertTrue(ia.detectar_comuna("vivo en la region de Santiago", "El Bosque")["soportada"])
+
+    def test_detecta_comunas_sin_tildes(self):
+        self.assertEqual(ia.detectar_comuna("trabajo en Nunoa", "Recoleta")["comuna"], "ñuñoa")
+        self.assertEqual(ia.detectar_comuna("¿y en EL BOSQUE?", "Recoleta")["comuna"], "el bosque")
+
+
+class TextoBusquedaRagTests(unittest.TestCase):
+    def test_redacta_rut_telefono_y_correo(self):
+        texto = ia._redactar_datos_personales(
+            "Soy 12.345.678-9, fono +56 9 1234 5678, correo ana@mail.cl; vendo 500 empanadas"
+        )
+        self.assertEqual(texto, "Soy [RUT], fono [TELÉFONO], correo [CORREO]; vendo 500 empanadas")
+
+    def test_no_redacta_montos(self):
+        self.assertEqual(ia._redactar_datos_personales("capital de 1.500.000"), "capital de 1.500.000")
+
+    def test_seguimiento_antepone_la_pregunta_anterior(self):
+        self.assertEqual(
+            ia._texto_busqueda_rag("¿y eso cada cuánto se paga?", HISTORIAL),
+            "¿Cuánto cuesta la patente en Recoleta? ¿y eso cada cuánto se paga?",
+        )
+
+    def test_pregunta_completa_no_usa_el_historial(self):
+        self.assertEqual(
+            ia._texto_busqueda_rag("¿Qué necesito para la resolución sanitaria?", HISTORIAL),
+            "¿Qué necesito para la resolución sanitaria?",
+        )
+
+    def test_seguimiento_sin_historial_queda_igual(self):
+        self.assertEqual(ia._texto_busqueda_rag("¿y cuánto sale?", []), "¿y cuánto sale?")
+
+
 class LlamarLlmReasoningTests(unittest.TestCase):
     def _call(self, **kwargs):
         response = MagicMock()
@@ -783,6 +948,29 @@ class GetAiResponseMemoriaTests(unittest.IsolatedAsyncioTestCase):
         await self._run(total_mensajes=10)
 
         self.background_mock.assert_called_once_with("56911111111", None)
+
+
+class GetAiResponseRagTests(unittest.IsolatedAsyncioTestCase):
+    async def test_seguimiento_busca_con_la_pregunta_anterior_y_el_rubro(self):
+        user = {"phone": "56911111111", "comuna": "Recoleta", "rubro": "textil"}
+        requiere_mock = AsyncMock(return_value=(True, None))
+        contexto_mock = AsyncMock(return_value={"contexto": "ctx", "fuentes": []})
+        with (
+            patch.object(ia, "requiere_rag", requiere_mock),
+            patch.object(ia, "obtener_contexto_rag", contexto_mock),
+            patch.object(ia, "get_messages", MagicMock(return_value=HISTORIAL)),
+            patch.object(ia, "llamar_llm", MagicMock(return_value="Respuesta")),
+            patch.object(ia, "save_message"),
+            patch.object(ia, "contar_mensajes", return_value=1),
+            patch.object(ia, "_build_personalized_context", return_value=""),
+        ):
+            await ia.get_ai_response(user, "¿y eso cuánto sale? fono 912345678", True)
+
+        esperado = "¿Cuánto cuesta la patente en Recoleta? ¿y eso cuánto sale? fono [TELÉFONO]"
+        requiere_mock.assert_awaited_once_with(esperado)
+        self.assertEqual(contexto_mock.await_args.args[0], esperado)
+        self.assertEqual(contexto_mock.await_args.kwargs["rubro_usuario"], "textil")
+        self.assertEqual(contexto_mock.await_args.kwargs["mensaje_actual"], "¿y eso cuánto sale? fono [TELÉFONO]")
 
 
 if __name__ == "__main__":

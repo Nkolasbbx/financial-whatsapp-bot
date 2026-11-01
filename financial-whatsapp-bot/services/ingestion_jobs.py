@@ -40,9 +40,15 @@ async def enqueue_document_ingestion(
     rubros: list[str],
     vigencia_desde: str | None,
     vigencia_hasta: str | None,
+    source: str | None = None,
+    source_url: str | None = None,
 ) -> str:
     """Sube el archivo a Storage, registra el job en Postgres y lo encola en
-    arq. Devuelve el job_id (uuid) para que el panel pueda hacer polling."""
+    arq. Devuelve el job_id (uuid) para que el panel pueda hacer polling.
+
+    source/source_url (opcionales) son la fuente que se citará al usuario; no
+    se guardan en ingestion_jobs, solo viajan al worker y quedan en la
+    metadata de `documents`."""
     import dependencies
 
     content_hash = compute_content_hash(raw_bytes)
@@ -78,6 +84,8 @@ async def enqueue_document_ingestion(
         vigencia_hasta=vigencia_hasta,
         content_hash=content_hash,
         uploaded_by=uploaded_by,
+        source=source,
+        source_url=source_url,
         _job_id=job_id,
     )
 

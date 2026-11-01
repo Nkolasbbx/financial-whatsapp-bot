@@ -1,10 +1,14 @@
 """
 FinancIAl — services/admin_auth.py
 
-Login del panel municipal (InnovaRecoleta, El Bosque). Solo 2 cuentas
-fijas por ahora — ver ADMIN_ACCOUNTS en config.py — así que no se
-construye un sistema de registro/roles todavía. Las contraseñas viven en
-variables de entorno, nunca en el código.
+Login del panel municipal (InnovaRecoleta, El Bosque) y de la cuenta del
+equipo FinancIAl. Cuentas fijas — ver ADMIN_ACCOUNTS en config.py — así
+que no se construye un sistema de registro/roles todavía. Las contraseñas
+viven en variables de entorno, nunca en el código.
+
+La cuenta del equipo (rol "equipo") solo puede usar /admin/documentos: por
+defecto get_admin_session_account no la acepta, y solo las rutas de
+documentos la habilitan explícitamente con allow_equipo=True.
 
 La sesión se guarda en Redis con su propio prefijo, para no mezclarse con
 la sesión del panel del emprendedor (ver services/portal_auth.py).
@@ -12,7 +16,7 @@ la sesión del panel del emprendedor (ver services/portal_auth.py).
 import logging
 import secrets
 
-from config import ADMIN_ACCOUNTS
+from config import ADMIN_ACCOUNTS, ADMIN_ROL_EQUIPO
 
 logger = logging.getLogger("financial")
 
@@ -50,14 +54,39 @@ async def create_admin_session(redis, username: str) -> str:
     return session_id
 
 
-async def get_admin_session_account(redis, session_id: str | None) -> dict | None:
-    """Devuelve la cuenta asociada a una sesión de admin válida, o None."""
+def es_equipo(account: dict | None) -> bool:
+    return bool(account) and account.get("rol") == ADMIN_ROL_EQUIPO
+
+
+def comunas_municipales() -> list[str]:
+    """Comunas de las cuentas municipales, en el formato con que se guardan
+    en ingestion_jobs/documents (ej. "Recoleta", "El Bosque")."""
+    return [
+        account["comuna"]
+        for account in ADMIN_ACCOUNTS.values()
+        if not es_equipo(account)
+    ]
+
+
+async def get_admin_session_account(
+    redis,
+    session_id: str | None,
+    allow_equipo: bool = False,
+) -> dict | None:
+    """Devuelve la cuenta asociada a una sesión de admin válida, o None.
+
+    La cuenta del equipo FinancIAl solo se devuelve con allow_equipo=True:
+    el resto del panel (emprendedores, solicitudes, convocatorias) trabaja
+    con datos de una comuna y no aplica a ella."""
     if not session_id:
         return None
     username = _as_str(await redis.get(_SESSION_PREFIX + session_id))
     if not username:
         return None
-    return ADMIN_ACCOUNTS.get(username)
+    account = ADMIN_ACCOUNTS.get(username)
+    if es_equipo(account) and not allow_equipo:
+        return None
+    return account
 
 
 async def destroy_admin_session(redis, session_id: str | None) -> None:

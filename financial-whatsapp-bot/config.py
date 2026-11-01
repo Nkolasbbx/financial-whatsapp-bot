@@ -142,6 +142,10 @@ RATE_LIMIT_BLOCK_SECONDS = int(os.getenv("RATE_LIMIT_BLOCK_SECONDS", "60"))
 # Similitud mínima (1 - distancia coseno de pgvector) para que un chunk del RAG
 # se considere lo bastante relevante como para llegar al prompt del LLM.
 RAG_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.6"))
+# Fragmentos "hijo" candidatos que se piden a pgvector, y cuántos bloques
+# "padre" distintos llegan finalmente al prompt (ver core/ia.py::obtener_contexto_rag).
+RAG_CANDIDATES = int(os.getenv("RAG_CANDIDATES", "20"))
+RAG_TOP_PARENTS = int(os.getenv("RAG_TOP_PARENTS", "3"))
 
 # HdU15 — Ingesta automática de documentos desde el panel admin.
 INGESTION_MAX_UPLOAD_MB = int(os.getenv("INGESTION_MAX_UPLOAD_MB", "20"))
@@ -173,11 +177,19 @@ FORMALIZATION_DIAGNOSTICS_ENABLED = (
 # nombre de variable de entorno — el valor real nunca va en el código.
 # google_calendar_id y ics_token (HdU019) son opcionales: sin ellos la cuenta
 # simplemente no sincroniza con Google ni expone el feed .ics.
+# La cuenta "financial" (rol "equipo") es del equipo FinancIAl: solo accede a
+# Documentos, donde carga los documentos nacionales (comuna "general") o los
+# de cualquier comuna. El resto del panel la rechaza (ver services/admin_auth.py).
+ADMIN_ROL_MUNICIPIO = "municipio"
+ADMIN_ROL_EQUIPO = "equipo"
+ADMIN_COMUNA_GENERAL = "general"
+
 ADMIN_ACCOUNTS = {
     "recoleta": {
         "password": os.getenv("ADMIN_RECOLETA_PASSWORD", ""),
         "comuna": "Recoleta",
         "nombre": "InnovaRecoleta",
+        "rol": ADMIN_ROL_MUNICIPIO,
         "google_calendar_id": os.getenv("ADMIN_RECOLETA_GOOGLE_CALENDAR_ID", "").strip(),
         "ics_token": os.getenv("ADMIN_RECOLETA_ICS_TOKEN", "").strip(),
     },
@@ -185,8 +197,15 @@ ADMIN_ACCOUNTS = {
         "password": os.getenv("ADMIN_ELBOSQUE_PASSWORD", ""),
         "comuna": "El Bosque",
         "nombre": "Municipalidad de El Bosque",
+        "rol": ADMIN_ROL_MUNICIPIO,
         "google_calendar_id": os.getenv("ADMIN_ELBOSQUE_GOOGLE_CALENDAR_ID", "").strip(),
         "ics_token": os.getenv("ADMIN_ELBOSQUE_ICS_TOKEN", "").strip(),
+    },
+    "financial": {
+        "password": os.getenv("ADMIN_FINANCIAL_PASSWORD", ""),
+        "comuna": ADMIN_COMUNA_GENERAL,
+        "nombre": "Equipo FinancIAl",
+        "rol": ADMIN_ROL_EQUIPO,
     },
 }
 
@@ -219,6 +238,12 @@ if RESUMEN_FRECUENCIA_MENSAJES < 1:
 
 if not 0.0 <= RAG_SIMILARITY_THRESHOLD <= 1.0:
     raise ValueError("RAG_SIMILARITY_THRESHOLD debe estar entre 0.0 y 1.0")
+
+if RAG_CANDIDATES < 1:
+    raise ValueError("RAG_CANDIDATES debe ser mayor que cero")
+
+if not 1 <= RAG_TOP_PARENTS <= RAG_CANDIDATES:
+    raise ValueError("RAG_TOP_PARENTS debe estar entre 1 y RAG_CANDIDATES")
 
 if INGESTION_MAX_UPLOAD_MB < 1:
     raise ValueError("INGESTION_MAX_UPLOAD_MB debe ser mayor que cero")

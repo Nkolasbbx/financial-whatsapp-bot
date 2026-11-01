@@ -23,12 +23,24 @@ def compute_content_hash(raw_bytes: bytes) -> str:
     return hashlib.sha256(raw_bytes).hexdigest()
 
 
-def delete_document_rows(cur, file_name: str) -> int:
+def delete_document_rows(cur, file_name: str, comuna: str) -> int:
     """Borra las filas existentes de `documents` para un documento (por
-    nombre de archivo). Se llama siempre antes de insertar las filas nuevas
-    de ESE documento, para que la ingesta sea incremental: una re-subida
-    reemplaza solo sus propias filas, no toca otros documentos."""
-    cur.execute("DELETE FROM documents WHERE metadata->>'file_name' = %s", (file_name,))
+    nombre de archivo y comuna). Se llama siempre antes de insertar las filas
+    nuevas de ESE documento, para que la ingesta sea incremental: una
+    re-subida reemplaza solo sus propias filas, no toca otros documentos.
+
+    La comuna es parte de la clave: dos municipios (o el equipo FinancIAl,
+    comuna "general") pueden subir archivos con el mismo nombre sin borrarse
+    entre sí. Se compara sin mayúsculas porque las filas cargadas con el
+    script antiguo guardaban la comuna en minúsculas."""
+    cur.execute(
+        """
+        DELETE FROM documents
+        WHERE metadata->>'file_name' = %s
+          AND lower(metadata->>'comuna') = lower(%s)
+        """,
+        (file_name, comuna),
+    )
     return cur.rowcount
 
 
@@ -50,9 +62,9 @@ def insert_document_rows(cur, rows: list[dict]) -> int:
     return len(batch_data)
 
 
-def upsert_document(file_name: str, rows: list[dict]) -> int:
+def upsert_document(file_name: str, comuna: str, rows: list[dict]) -> int:
     """Reemplaza, en una sola transacción, todas las filas de `documents`
-    correspondientes a `file_name` por las filas nuevas de `rows`. Si algo
+    correspondientes a (`file_name`, `comuna`) por las filas nuevas de `rows`. Si algo
     falla a mitad de camino, se hace rollback y no queda el documento borrado
     a medias."""
     import dependencies
@@ -60,7 +72,7 @@ def upsert_document(file_name: str, rows: list[dict]) -> int:
     conn = dependencies.db_pool.getconn()
     try:
         with conn.cursor() as cur:
-            delete_document_rows(cur, file_name)
+            delete_document_rows(cur, file_name, comuna)
             inserted = insert_document_rows(cur, rows)
         conn.commit()
         return inserted
@@ -173,7 +185,7 @@ def get_ingestion_job(job_id: str) -> dict | None:
         dependencies.db_pool.putconn(conn)
 
 
-def delete_ingested_document(file_name: str, job_id: str, deleted_by: str) -> int:
+def delete_ingested_document(file_name: str, comuna: str, job_id: str, deleted_by: str) -> int:
     """Elimina el contenido ya ingerido de un documento: borra sus filas de
     `documents` (el asistente deja de citarlo) y marca el `ingestion_jobs`
     correspondiente con deleted_at/deleted_by, sin borrar el registro de
@@ -183,7 +195,7 @@ def delete_ingested_document(file_name: str, job_id: str, deleted_by: str) -> in
     conn = dependencies.db_pool.getconn()
     try:
         with conn.cursor() as cur:
-            deleted_rows = delete_document_rows(cur, file_name)
+            deleted_rows = delete_document_rows(cur, file_name, comuna)
             cur.execute(
                 """
                 UPDATE ingestion_jobs
@@ -226,9 +238,37 @@ def get_stale_ingestion_jobs(older_than_minutes: int = 60) -> list[dict]:
         dependencies.db_pool.putconn(conn)
 
 
-def list_recent_jobs(comuna: str, limit: int = 20) -> list[dict]:
+def list_recent_jobs(comuna: str | None, limit: int = 20) -> list[dict]:
     """Últimas subidas de una comuna, más recientes primero — para la tabla
-    de historial en /admin/documentos."""
+    de historial en /admin/documentos. Con comuna=None devuelve las de todas
+    las comunas (historial del equipo FinancIAl)."""
+    import dependencies
+
+    where = "WHERE comuna = %s" if comuna is not None else ""
+    params = (comuna, limit) if comuna is not None else (limit,)
+
+    conn = dependencies.db_pool.getconn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                f"""
+                SELECT * FROM ingestion_jobs
+                {where}
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        dependencies.db_pool.putconn(conn)
+
+
+def list_active_documents(comuna: str, limit: int = 100) -> list[dict]:
+    """Documentos de una comuna que hoy están en el índice del asistente
+    (procesados y no eliminados). Lo usan los municipios para ver, sin poder
+    tocarlos, los documentos nacionales que cargó el equipo FinancIAl."""
     import dependencies
 
     conn = dependencies.db_pool.getconn()
@@ -237,7 +277,7 @@ def list_recent_jobs(comuna: str, limit: int = 20) -> list[dict]:
             cur.execute(
                 """
                 SELECT * FROM ingestion_jobs
-                WHERE comuna = %s
+                WHERE comuna = %s AND status = 'done' AND deleted_at IS NULL
                 ORDER BY created_at DESC
                 LIMIT %s
                 """,

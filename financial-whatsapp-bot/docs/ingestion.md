@@ -41,7 +41,8 @@ Decisiones concretas:
 Admin (navegador)
   → POST /admin/documentos/subir   (routers/admin.py)
       - valida tipo/tamaño
-      - comuna = la de la sesión logueada (nunca del formulario)
+      - comuna = la de la sesión logueada (nunca del formulario); solo la
+        cuenta del equipo FinancIAl elige ámbito (nacional o una comuna)
       - sube el archivo a Supabase Storage (bucket "ingestion-uploads")
       - crea una fila en ingestion_jobs (status=queued)
       - encola process_document_ingestion_task en arq
@@ -63,9 +64,11 @@ Admin (navegador)
 Usuario de WhatsApp pregunta algo
   → core/ia.py::obtener_contexto_rag()
       - genera el embedding de la pregunta (HF Inference API)
-      - SELECT ... FROM documents WHERE comuna coincide
+      - SELECT ... FROM documents WHERE comuna ∈ {comuna del usuario, general}
           AND (vigencia_hasta vencida => se excluye)
-        ORDER BY distancia coseno LIMIT 4
+        ORDER BY distancia coseno LIMIT 20
+      - puntaje por rubro/ámbito, un fragmento por bloque padre, top 3
+        (detalle en docs/rag-recuperacion.md)
       - se inyecta como contexto en el prompt del LLM
 ```
 
@@ -73,7 +76,7 @@ Usuario de WhatsApp pregunta algo
 ```
 Admin → POST /admin/documentos/{job_id}/eliminar
       - valida que el job pertenezca a su comuna y esté en status=done
-      - DELETE FROM documents WHERE file_name = ...
+      - DELETE FROM documents WHERE file_name = ... AND comuna = ...
       - marca ingestion_jobs.deleted_at/deleted_by (no borra el registro de auditoría)
 ```
 
@@ -201,14 +204,14 @@ El diseño minimiza el uso del total: el archivo original solo vive en Storage m
 1. Variables necesarias en `.env`: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DB_DSN`, `HF_TOKEN`, `REDIS_URL`, `ARQ_QUEUE_NAME` (propia, ej. `arq:queue:<tu-nombre>`), `ADMIN_RECOLETA_PASSWORD`/`ADMIN_ELBOSQUE_PASSWORD`. Si el `.env` apunta a la misma base que producción, poner `REMINDERS_ENABLED=false` y `CALENDAR_REMINDERS_ENABLED=false` para no disparar WhatsApps reales mientras el worker corre localmente.
 2. Aplicar las migraciones: `psql "$DB_DSN" -f supabase/migrations/20260916_document_ingestion.sql` y `-f supabase/migrations/20260918_document_lifecycle.sql`.
 3. Dos terminales: `uvicorn main:app --reload` (server) y `arq worker.WorkerSettings` (worker — sin esto los jobs se quedan en `queued`).
-4. `http://localhost:8000/admin/login` (usuarios `recoleta`/`elbosque`, contraseñas en `.env`) → `/admin/documentos`.
+4. `http://localhost:8000/admin/login` (usuarios `recoleta`/`elbosque`, o `financial` para el equipo, contraseñas en `.env`) → `/admin/documentos`.
 5. Subir un archivo, esperar `status: done`, verificar en `documents` que aparecieron filas nuevas, y probar `/test/chat` con una pregunta relacionada.
 6. Probar "Eliminar" en la tabla de historial y confirmar que las filas de `documents` desaparecen.
 
 ## 9. Extensiones futuras (mencionadas, no implementadas)
 
 - **OCR real** para PDFs escaneados, si algún día las municipalidades suben documentos de ese tipo (hoy no hay evidencia de que se necesite — ver sección 2).
-- **Filtrar/priorizar por rubro del usuario** en la query RAG de `core/ia.py` — hoy `rubros` se guarda en cada documento pero no se usa como filtro; requiere antes normalizar el campo `rubro` libre de `users` contra el mismo vocabulario cerrado de `core.onboarding.RUBROS_ACTIVOS`.
+- ~~Filtrar/priorizar por rubro del usuario~~: implementado como preferencia suave, junto con documentos nacionales y la cuenta del equipo FinancIAl. Ver `docs/rag-recuperacion.md`.
 - **Contextual retrieval activado por defecto** (`INGESTION_ENABLE_CONTEXTUAL=true`) si se decide que la mejora de calidad justifica la latencia/costo extra.
 
 ## 10. Comportamiento conocido a tener en cuenta

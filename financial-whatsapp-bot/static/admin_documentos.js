@@ -1,5 +1,6 @@
 // FinancIAl — /admin/documentos
-// 1) Subida múltiple: una tarjeta por archivo con sus rubros y vigencia.
+// 1) Subida múltiple: una tarjeta por archivo con sus rubros, vigencia,
+//    fuente opcional y (solo para el equipo FinancIAl) su ámbito.
 // 2) Estado en vivo: consulta los jobs en cola/procesando y actualiza la tabla.
 (function () {
     "use strict";
@@ -13,6 +14,15 @@
     const submit = form.querySelector('button[type="submit"]');
     let files = [];
     let meta = [];
+    const ambitos = config.ambitos || null;
+
+    function emptyMeta() {
+        return { rubros: ["general"], desde: "", hasta: "", ambito: ambitos ? ambitos[0].value : "", fuente: "", url: "" };
+    }
+
+    function fieldValue(name) {
+        return (form.elements[name] || {}).value || "";
+    }
 
     function formatSize(bytes) {
         return bytes >= 1048576
@@ -23,8 +33,11 @@
     function readMeta() {
         meta = files.map((_, i) => ({
             rubros: Array.from(form.querySelectorAll(`input[name="rubros_${i}"]:checked`)).map((c) => c.value),
-            desde: (form.elements[`vigencia_desde_${i}`] || {}).value || "",
-            hasta: (form.elements[`vigencia_hasta_${i}`] || {}).value || "",
+            desde: fieldValue(`vigencia_desde_${i}`),
+            hasta: fieldValue(`vigencia_hasta_${i}`),
+            ambito: fieldValue(`ambito_${i}`),
+            fuente: fieldValue(`fuente_${i}`),
+            url: fieldValue(`fuente_url_${i}`),
         }));
     }
 
@@ -55,10 +68,26 @@
         return el("label", {}, [document.createTextNode(label), field]);
     }
 
+    function textField(name, label, value, type, placeholder) {
+        const field = el("input", { type: type, name: name, maxlength: type === "url" ? "500" : "200", placeholder: placeholder });
+        field.value = value;
+        return el("label", {}, [document.createTextNode(label), field]);
+    }
+
+    function ambitoField(i, value) {
+        const select = el("select", { name: `ambito_${i}`, required: "required" });
+        ambitos.forEach((a) => {
+            const option = el("option", { value: a.value, text: a.label });
+            option.selected = a.value === value;
+            select.appendChild(option);
+        });
+        return el("label", {}, [document.createTextNode("Ámbito"), select]);
+    }
+
     function render() {
         cards.replaceChildren();
         files.forEach((file, i) => {
-            const m = meta[i] || { rubros: ["general"], desde: "", hasta: "" };
+            const m = meta[i] || emptyMeta();
             const remove = el("button", { type: "button", class: "admin-file-remove", text: "Quitar" });
             remove.addEventListener("click", () => {
                 readMeta();
@@ -81,10 +110,16 @@
                         el("span", { class: "subtitulo", text: formatSize(file.size) }),
                         remove,
                     ]),
-                    el("fieldset", {}, [el("legend", { text: "Rubros aplicables" })].concat(rubros)),
-                    dateField(`vigencia_desde_${i}`, "Vigente desde (opcional)", m.desde),
-                    dateField(`vigencia_hasta_${i}`, "Vigente hasta (opcional — sin fecha no vence)", m.hasta),
-                ])
+                ].concat(
+                    ambitos ? [ambitoField(i, m.ambito)] : [],
+                    [
+                        el("fieldset", {}, [el("legend", { text: "Rubros aplicables" })].concat(rubros)),
+                        dateField(`vigencia_desde_${i}`, "Vigente desde (opcional)", m.desde),
+                        dateField(`vigencia_hasta_${i}`, "Vigente hasta (opcional — sin fecha no vence)", m.hasta),
+                        textField(`fuente_${i}`, "Nombre de la fuente (opcional)", m.fuente, "text", "Ej. Ordenanza de patentes 2026"),
+                        textField(`fuente_url_${i}`, "URL de la fuente (opcional)", m.url, "url", "https://…"),
+                    ]
+                ))
             );
         });
         const total = files.reduce((acc, f) => acc + f.size, 0);
@@ -101,7 +136,7 @@
         nuevos.forEach((f) => {
             if (!files.some((x) => x.name === f.name)) {
                 files.push(f);
-                meta.push({ rubros: ["general"], desde: "", hasta: "" });
+                meta.push(emptyMeta());
             }
         });
         syncInput();

@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .DS_Store
 node_modules/
+
+# Resultados de scripts/evaluar_rag.py
+tmp/rag_eval/
