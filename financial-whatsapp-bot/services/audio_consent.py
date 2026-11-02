@@ -69,12 +69,24 @@ def consent_prompt() -> dict:
     }
 
 
+MAX_ECHO_CHARS = 300
+WRONG_BUTTON = (WRONG_ID, "❌ No es lo que dije")
+
+
+def echo_prefix(transcript: str) -> str:
+    """Encabezado "Esto entendí de tu audio" que va antes de la respuesta."""
+    texto = " ".join((transcript or "").split())
+    if len(texto) > MAX_ECHO_CHARS:
+        texto = texto[:MAX_ECHO_CHARS].rstrip() + "…"
+    return f'📝 *Esto entendí de tu audio:*\n"{texto}"\n\n'
+
+
 def echo_widget(transcript: str) -> dict:
     """La transcripción, siempre, antes de responder (con salida si está mal)."""
     return {
         "type": "buttons",
-        "body": f'📝 *Esto entendí de tu audio:*\n"{transcript}"',
-        "options": [(WRONG_ID, "❌ No es lo que dije")],
+        "body": echo_prefix(transcript).rstrip(),
+        "options": [WRONG_BUTTON],
     }
 
 

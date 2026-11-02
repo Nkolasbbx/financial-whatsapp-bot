@@ -42,7 +42,13 @@ from services.audio_consent import (
     pop_pending_audio,
     stash_pending_audio,
 )
-from services.message_router import RESET_COMMANDS, route_message, split_message
+from services.message_router import (
+    CONFIRM_PREFIX,
+    CONFIRM_QUESTIONS,
+    RESET_COMMANDS,
+    route_message,
+    split_message,
+)
 from services.pending_confirmation import (
     clear_pending_confirmation,
     get_pending_confirmation,
@@ -124,6 +130,16 @@ def _has_open_expert_request(phone: str, context: MessageContext | None = None) 
     except Exception as error:
         logger.warning("No se pudo consultar la solicitud de experto: %s", error)
         return False
+
+
+async def _flush_echo(phone: str, transcript: str | None) -> None:
+    """Envía "Esto entendí de tu audio" como mensaje aparte y devuelve None."""
+    if transcript:
+        try:
+            await _send_response(phone, echo_widget(transcript))
+        except WhatsAppAPIError as error:
+            logger.error("No se pudo mostrar la transcripción: %s", error)
+    return None
 
 
 def _audio_consent(phone: str, context: MessageContext | None = None) -> bool | None:
@@ -374,6 +390,10 @@ async def whatsapp_webhook(request: Request):
 
                     is_audio_message = incoming.get("type") == "audio"
                     message = _extract_message_text(incoming)
+                    # Transcripción pendiente de mostrar. Si el audio termina en
+                    # una respuesta de IA, viaja al worker y sale en el MISMO
+                    # mensaje; en cualquier otro caso se envía antes de responder.
+                    pending_echo = None
 
                     # ── Consentimiento de audios y "esto no es lo que dije" ──
                     choice = audio_choice(message)
@@ -434,10 +454,7 @@ async def whatsapp_webhook(request: Request):
                         if message is not None:
                             # Siempre se muestra lo que se entendió, antes de
                             # responder o seguir con cualquier funcionalidad.
-                            try:
-                                await _send_response(phone, echo_widget(message))
-                            except WhatsAppAPIError as error:
-                                logger.error("No se pudo mostrar la transcripción: %s", error)
+                            pending_echo = message
 
                     # ── Audio transcrito pero de confianza dudosa (HdU11, AC4) ──
                     # Se distingue de "message is None" (AC5): acá Whisper sí
@@ -462,6 +479,7 @@ async def whatsapp_webhook(request: Request):
                         and not skip_ambiguity_filter
                         and is_ambiguous_transcription(message)
                     ):
+                        pending_echo = await _flush_echo(phone, pending_echo)
                         try:
                             await send_text(
                                 phone,
@@ -522,6 +540,7 @@ async def whatsapp_webhook(request: Request):
                     # resuelve esa confirmación antes de seguir el flujo normal.
                     pending_action = await get_pending_confirmation(redis, phone)
                     if pending_action:
+                        pending_echo = await _flush_echo(phone, pending_echo)
                         await clear_pending_confirmation(redis, phone)
                         try:
                             if is_affirmative(message):
@@ -534,7 +553,7 @@ async def whatsapp_webhook(request: Request):
                                 await send_text(
                                     phone,
                                     "Entendido, no hice ningún cambio. Si quieres "
-                                    "reiniciar más adelante, solo dímelo. 🙂",
+                                    "hacerlo más adelante, solo dímelo. 🙂",
                                 )
                         except WhatsAppAPIError as error:
                             logger.error("No se pudo resolver la confirmación pendiente: %s", error)
@@ -548,6 +567,7 @@ async def whatsapp_webhook(request: Request):
                     # confirma primero: se le muestra lo entendido y se espera
                     # un sí/no antes de tocar sus datos.
                     if is_audio_message and _normalize_audio_command(message) in RESET_COMMANDS:
+                        pending_echo = await _flush_echo(phone, pending_echo)
                         try:
                             await set_pending_confirmation(redis, phone, "reiniciar")
                             await send_text(
@@ -570,6 +590,7 @@ async def whatsapp_webhook(request: Request):
                                 phone,
                             )
                         if not rate_limit["allowed"]:
+                            pending_echo = await _flush_echo(phone, pending_echo)
                             logger.warning(
                                 "Mensaje bloqueado por rate limit: phone=%s "
                                 "retry_after=%s",
@@ -600,9 +621,16 @@ async def whatsapp_webhook(request: Request):
                         reply_to_message_id,
                         message_id=message_id,
                         context=context,
+                        confirm_actions=is_audio_message,
                     )
 
                     try:
+                        # Solo las consultas a la IA llevan la transcripción
+                        # dentro de su respuesta; el resto la muestra antes.
+                        if result not in ("__AI_QUERY__", "__AI_QUERY_WITH_CONTEXT__"):
+                            pending_echo = await _flush_echo(phone, pending_echo)
+                        ai_extra = {"audio_transcript": pending_echo} if pending_echo else {}
+
                         # Se encola antes de enviar el aviso: el worker empieza
                         # sin esperar a Meta. El lock por teléfono sigue
                         # garantizando que no se cruce con otra respuesta.
@@ -612,6 +640,7 @@ async def whatsapp_webhook(request: Request):
                                 phone,
                                 message,
                                 lock_token=lock_token,
+                                **ai_extra,
                                 **ai_queue_kwargs(),
                             )
                             hand_off_to_worker = True
@@ -641,10 +670,22 @@ async def whatsapp_webhook(request: Request):
                                 hito_context=hito_context,
                                 reformulate_mode=False,
                                 lock_token=lock_token,
+                                **ai_extra,
                                 **ai_queue_kwargs(),
                             )
                             hand_off_to_worker = True
                             await _send_progress_notice(phone, "🤔 Te ayudo con este hito...")
+
+                        elif isinstance(result, str) and result.startswith(CONFIRM_PREFIX):
+                            # Acción que cambia datos, pedida por audio: se le
+                            # muestra lo entendido y se espera un sí/no.
+                            command = result[len(CONFIRM_PREFIX):]
+                            await set_pending_confirmation(redis, phone, command)
+                            await send_text(
+                                phone,
+                                f"¿Confirmas que quieres {CONFIRM_QUESTIONS.get(command, command)}?\n\n"
+                                "Responde *sí* para confirmar o *no* para cancelar.",
+                            )
 
                         elif result == EXPERT_RELAY:
                             # Mensaje reenviado al panel del experto (HdU16):
