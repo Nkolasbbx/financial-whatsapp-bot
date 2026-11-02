@@ -39,7 +39,13 @@ from services.audio_consent import (
     pop_pending_audio,
     stash_pending_audio,
 )
-from services.message_router import RESET_COMMANDS, route_message, split_message
+from services.message_router import (
+    CONFIRM_PREFIX,
+    CONFIRM_QUESTIONS,
+    RESET_COMMANDS,
+    route_message,
+    split_message,
+)
 from services.pending_confirmation import (
     clear_pending_confirmation,
     get_pending_confirmation,
@@ -484,7 +490,7 @@ async def whatsapp_webhook(request: Request):
                                 await send_text(
                                     phone,
                                     "Entendido, no hice ningún cambio. Si quieres "
-                                    "reiniciar más adelante, solo dímelo. 🙂",
+                                    "hacerlo más adelante, solo dímelo. 🙂",
                                 )
                         except WhatsAppAPIError as error:
                             logger.error("No se pudo resolver la confirmación pendiente: %s", error)
@@ -548,6 +554,7 @@ async def whatsapp_webhook(request: Request):
                         message,
                         reply_to_message_id,
                         message_id=message_id,
+                        confirm_actions=is_audio_message,
                     )
 
                     try:
@@ -596,6 +603,17 @@ async def whatsapp_webhook(request: Request):
                                 **ai_extra,
                             )
                             hand_off_to_worker = True
+
+                        elif isinstance(result, str) and result.startswith(CONFIRM_PREFIX):
+                            # Acción que cambia datos, pedida por audio: se le
+                            # muestra lo entendido y se espera un sí/no.
+                            command = result[len(CONFIRM_PREFIX):]
+                            await set_pending_confirmation(redis, phone, command)
+                            await send_text(
+                                phone,
+                                f"¿Confirmas que quieres {CONFIRM_QUESTIONS.get(command, command)}?\n\n"
+                                "Responde *sí* para confirmar o *no* para cancelar.",
+                            )
 
                         elif result == EXPERT_RELAY:
                             # Mensaje reenviado al panel del experto (HdU16):

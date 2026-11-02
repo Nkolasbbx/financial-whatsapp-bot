@@ -93,6 +93,18 @@ YA_LO_REALICE_TRIGGERS = [
 # routers/webhook.py para pedir confirmación cuando el comando llega
 # transcrito desde un audio (HdU11, AC3).
 RESET_COMMANDS = {"reiniciar", "reset", "empezar de nuevo", "menu_reiniciar"}
+# Por audio, las acciones que cambian datos y se disparan fácil sin querer
+# ("ya está" dentro de una frase larga marca un paso como listo) esperan un
+# sí/no del usuario. route_message las devuelve como CONFIRM_PREFIX + comando
+# y routers/webhook.py pide la confirmación; al aceptar se ejecuta el comando.
+CONFIRM_PREFIX = "__CONFIRM_ACTION__:"
+CONFIRM_QUESTIONS = {
+    "listo": "marcar tu paso actual como *listo*",
+    "deshacer": "*deshacer* el último paso que marcaste como listo",
+    "activar recordatorios": "*activar* tus recordatorios",
+    "pausar recordatorios": "*pausar* tus recordatorios",
+}
+
 PAUSE_REMINDERS_COMMANDS = {
     "pausar recordatorios", "desactivar recordatorios", "no quiero recordatorios",
     "menu_recordatorios_off",
@@ -194,6 +206,7 @@ def route_message(
     message: str,
     reply_to_message_id: str | None = None,
     message_id: str | None = None,
+    confirm_actions: bool = False,
 ):
     message = message.strip()
     msg_lower = message.lower()
@@ -331,6 +344,8 @@ def route_message(
         "menu_recordatorios_on",
     }
     if msg_lower in activation_commands:
+        if confirm_actions:
+            return CONFIRM_PREFIX + "activar recordatorios"
         set_case("reminders")
         try:
             reminders_were_enabled = enable_reminders(phone)
@@ -357,6 +372,8 @@ def route_message(
         }
 
     if msg_lower.rstrip(".") in PAUSE_REMINDERS_COMMANDS:
+        if confirm_actions:
+            return CONFIRM_PREFIX + "pausar recordatorios"
         set_case("reminders")
         _record_reply_safely(phone, reply_to_message_id)
         try:
@@ -535,6 +552,8 @@ def route_message(
         "ya esta", "siguiente", "menu_listo", HITO_LISTO_ID
     ]
     if any(trigger in msg_lower for trigger in done_triggers):
+        if confirm_actions:
+            return CONFIRM_PREFIX + "listo"
         set_case("roadmap")
         response = mark_hito_done(user, save_user)
         if get_pending_milestone(user) is None:
@@ -545,6 +564,8 @@ def route_message(
 
     # ── Revert last hito (deshacer paso) ──
     if msg_lower in [HITO_VOLVER_ID, "deshacer", "deshacer paso"]:
+        if confirm_actions:
+            return CONFIRM_PREFIX + "deshacer"
         set_case("roadmap")
         response = revert_last_hito(user, save_user)
         _record_activity_safely(phone)

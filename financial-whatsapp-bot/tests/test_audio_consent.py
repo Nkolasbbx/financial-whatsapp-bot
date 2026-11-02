@@ -303,5 +303,42 @@ class AiResponseEchoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(enviar.await_args.kwargs["audio_transcript"], "hola mundo")
 
 
+class AudioActionConfirmationWebhookTests(WebhookAudioFlowTests):
+    """Una acción que cambia datos, pedida por voz, espera un sí/no."""
+
+    async def test_audio_requests_confirmation_and_arms_the_pending_action(self):
+        from services.message_router import CONFIRM_PREFIX
+        m = await self._run(self._audio(), consent=True, transcript="ya está, qué sigue", route_result=CONFIRM_PREFIX + "listo")
+        self.assertTrue(m.route.call_args.kwargs["confirm_actions"])
+        self.assertEqual(await self.redis.get(f"pending_confirm:{PHONE}"), "listo")
+        pregunta = m.send_text.await_args.args[1]
+        self.assertIn("marcar tu paso actual como *listo*", pregunta)
+        self.assertIn("*sí*", pregunta)
+        self.assertIn("Esto entendí de tu audio", m.buttons.await_args_list[0].args[1])  # eco primero
+
+    async def test_typed_messages_are_never_asked_to_confirm(self):
+        m = await self._run({"type": "text", "text": {"body": "listo"}}, consent=True)
+        self.assertFalse(m.route.call_args.kwargs["confirm_actions"])
+
+    async def test_yes_executes_the_real_action(self):
+        await self.redis.set(f"pending_confirm:{PHONE}", "listo")
+        m = await self._run({"type": "text", "text": {"body": "sí"}}, consent=True)
+        self.assertEqual(m.route.call_args.args[1], "listo")
+        self.assertNotIn("confirm_actions", m.route.call_args.kwargs)  # esta vez se ejecuta
+        self.assertIsNone(await self.redis.get(f"pending_confirm:{PHONE}"))
+
+    async def test_no_cancels_without_executing(self):
+        await self.redis.set(f"pending_confirm:{PHONE}", "listo")
+        m = await self._run({"type": "text", "text": {"body": "no"}}, consent=True)
+        m.route.assert_not_called()
+        self.assertIn("no hice ningún cambio", m.send_text.await_args.args[1])
+
+    async def test_rejecting_the_transcript_cancels_the_pending_action(self):
+        await self.redis.set(f"pending_confirm:{PHONE}", "listo")
+        m = await self._run(self._button(ac.WRONG_ID), consent=True)
+        self.assertIsNone(await self.redis.get(f"pending_confirm:{PHONE}"))
+        m.route.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
