@@ -502,6 +502,22 @@ class DebeActualizarResumenTests(unittest.TestCase):
 
 
 class PersonalizedAssistantContextTests(unittest.TestCase):
+    def test_saved_dates_are_personal_but_generic_dates_are_not(self):
+        for text in ("fechas guardadas", "¿Qué fechas tengo guardadas para un futuro?",
+                     "Mis fechas importante", "¿Cuáles son mis fechas importantes este mes?"):
+            with self.subTest(text=text):
+                self.assertEqual(ia._assistant_data_domains(text), {"calendar"})
+        self.assertNotIn("calendar", ia._assistant_data_domains("fechas"))
+        self.assertEqual(ia._assistant_data_domains("¿Cuáles son las fechas de postulación a fondos?"), {"funds"})
+
+    def test_saved_dates_in_november_use_month_range_not_full_calendar(self):
+        user = {"id": "00000000-0000-0000-0000-000000000001"}
+        with patch.object(ia, "_local_today", return_value=ia.date(2026, 11, 2)), \
+                patch.object(ia, "get_calendar_events_between", return_value=[]) as events:
+            ia._build_personalized_context(user, "¿Cuáles son mis fechas importantes este mes?")
+        _, start, end = events.call_args.args
+        self.assertEqual((start.date(), end.date()), (ia.date(2026, 11, 1), ia.date(2026, 12, 1)))
+
     def test_detects_multiple_personal_data_domains(self):
         domains = ia._assistant_data_domains(
             "¿Cuánto me falta para mi meta mensual y qué compromisos tengo en octubre?"

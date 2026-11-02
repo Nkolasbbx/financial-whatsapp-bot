@@ -976,7 +976,8 @@ def _assistant_data_domains(message: str) -> set[str]:
         domains.add("roadmap")
     if any(term in normalized for term in ("meta", "ingreso", "gasto", "finanza", "ahorro", "ahorrar", "ventas", "cuanto falta", "balance")):
         domains.add("finances")
-    if any(term in normalized for term in ("calendario", "evento", "compromiso", "cita", "reunion", "agenda", "cuando tengo", "que tengo")):
+    saved_dates = re.search(r"\b(?:fechas\s+(?:tengo\s+)?guardadas|mis\s+fechas\s+importantes?)\b", normalized)
+    if saved_dates or any(term in normalized for term in ("calendario", "evento", "compromiso", "cita", "reunion", "agenda", "cuando tengo", "que tengo")):
         domains.add("calendar")
     if any(term in normalized for term in (
         "fondo", "postular", "postulacion", "postulaciones", "requisito",
