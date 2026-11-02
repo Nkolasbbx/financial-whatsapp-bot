@@ -18,6 +18,7 @@ from core import formalization_cost_guide as cost_guide
 from core import formalization_presentation as presentation
 from core import formalization_short_flow as short_flow
 from core.formalization_results import calculate_assessment
+from db.message_context import NOT_LOADED
 
 from core.formalization_engine import (
     RULES_CONFIG, RULES_VERSION, evaluate_diagnostic, month_after,
@@ -447,7 +448,8 @@ def _next(user, context, answers, *, items=None, completed_step=None):
     return _prompt(context)
 
 
-def handle_diagnostic_message(user, message, *, external_action=False, message_id=None):
+def handle_diagnostic_message(user, message, *, external_action=False, message_id=None,
+                              preloaded_context=NOT_LOADED):
     """Retorna None para otros módulos; PASS_TO_AI evita triggers por substring.
 
     Los botones llevan diagnóstico y lock_version. Una respuesta de una pregunta
@@ -459,7 +461,12 @@ def handle_diagnostic_message(user, message, *, external_action=False, message_i
     try:
         # Existing route tests and legacy callers sometimes supply non-UUID IDs.
         UUID(str(user.get("id")))
-        context = get_formalization_context(user["id"])
+        # preloaded_context: el mismo resultado de get_formalization_context
+        # leído junto al resto del contexto del mensaje (db/message_context.py).
+        context = (
+            preloaded_context if preloaded_context is not NOT_LOADED
+            else get_formalization_context(user["id"])
+        )
         d = context.get("diagnostic")
         stage = "flow"
         action = normalize(raw)

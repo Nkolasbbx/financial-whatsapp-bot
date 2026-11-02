@@ -29,7 +29,7 @@ _INPUTS = {"text", "interactive", "button", "audio"}
 CASES = {
     "other", "onboarding", "expert", "diagnostic", "funds", "finances",
     "calendar", "roadmap", "reminders", "menu", "panel", "tax_info",
-    "financial_parse",
+    "financial_parse", "ai",
 }
 
 
@@ -114,18 +114,21 @@ def _emit(trace: Trace) -> None:
         return
     # Instrumentation failures must not prevent a response or cause a retry.
     try:
-        line = json.dumps(trace.record(), ensure_ascii=True, separators=(",", ":"))
-        logger.info("%s%s", PREFIX, line)
-        directory = os.getenv("PERFORMANCE_OUTPUT_DIR", "").strip()
-        if directory:
-            with _file_lock:
-                path = Path(directory)
-                path.mkdir(parents=True, exist_ok=True)
-                # Web and worker use separate files: no cross-process file lock.
-                with (path / f"metrics-{os.getpid()}.jsonl").open("a", encoding="utf-8") as output:
-                    output.write(line + "\n")
+        _write_line(json.dumps(trace.record(), ensure_ascii=True, separators=(",", ":")))
     except Exception:
         logger.warning("No fue posible escribir una medicion de rendimiento")
+
+
+def _write_line(line: str) -> None:
+    logger.info("%s%s", PREFIX, line)
+    directory = os.getenv("PERFORMANCE_OUTPUT_DIR", "").strip()
+    if directory:
+        with _file_lock:
+            path = Path(directory)
+            path.mkdir(parents=True, exist_ok=True)
+            # Web and worker use separate files: no cross-process file lock.
+            with (path / f"metrics-{os.getpid()}.jsonl").open("a", encoding="utf-8") as output:
+                output.write(line + "\n")
 
 
 @contextmanager
@@ -194,8 +197,8 @@ def observe_route(function):
         trace = _current.get()
         if trace is not None and isinstance(result, str):
             if result.startswith("__AI_QUERY"):
-                # The advisor/RAG is deliberately absent from this baseline.
-                trace.excluded = True
+                # The advisor continues in the worker (observe_ai_job).
+                trace.case = "ai"
             elif result == "__FINANCIAL_PARSE__":
                 trace.case = "financial_parse"
         return result
@@ -232,7 +235,8 @@ def observe_webhook(function):
     return wrapper
 
 
-def financial_queue_kwargs() -> dict:
+def queue_kwargs() -> dict:
+    """Metadata that links the web trace with the worker job it enqueues."""
     trace = _current.get()
     if trace is None or trace.excluded:
         return {}
@@ -244,32 +248,68 @@ def financial_queue_kwargs() -> dict:
     }}
 
 
-def observe_financial_job(function):
-    @wraps(function)
-    async def wrapper(ctx, *args, **kwargs):
-        context = kwargs.get("performance_context")
-        if not enabled() or not context:
-            return await function(ctx, *args, **kwargs)
-        try:
-            trace_id = str(context["trace_id"])
-            if not re.fullmatch(r"[a-f0-9]{32}", trace_id):
-                raise ValueError("Invalid trace")
-            started_at = float(context["started_at"])
-            queue_wait = (time.time() - float(context["enqueued_at"])) * 1000
-            trace = Trace(
-                trace_id=trace_id, run=_label(str(context["run"])),
-                case="financial_parse", phase="worker", started_at=started_at,
-                input_type=context.get("input_type") if context.get("input_type") in _INPUTS else "other",
-                attempt=max(1, int(ctx.get("job_try", 1))),
-                queue_wait_ms=round(queue_wait, 3) if queue_wait >= 0 else None,
-                clock_warning=queue_wait < 0,
-            )
-        except (KeyError, TypeError, ValueError, OverflowError):
-            # Bad measurement metadata must never fail a business job.
-            return await function(ctx, *args, **kwargs)
-        with trace_scope(trace):
-            return await function(ctx, *args, **kwargs)
-    return wrapper
+# Kept for existing callers: same metadata for every queued job.
+financial_queue_kwargs = queue_kwargs
+ai_queue_kwargs = queue_kwargs
+
+
+def _observe_job(case: str):
+    def decorate(function):
+        @wraps(function)
+        async def wrapper(ctx, *args, **kwargs):
+            context = kwargs.get("performance_context")
+            if not enabled() or not context:
+                return await function(ctx, *args, **kwargs)
+            try:
+                trace_id = str(context["trace_id"])
+                if not re.fullmatch(r"[a-f0-9]{32}", trace_id):
+                    raise ValueError("Invalid trace")
+                started_at = float(context["started_at"])
+                queue_wait = (time.time() - float(context["enqueued_at"])) * 1000
+                trace = Trace(
+                    trace_id=trace_id, run=_label(str(context["run"])),
+                    case=case, phase="worker", started_at=started_at,
+                    input_type=context.get("input_type") if context.get("input_type") in _INPUTS else "other",
+                    attempt=max(1, int(ctx.get("job_try", 1))),
+                    queue_wait_ms=round(queue_wait, 3) if queue_wait >= 0 else None,
+                    clock_warning=queue_wait < 0,
+                )
+            except (KeyError, TypeError, ValueError, OverflowError):
+                # Bad measurement metadata must never fail a business job.
+                return await function(ctx, *args, **kwargs)
+            with trace_scope(trace):
+                return await function(ctx, *args, **kwargs)
+        return wrapper
+    return decorate
+
+
+observe_financial_job = _observe_job("financial_parse")
+observe_ai_job = _observe_job("ai")
+
+
+async def monitor_loop_lag(interval: float = 0.1) -> None:
+    """Logs how late the event loop wakes up (only with metrics enabled).
+
+    A blocked loop delays every job in the worker; this makes it visible
+    without recording any user data.
+    """
+    import asyncio
+
+    if not enabled():
+        return
+    while True:
+        start = time.perf_counter()
+        await asyncio.sleep(interval)
+        lag_ms = (time.perf_counter() - start - interval) * 1000
+        if lag_ms >= 50:
+            try:
+                _write_line(json.dumps({
+                    "schema": 1, "kind": "loop_lag", "run": _label(os.getenv("PERFORMANCE_RUN_LABEL", "baseline")),
+                    "pid": os.getpid(), "lag_ms": round(lag_ms, 3),
+                    "recorded_at": datetime.now(timezone.utc).isoformat(),
+                }, separators=(",", ":")))
+            except Exception:
+                logger.warning("No fue posible escribir una medicion de rendimiento")
 
 
 def observe_meta_send(function):

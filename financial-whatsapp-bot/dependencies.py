@@ -30,6 +30,7 @@ from config import (
     META_WHATSAPP_TOKEN,
     OLLAMA_MODEL,
     OLLAMA_URL,
+    PG_POOL_MAX_CONN,
     REDIS_URL,
     RES_KEY,
     RES_MODEL,
@@ -54,7 +55,35 @@ twilio_client: TwilioClient | None = None
 db_pool: psycopg2.pool.ThreadedConnectionPool | None = None
 whatsapp_http_client: httpx.AsyncClient | None = None
 resumen_client: httpx.AsyncClient | None = None
+# Clientes compartidos del worker IA: reutilizan conexiones TLS entre consultas.
+llm_http_client: httpx.AsyncClient | None = None
+embedding_http_client: httpx.AsyncClient | None = None
 redis_pool = None  # pool de arq/Redis para la cola de jobs
+
+
+_PG_CONN_WAIT_SECONDS = 5.0
+_PG_CONN_RETRY_SECONDS = 0.05
+
+
+def get_pg_conn():
+    """Toma una conexión del pool psycopg2, esperando si está agotado.
+
+    ThreadedConnectionPool.getconn lanza PoolError en vez de esperar cuando
+    no quedan conexiones. Con jobs IA en paralelo eso haría fallar el RAG,
+    así que se reintenta brevemente antes de rendirse. Se llama desde hilos.
+    """
+    import time
+
+    if db_pool is None:
+        raise RuntimeError("El pool PostgreSQL no está disponible")
+    deadline = time.monotonic() + _PG_CONN_WAIT_SECONDS
+    while True:
+        try:
+            return db_pool.getconn()
+        except pool.PoolError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(_PG_CONN_RETRY_SECONDS)
 
 
 def twilio_configured() -> bool:
@@ -92,6 +121,10 @@ async def init_dependencies() -> None:
     global ollama_available, resumen_available, resumen_client
     global supabase, supabase_admin, embedding_model, db_pool
     global whatsapp_http_client, twilio_client, redis_pool
+    global llm_http_client, embedding_http_client
+
+    llm_http_client = httpx.AsyncClient(timeout=60)
+    embedding_http_client = httpx.AsyncClient(timeout=15)
 
     if meta_whatsapp_configured():
         whatsapp_http_client = httpx.AsyncClient(timeout=30)
@@ -213,7 +246,7 @@ async def init_dependencies() -> None:
             logger.info("🔌 Creando pool de conexiones Postgres para RAG...")
             db_pool = psycopg2.pool.ThreadedConnectionPool(
                 minconn=1,
-                maxconn=5,
+                maxconn=PG_POOL_MAX_CONN,
                 dsn=SUPABASE_DB_DSN,
             )
             logger.info("Pool de conexiones Postgres listo")
@@ -238,6 +271,13 @@ async def init_dependencies() -> None:
 async def shutdown_dependencies() -> None:
     """Cierra las dependencias compartidas abiertas por init_dependencies()."""
     global supabase_admin, db_pool, redis_pool, whatsapp_http_client, resumen_client
+    global llm_http_client, embedding_http_client
+
+    for client_name in ("llm_http_client", "embedding_http_client"):
+        client = globals()[client_name]
+        if client is not None:
+            await client.aclose()
+            globals()[client_name] = None
 
     if whatsapp_http_client is not None:
         await whatsapp_http_client.aclose()

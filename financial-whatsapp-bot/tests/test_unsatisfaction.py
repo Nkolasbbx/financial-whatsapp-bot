@@ -146,7 +146,9 @@ class CompletedRoadmapReminderTests(unittest.TestCase):
 
         route_message("+56911111111", "listo")
 
-        record_activity_mock.assert_called_once_with("+56911111111")
+        record_activity_mock.assert_called_once_with(
+            "+56911111111", user=get_user_mock.return_value,
+        )
         clear_schedule_mock.assert_not_called()
 
 

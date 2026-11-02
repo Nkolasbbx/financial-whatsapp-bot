@@ -1,6 +1,11 @@
+import asyncio
+import time
 import unittest
+from types import SimpleNamespace
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
 
 import dependencies
 import core.ia as ia
@@ -18,6 +23,13 @@ def fake_embedding_factory(message_vector):
         return message_vector
 
     return fake_embedding
+
+
+async def fake_examples_batch(textos, prefix="query", timeout=15.0):
+    return [
+        DOCUMENTAL_VECTOR if texto in ia.EJEMPLOS_DOCUMENTALES else NO_DOCUMENTAL_VECTOR
+        for texto in textos
+    ]
 
 
 class VisibleHitoContextTests(unittest.TestCase):
@@ -40,6 +52,20 @@ class VisibleHitoContextTests(unittest.TestCase):
 class RequiereRagTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         ia._cache_embeddings_ejemplos = None
+        batch = patch.object(ia, "obtener_embeddings_remotos_batch", fake_examples_batch)
+        batch.start()
+        self.addCleanup(batch.stop)
+
+    async def test_example_embeddings_are_requested_in_one_batch(self):
+        batch_mock = AsyncMock(side_effect=fake_examples_batch)
+        with patch.object(ia, "obtener_embeddings_remotos_batch", batch_mock):
+            ejemplos = await ia._obtener_embeddings_ejemplos()
+            await ia._obtener_embeddings_ejemplos()
+
+        batch_mock.assert_awaited_once()
+        self.assertEqual(len(ejemplos["documentales"]), len(ia.EJEMPLOS_DOCUMENTALES))
+        self.assertEqual(len(ejemplos["no_documentales"]), len(ia.EJEMPLOS_NO_DOCUMENTALES))
+        self.assertEqual(batch_mock.await_args.kwargs["prefix"], "passage")
 
     async def test_keyword_match_returns_true_without_computing_vector(self):
         usa_rag, vector = await ia.requiere_rag("¿Cuánto cuesta la patente comercial?")
@@ -911,13 +937,13 @@ class GetAiResponseMemoriaTests(unittest.IsolatedAsyncioTestCase):
             "rubro": "Panadería",
             "resumen_conversacion": "Pendientes:\n- Averiguar costo de la patente",
         }
-        self.llm_mock = MagicMock(return_value="Respuesta")
+        self.llm_mock = AsyncMock(return_value="Respuesta")
         self.background_mock = MagicMock()
         self.get_messages_mock = MagicMock(return_value=HISTORIAL)
         with (
             patch.object(ia, "requiere_rag", AsyncMock(return_value=(False, None))),
             patch.object(ia, "get_messages", self.get_messages_mock),
-            patch.object(ia, "llamar_llm", self.llm_mock),
+            patch.object(ia, "llamar_llm_async", self.llm_mock),
             patch.object(ia, "save_message"),
             patch.object(ia, "contar_mensajes", return_value=total_mensajes),
             patch.object(ia, "RESUMEN_FRECUENCIA_MENSAJES", 10),
@@ -959,7 +985,7 @@ class GetAiResponseRagTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ia, "requiere_rag", requiere_mock),
             patch.object(ia, "obtener_contexto_rag", contexto_mock),
             patch.object(ia, "get_messages", MagicMock(return_value=HISTORIAL)),
-            patch.object(ia, "llamar_llm", MagicMock(return_value="Respuesta")),
+            patch.object(ia, "llamar_llm_async", AsyncMock(return_value="Respuesta")),
             patch.object(ia, "save_message"),
             patch.object(ia, "contar_mensajes", return_value=1),
             patch.object(ia, "_build_personalized_context", return_value=""),
@@ -971,6 +997,144 @@ class GetAiResponseRagTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(contexto_mock.await_args.args[0], esperado)
         self.assertEqual(contexto_mock.await_args.kwargs["rubro_usuario"], "textil")
         self.assertEqual(contexto_mock.await_args.kwargs["mensaje_actual"], "¿y eso cuánto sale? fono [TELÉFONO]")
+
+
+
+class CountingTable:
+    """Cliente Supabase falso: cuenta execute() por tabla."""
+
+    def __init__(self, calls, name, data=None, count=None):
+        self.calls, self.name = calls, name
+        self.data, self.count = data, count
+        self.inserted = None
+
+    def __getattr__(self, method):
+        def chain(*args, **kwargs):
+            if method == "insert":
+                self.inserted = args[0]
+            return self
+        return chain
+
+    def execute(self):
+        self.calls.append(self.name)
+        return SimpleNamespace(data=self.data or [], count=self.count)
+
+
+class CountingSupabase:
+    def __init__(self, history=None, total=12):
+        self.calls = []
+        self.tables = {}
+        self.history = history or []
+        self.total = total
+
+    def table(self, name):
+        data = list(reversed(self.history)) if name == "messages" else [{"id": USER_ID}]
+        table = CountingTable(self.calls, name, data=data, count=self.total)
+        self.tables.setdefault(name, []).append(table)
+        return table
+
+
+USER_ID = "11111111-2222-3333-4444-555555555555"
+
+
+class AiWorkerAccessBudgetTests(unittest.IsolatedAsyncioTestCase):
+    async def _respond(self, supabase):
+        user = {"id": USER_ID, "phone": "56911111111", "comuna": "Recoleta", "rubro": "Panadería"}
+        with (
+            patch.object(dependencies, "supabase", supabase),
+            patch.object(ia, "get_user", MagicMock(side_effect=lambda phone: (supabase.table("users").execute(), user)[1])),
+            patch.object(ia, "requiere_rag", AsyncMock(return_value=(False, None))),
+            patch.object(ia, "llamar_llm_async", AsyncMock(return_value="Respuesta")),
+            patch.object(ia, "_build_personalized_context", return_value=""),
+            patch.object(ia, "_send_ai_response_with_menu", AsyncMock()),
+            patch.object(ia, "actualizar_resumen_en_background", MagicMock()),
+        ):
+            await ia.process_ai_and_send("56911111111", "¿Qué hago ahora?", True)
+
+    async def test_ai_worker_stays_within_four_supabase_executes(self):
+        supabase = CountingSupabase(history=HISTORIAL)
+        await self._respond(supabase)
+
+        # perfil + historial + insert de pregunta/respuesta + conteo
+        self.assertLessEqual(len(supabase.calls), 4)
+        self.assertEqual(supabase.calls.count("users"), 1)
+        self.assertNotIn("upsert", str(supabase.calls))
+
+    async def test_question_and_answer_are_saved_in_one_ordered_insert(self):
+        supabase = CountingSupabase(history=HISTORIAL)
+        await self._respond(supabase)
+
+        inserts = [table.inserted for table in supabase.tables["messages"] if table.inserted]
+        self.assertEqual(len(inserts), 1)
+        rows = inserts[0]
+        self.assertEqual([row["role"] for row in rows], ["user", "assistant"])
+        self.assertEqual({row["user_id"] for row in rows}, {USER_ID})
+        self.assertLess(rows[0]["created_at"], rows[1]["created_at"])
+
+
+class LlmConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_two_ai_responses_overlap_instead_of_blocking_the_loop(self):
+        async def slow_llm(**kwargs):
+            await asyncio.sleep(0.2)
+            return "Respuesta"
+
+        users = [{"phone": f"5691111111{n}", "comuna": "", "rubro": ""} for n in range(2)]
+        with (
+            patch.object(ia, "requiere_rag", AsyncMock(return_value=(False, None))),
+            patch.object(ia, "get_messages", MagicMock(return_value=[])),
+            patch.object(ia, "llamar_llm_async", slow_llm),
+            patch.object(ia, "save_message"),
+            patch.object(ia, "contar_mensajes", return_value=1),
+            patch.object(ia, "_build_personalized_context", return_value=""),
+        ):
+            start = time.perf_counter()
+            await asyncio.gather(*(ia.get_ai_response(user, "hola", True) for user in users))
+            elapsed = time.perf_counter() - start
+
+        self.assertLess(elapsed, 0.35)
+
+    async def test_async_llm_uses_shared_client_and_returns_content(self):
+        response = httpx.Response(
+            200, json={"choices": [{"message": {"content": "ok"}}]},
+            request=httpx.Request("POST", "https://llm.invalid/chat/completions"),
+        )
+        client = SimpleNamespace(post=AsyncMock(return_value=response))
+        with patch.object(dependencies, "llm_http_client", client):
+            text = await ia.llamar_llm_async(
+                messages=[{"role": "user", "content": "hola"}],
+                ollama_url="https://llm.invalid", ollama_model="m", ia_api_key="k",
+                disable_reasoning=True,
+            )
+
+        self.assertEqual(text, "ok")
+        payload = client.post.await_args.kwargs["json"]
+        self.assertEqual(payload["reasoning"], {"enabled": False})
+
+    async def test_async_llm_failure_returns_empty_text(self):
+        client = SimpleNamespace(post=AsyncMock(side_effect=httpx.ConnectTimeout("lento")))
+        with patch.object(dependencies, "llm_http_client", client):
+            text = await ia.llamar_llm_async(
+                messages=[], ollama_url="https://llm.invalid", ollama_model="m", ia_api_key="k",
+            )
+        self.assertEqual(text, "")
+
+
+class PgPoolWaitTests(unittest.TestCase):
+    def test_exhausted_pool_waits_for_a_free_connection(self):
+        from psycopg2 import pool as pg_pool
+
+        attempts = {"n": 0}
+
+        class BusyPool:
+            def getconn(self):
+                attempts["n"] += 1
+                if attempts["n"] < 3:
+                    raise pg_pool.PoolError("connection pool exhausted")
+                return "conn"
+
+        with patch.object(dependencies, "db_pool", BusyPool()):
+            self.assertEqual(dependencies.get_pg_conn(), "conn")
+        self.assertEqual(attempts["n"], 3)
 
 
 if __name__ == "__main__":

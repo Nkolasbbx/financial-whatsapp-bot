@@ -14,6 +14,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from config import ADMIN_ACCOUNTS, ADMIN_ROL_EQUIPO
+from db.message_context import NOT_LOADED
 from db.expert_requests import (
     add_expert_message,
     create_expert_request,
@@ -206,6 +207,7 @@ def handle_expert_message(
     message: str,
     reset_commands: set[str],
     message_id: str | None = None,
+    open_request=NOT_LOADED,
 ):
     """Devuelve la respuesta para el emprendedor (texto o widget), EXPERT_RELAY si
     el mensaje se reenvió al panel (sin respuesta), o None si no aplica y sigue
@@ -216,7 +218,9 @@ def handle_expert_message(
         return None
 
     try:
-        open_request = get_open_expert_request(user_id)
+        # open_request puede venir ya leído (contexto del mensaje); None = no hay.
+        if open_request is NOT_LOADED:
+            open_request = get_open_expert_request(user_id)
 
         if open_request and open_request["status"] == "draft":
             if _draft_expired(open_request):

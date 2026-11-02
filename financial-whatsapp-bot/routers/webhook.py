@@ -6,17 +6,20 @@ from collections import deque
 import dependencies
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-from config import META_WEBHOOK_VERIFY_TOKEN, DEBUG
+from config import META_WEBHOOK_VERIFY_TOKEN, DEBUG, OPT_DELIVERY_STATUS_RPC, OPT_REDIS_RATE_LIMIT
 from core.expert_flow import EXPERT_RELAY
 from core.roadmaps import extract_hito_context
 from db.rate_limits import (
     RATE_LIMIT_WARNING,
     check_message_rate_limit,
+    check_message_rate_limit_redis,
     is_rate_limit_exempt,
 )
 from db.calendar import update_calendar_delivery_status
 from db.community_events import update_community_delivery_status
+from db.delivery_status import DeliveryStatusUnavailable, apply_delivery_status
 from db.expert_requests import get_open_expert_request
+from db.message_context import MessageContext, get_message_context
 from db.reminders import update_reminder_delivery_status
 from db.users import (
     BLOCKED_USER_MESSAGE,
@@ -47,7 +50,7 @@ from services.pending_confirmation import (
     set_pending_confirmation,
 )
 from services.portal_auth import create_access_token
-from services.performance import financial_queue_kwargs, observe_webhook
+from services.performance import ai_queue_kwargs, financial_queue_kwargs, observe_webhook
 from services.transcription import is_ambiguous_transcription, transcribe_audio
 from services.whatsapp import (
     WhatsAppAPIError,
@@ -106,9 +109,15 @@ def _extract_message_text(incoming: dict) -> str | None:
     return None
 
 
-def _has_open_expert_request(phone: str) -> bool:
+def _usable(context: MessageContext | None) -> bool:
+    return context is not None and not context.stale and context.user is not None
+
+
+def _has_open_expert_request(phone: str, context: MessageContext | None = None) -> bool:
     """¿Está eligiendo tema o conversando con un experto? En ese caso hay una
     persona del otro lado y no corresponde el filtro de audios ambiguos."""
+    if _usable(context):
+        return context.expert_request is not None
     try:
         user = get_user(phone)
         return bool(user and user.get("id") and get_open_expert_request(user["id"]))
@@ -117,8 +126,10 @@ def _has_open_expert_request(phone: str) -> bool:
         return False
 
 
-def _audio_consent(phone: str) -> bool | None:
+def _audio_consent(phone: str, context: MessageContext | None = None) -> bool | None:
     """True/False si ya decidió sobre el procesamiento de audios; None si no."""
+    if _usable(context):
+        return consent_state(context.user)
     try:
         return consent_state(get_user(phone))
     except Exception as error:
@@ -188,6 +199,82 @@ async def _send_response(phone: str, result) -> None:
         await send_text(phone, part)
 
 
+async def _send_progress_notice(phone: str, text: str) -> None:
+    """Aviso de que la respuesta está en camino. El job ya quedó encolado, así
+    que un fallo del aviso solo se registra: no debe impedir la respuesta."""
+    try:
+        await send_text(phone, text)
+    except WhatsAppAPIError as error:
+        logger.error("No se pudo enviar el aviso de procesamiento a %s: %s", phone, error)
+
+
+async def _apply_status(status: dict, failure_reason: str | None) -> None:
+    """Actualiza el estado de entrega del wamid en la tabla que corresponda.
+
+    Con OPT_DELIVERY_STATUS_RPC es una sola llamada (apply_delivery_status_v1).
+    Si la RPC no está disponible, o el flag está apagado, se prueban las tablas
+    una por una como antes.
+    """
+    if OPT_DELIVERY_STATUS_RPC:
+        try:
+            await asyncio.to_thread(
+                apply_delivery_status,
+                status.get("id", ""),
+                status.get("status", ""),
+                status.get("timestamp"),
+                failure_reason,
+            )
+            return
+        except DeliveryStatusUnavailable as error:
+            logger.warning(
+                "No se pudo aplicar el estado en una llamada (%s); se usa el camino anterior",
+                error,
+            )
+
+    try:
+        await asyncio.to_thread(
+            update_reminder_delivery_status,
+            status.get("id", ""),
+            status.get("status", ""),
+            status.get("timestamp"),
+            failure_reason,
+        )
+    except Exception as error:
+        logger.error(
+            "No se pudo actualizar el estado del recordatorio %s: %s",
+            status.get("id", "unknown"),
+            error,
+        )
+    try:
+        await asyncio.to_thread(
+            update_calendar_delivery_status,
+            status.get("id", ""),
+            status.get("status", ""),
+            status.get("timestamp"),
+            failure_reason,
+        )
+    except Exception as error:
+        logger.error(
+            "No se pudo actualizar el estado del calendario %s: %s",
+            status.get("id", "unknown"),
+            error,
+        )
+    try:
+        await asyncio.to_thread(
+            update_community_delivery_status,
+            status.get("id", ""),
+            status.get("status", ""),
+            status.get("timestamp"),
+            failure_reason,
+        )
+    except Exception as error:
+        logger.error(
+            "No se pudo actualizar el estado del aviso de convocatoria %s: %s",
+            status.get("id", "unknown"),
+            error,
+        )
+
+
 @router.get("/webhook/whatsapp")
 async def verify_whatsapp_webhook(
     mode: str | None = Query(default=None, alias="hub.mode"),
@@ -241,48 +328,7 @@ async def whatsapp_webhook(request: Request):
                 )
                 errors = status.get("errors") or []
                 failure_reason = json.dumps(errors, ensure_ascii=False) if errors else None
-                try:
-                    await asyncio.to_thread(
-                        update_reminder_delivery_status,
-                        status.get("id", ""),
-                        status.get("status", ""),
-                        status.get("timestamp"),
-                        failure_reason,
-                    )
-                except Exception as error:
-                    logger.error(
-                        "No se pudo actualizar el estado del recordatorio %s: %s",
-                        status.get("id", "unknown"),
-                        error,
-                    )
-                try:
-                    await asyncio.to_thread(
-                        update_calendar_delivery_status,
-                        status.get("id", ""),
-                        status.get("status", ""),
-                        status.get("timestamp"),
-                        failure_reason,
-                    )
-                except Exception as error:
-                    logger.error(
-                        "No se pudo actualizar el estado del calendario %s: %s",
-                        status.get("id", "unknown"),
-                        error,
-                    )
-                try:
-                    await asyncio.to_thread(
-                        update_community_delivery_status,
-                        status.get("id", ""),
-                        status.get("status", ""),
-                        status.get("timestamp"),
-                        failure_reason,
-                    )
-                except Exception as error:
-                    logger.error(
-                        "No se pudo actualizar el estado del aviso de convocatoria %s: %s",
-                        status.get("id", "unknown"),
-                        error,
-                    )
+                await _apply_status(status, failure_reason)
 
             for incoming in value.get("messages", []):
                 message_id = incoming.get("id", "")
@@ -295,18 +341,6 @@ async def whatsapp_webhook(request: Request):
                     logger.warning("Mensaje de Meta sin teléfono válido")
                     continue
 
-                # Usuario bloqueado manualmente (users.bloqueado): solo recibe
-                # el aviso de acceso. Se revisa antes del lock y de transcribir
-                # audio para no gastar Whisper ni IA en él.
-                if await asyncio.to_thread(is_user_blocked, phone):
-                    logger.info("Mensaje ignorado: usuario bloqueado %s", phone)
-                    try:
-                        await send_text(phone, BLOCKED_USER_MESSAGE)
-                    except WhatsAppAPIError as error:
-                        logger.error("No se pudo avisar al usuario bloqueado: %s", error)
-                    processed_messages += 1
-                    continue
-
                 # Lock distribuido en Redis: garantiza que, para este teléfono,
                 # no se envíe ninguna otra respuesta mientras un job de IA
                 # encolado por un mensaje anterior siga en curso en el worker.
@@ -316,6 +350,28 @@ async def whatsapp_webhook(request: Request):
                 lock_token = await acquire_phone_lock(redis, phone)
                 hand_off_to_worker = False
                 try:
+                    # Perfil y estados de conversación en una lectura (si está
+                    # activo OPT_MESSAGE_CONTEXT_RPC). Se lee dentro del lock: si
+                    # un job anterior de este teléfono seguía en curso, el
+                    # contexto ya incluye lo que ese job guardó.
+                    context = await asyncio.to_thread(get_message_context, phone)
+
+                    # Usuario bloqueado manualmente (users.bloqueado): solo recibe
+                    # el aviso de acceso, antes de transcribir audio para no
+                    # gastar Whisper ni IA en él.
+                    blocked = (
+                        context.blocked if context is not None
+                        else await asyncio.to_thread(is_user_blocked, phone)
+                    )
+                    if blocked:
+                        logger.info("Mensaje ignorado: usuario bloqueado %s", phone)
+                        try:
+                            await send_text(phone, BLOCKED_USER_MESSAGE)
+                        except WhatsAppAPIError as error:
+                            logger.error("No se pudo avisar al usuario bloqueado: %s", error)
+                        processed_messages += 1
+                        continue
+
                     is_audio_message = incoming.get("type") == "audio"
                     message = _extract_message_text(incoming)
 
@@ -323,6 +379,9 @@ async def whatsapp_webhook(request: Request):
                     choice = audio_choice(message)
                     if choice:
                         reply, pending_media_id = await _apply_audio_choice(redis, phone, choice)
+                        if context is not None:
+                            # Cambió el consentimiento: lo que sigue se relee.
+                            context.stale = True
                         try:
                             if reply:
                                 await _send_response(phone, reply)
@@ -343,7 +402,7 @@ async def whatsapp_webhook(request: Request):
                         message = None
 
                     if message is None and is_audio_message:
-                        consent = await asyncio.to_thread(_audio_consent, phone)
+                        consent = await asyncio.to_thread(_audio_consent, phone, context)
                         if consent is not True:
                             # Sin consentimiento NO se transcribe: se pregunta
                             # (y el audio espera) o se recuerda que puede
@@ -394,7 +453,7 @@ async def whatsapp_webhook(request: Request):
                         and is_audio_message
                         and (
                             await get_pending_confirmation(redis, phone)
-                            or await asyncio.to_thread(_has_open_expert_request, phone)
+                            or await asyncio.to_thread(_has_open_expert_request, phone, context)
                         )
                     )
                     if (
@@ -443,10 +502,13 @@ async def whatsapp_webhook(request: Request):
                             # vacío no matchea ninguna opción válida del paso, así que
                             # process_onboarding re-muestra la misma pregunta tal como
                             # ya hace ante cualquier respuesta no reconocida.
-                            user = await asyncio.to_thread(get_user, phone)
+                            user = (
+                                context.user if _usable(context)
+                                else await asyncio.to_thread(get_user, phone)
+                            )
                             if user is None or user.get("onboarding_step") != "done":
                                 onboarding_prompt = await asyncio.to_thread(
-                                    route_message, phone, "", None
+                                    route_message, phone, "", None, context=context,
                                 )
                                 await _send_response(phone, onboarding_prompt)
                         except WhatsAppAPIError as error:
@@ -464,7 +526,8 @@ async def whatsapp_webhook(request: Request):
                         try:
                             if is_affirmative(message):
                                 result = await asyncio.to_thread(
-                                    route_message, phone, pending_action, None
+                                    route_message, phone, pending_action, None,
+                                    context=context,
                                 )
                                 await _send_response(phone, result)
                             else:
@@ -499,10 +562,13 @@ async def whatsapp_webhook(request: Request):
                         continue
 
                     if not is_rate_limit_exempt(message):
-                        rate_limit = await asyncio.to_thread(
-                            check_message_rate_limit,
-                            phone,
-                        )
+                        if OPT_REDIS_RATE_LIMIT:
+                            rate_limit = await check_message_rate_limit_redis(redis, phone)
+                        else:
+                            rate_limit = await asyncio.to_thread(
+                                check_message_rate_limit,
+                                phone,
+                            )
                         if not rate_limit["allowed"]:
                             logger.warning(
                                 "Mensaje bloqueado por rate limit: phone=%s "
@@ -533,24 +599,25 @@ async def whatsapp_webhook(request: Request):
                         message,
                         reply_to_message_id,
                         message_id=message_id,
+                        context=context,
                     )
 
                     try:
+                        # Se encola antes de enviar el aviso: el worker empieza
+                        # sin esperar a Meta. El lock por teléfono sigue
+                        # garantizando que no se cruce con otra respuesta.
                         if result == "__AI_QUERY__":
-                            await send_text(phone, "🤔 Déjame pensar tu respuesta...")
                             await redis.enqueue_job(
                                 "process_ai_task",
                                 phone,
                                 message,
                                 lock_token=lock_token,
+                                **ai_queue_kwargs(),
                             )
                             hand_off_to_worker = True
+                            await _send_progress_notice(phone, "🤔 Déjame pensar tu respuesta...")
 
                         elif result == "__FINANCIAL_PARSE__":
-                            await send_text(
-                                phone,
-                                "🧾 Estoy revisando el movimiento...",
-                            )
                             await redis.enqueue_job(
                                 "process_financial_movement_task",
                                 phone,
@@ -559,10 +626,13 @@ async def whatsapp_webhook(request: Request):
                                 **financial_queue_kwargs(),
                             )
                             hand_off_to_worker = True
+                            await _send_progress_notice(phone, "🧾 Estoy revisando el movimiento...")
 
                         elif result == "__AI_QUERY_WITH_CONTEXT__":
-                            await send_text(phone, "🤔 Te ayudo con este hito...")
-                            user = await asyncio.to_thread(get_user, phone)
+                            user = (
+                                context.user if _usable(context)
+                                else await asyncio.to_thread(get_user, phone)
+                            )
                             hito_context = extract_hito_context(user) if user else None
                             await redis.enqueue_job(
                                 "process_ai_task",
@@ -571,8 +641,10 @@ async def whatsapp_webhook(request: Request):
                                 hito_context=hito_context,
                                 reformulate_mode=False,
                                 lock_token=lock_token,
+                                **ai_queue_kwargs(),
                             )
                             hand_off_to_worker = True
+                            await _send_progress_notice(phone, "🤔 Te ayudo con este hito...")
 
                         elif result == EXPERT_RELAY:
                             # Mensaje reenviado al panel del experto (HdU16):
@@ -605,10 +677,6 @@ async def whatsapp_webhook(request: Request):
                                     "¿Puedes escribirla nuevamente?",
                                 )
                             else:
-                                await send_text(
-                                    phone,
-                                    "Tienes razón, déjame explicarlo de otra forma...",
-                                )
                                 await redis.enqueue_job(
                                     "process_ai_task",
                                     phone,
@@ -616,8 +684,13 @@ async def whatsapp_webhook(request: Request):
                                     hito_context=None,
                                     reformulate_mode=True,
                                     lock_token=lock_token,
+                                    **ai_queue_kwargs(),
                                 )
                                 hand_off_to_worker = True
+                                await _send_progress_notice(
+                                    phone,
+                                    "Tienes razón, déjame explicarlo de otra forma...",
+                                )
 
                         else:
                             await _send_response(phone, result)

@@ -14,6 +14,7 @@ from db.users import (
     reset_user_profile,
     save_user,
     update_onboarding_profile,
+    update_user_fields,
 )
 from core.calendar_flow import (
     handle_calendar_message,
@@ -52,6 +53,7 @@ from core.onboarding import (
     process_onboarding,
 )
 from db.calendar import clear_calendar_session, get_calendar_session
+from db.message_context import NOT_LOADED, MessageContext
 from db.fondos import (
     cancel_fund_session,
     get_active_fund_session,
@@ -145,19 +147,36 @@ def _is_explicit_other_module_action(message: str) -> bool:
     return normalized in {normalize_fund_text(command) for command in commands}
 
 
-def _record_reply_safely(phone: str, reply_to_message_id: str | None) -> bool:
+def _record_reply_safely(
+    phone: str, reply_to_message_id: str | None, user: dict | None = None,
+) -> bool:
     try:
+        user_id = (user or {}).get("id")
+        if user_id:
+            return record_incoming_reminder_reply(phone, reply_to_message_id, user_id=user_id)
         return record_incoming_reminder_reply(phone, reply_to_message_id)
     except Exception as error:
         logger.error("No se pudo registrar la respuesta al recordatorio: %s", error)
         return False
 
 
-def _record_activity_safely(phone: str) -> None:
+def _record_activity_safely(phone: str, user: dict | None = None) -> None:
     try:
-        record_roadmap_activity(phone)
+        if user is not None and "roadmap" in user:
+            record_roadmap_activity(phone, user=user)
+        else:
+            record_roadmap_activity(phone)
     except Exception as error:
         logger.error("No se pudo registrar la actividad del roadmap: %s", error)
+
+
+# Columnas que modifican mark_hito_done y revert_last_hito (core/roadmaps.py).
+_ROADMAP_FIELDS = ("roadmap", "inicio_sii", "roadmap_completed_at", "roadmap_completion_stats")
+
+
+def _save_roadmap_fields(phone: str, user: dict) -> dict | None:
+    """Guarda solo el avance del roadmap, sin reescribir el perfil completo."""
+    return update_user_fields(phone, {key: user[key] for key in _ROADMAP_FIELDS if key in user})
 
 
 def _clear_completed_roadmap_safely(phone: str) -> None:
@@ -194,17 +213,26 @@ def route_message(
     message: str,
     reply_to_message_id: str | None = None,
     message_id: str | None = None,
+    context: MessageContext | None = None,
 ):
+    """Decide la respuesta de un mensaje.
+
+    context (opcional) trae en una lectura el perfil y los estados de
+    conversación (ver db/message_context.py). Sin él, cada estado se consulta
+    por separado como antes; la lógica de decisión es la misma en ambos casos.
+    """
     message = message.strip()
     msg_lower = message.lower()
 
     # Get or create user
+    use_context = context is not None and not context.stale and context.user is not None
     try:
-        user = get_user(phone, strict=True)
+        user = context.user if use_context else get_user(phone, strict=True)
         if not user:
             user = create_user_profile(phone)
     except UserPersistenceError:
         return "No pude consultar o guardar tu perfil en este momento. Inténtalo nuevamente más tarde."
+    preloaded_formalization = context.formalization if use_context else NOT_LOADED
 
     # Reiniciar y retirar los recordatorios siguen disponibles durante el registro.
     bypass_onboarding = (
@@ -221,13 +249,19 @@ def route_message(
     # ── Contacto con un experto (HdU16) ──
     # Va antes del resto de los flujos: mientras un experto conversa con el
     # emprendedor, el asistente de IA queda en pausa para él.
-    expert_response = handle_expert_message(user, message, RESET_COMMANDS, message_id)
+    expert_response = handle_expert_message(
+        user, message, RESET_COMMANDS, message_id,
+        open_request=context.expert_request if use_context else NOT_LOADED,
+    )
     if expert_response is not None:
         set_case("expert")
         if FORMALIZATION_DIAGNOSTICS_ENABLED:
             # El relé humano mantiene prioridad y no deja una pregunta numérica
             # del diagnóstico activa para cuando termine la conversación.
-            handle_diagnostic_message(user, "menu_experto", external_action=True)
+            handle_diagnostic_message(
+                user, "menu_experto", external_action=True,
+                preloaded_context=preloaded_formalization,
+            )
         return expert_response
 
     # Los usuarios antiguos completan solo los datos faltantes. La conversación
@@ -250,7 +284,7 @@ def route_message(
         )
         diagnostic_response = handle_diagnostic_message(
             user, message, external_action=external_action,
-            message_id=message_id,
+            message_id=message_id, preloaded_context=preloaded_formalization,
         )
         if diagnostic_response is not None:
             set_case("diagnostic")
@@ -269,11 +303,15 @@ def route_message(
     fund_session = None
     fund_definition = None
     try:
-        if user.get("id"):
-            fund_session = get_active_fund_session(user["id"])
-        if fund_session and fund_session.get("pending_field_key"):
-            key = fund_session["pending_field_key"]
-            fund_definition = get_requirement_definitions([key]).get(key)
+        if use_context:
+            fund_session = context.fund_session
+            fund_definition = context.fund_definition
+        else:
+            if user.get("id"):
+                fund_session = get_active_fund_session(user["id"])
+            if fund_session and fund_session.get("pending_field_key"):
+                key = fund_session["pending_field_key"]
+                fund_definition = get_requirement_definitions([key]).get(key)
         handles_fund = should_handle_fund_message(
             user, message, fund_session, fund_definition,
         )
@@ -287,7 +325,7 @@ def route_message(
             fund_session = None
             if not _is_explicit_other_module_action(message):
                 if reply_to_message_id or int(user.get("reminder_count") or 0) > 0:
-                    _record_reply_safely(phone, reply_to_message_id)
+                    _record_reply_safely(phone, reply_to_message_id, user)
                 # Una consulta como "¿qué me falta para formalizar?" no debe
                 # activar los comandos por substring que aparecen más abajo.
                 return "__AI_QUERY__"
@@ -300,11 +338,17 @@ def route_message(
 
     # Las entradas y botones de fondos también deben poder salir de otro
     # borrador, sin quedar capturados por el calendario o las finanzas.
+    # Sesiones ya leídas en el contexto; se descartan si este mensaje las borra.
+    prefetched_financial = context.financial_session if use_context else NOT_LOADED
+    prefetched_calendar = context.calendar_session if use_context else NOT_LOADED
+
     if handles_fund and (
         is_fund_entry_message(message) or msg_lower.startswith("fund_")
     ):
         _clear_calendar_session_safely(user.get("id"))
         _clear_financial_session_safely(user.get("id"))
+        if use_context:
+            prefetched_financial = prefetched_calendar = None
 
     # ── Reset command ──
     if msg_lower in RESET_COMMANDS:
@@ -358,7 +402,7 @@ def route_message(
 
     if msg_lower.rstrip(".") in PAUSE_REMINDERS_COMMANDS:
         set_case("reminders")
-        _record_reply_safely(phone, reply_to_message_id)
+        _record_reply_safely(phone, reply_to_message_id, user)
         try:
             reminders_were_disabled = disable_reminders(phone)
         except Exception as error:
@@ -388,6 +432,7 @@ def route_message(
         replied_to_reminder = _record_reply_safely(
             phone,
             reply_to_message_id,
+            user,
         )
 
     # ── Ingresos y gastos en lenguaje natural (HdU13) ──
@@ -398,7 +443,9 @@ def route_message(
         financial_session = None
         financial_entry = is_financial_entry_message(message)
         try:
-            if user.get("id"):
+            if prefetched_financial is not NOT_LOADED:
+                financial_session = prefetched_financial
+            elif user.get("id"):
                 financial_session = get_financial_session(user["id"])
         except Exception as error:
             logger.error("No se pudo consultar la sesión financiera: %s", error)
@@ -455,7 +502,9 @@ def route_message(
     calendar_session = None
     calendar_entry = is_calendar_entry_message(message)
     try:
-        if user.get("id"):
+        if prefetched_calendar is not NOT_LOADED:
+            calendar_session = prefetched_calendar
+        elif user.get("id"):
             calendar_session = get_calendar_session(user["id"])
     except Exception as error:
         logger.error("No se pudo consultar la sesión del calendario: %s", error)
@@ -526,7 +575,7 @@ def route_message(
     )
     if any(trigger in msg_lower for trigger in roadmap_triggers) and not asks_personal_data:
         set_case("roadmap")
-        _record_activity_safely(phone)
+        _record_activity_safely(phone, user)
         return get_roadmap_text(user)
 
     # ── Mark hito done ──
@@ -536,18 +585,18 @@ def route_message(
     ]
     if any(trigger in msg_lower for trigger in done_triggers):
         set_case("roadmap")
-        response = mark_hito_done(user, save_user)
+        response = mark_hito_done(user, _save_roadmap_fields)
         if get_pending_milestone(user) is None:
             _clear_completed_roadmap_safely(phone)
         else:
-            _record_activity_safely(phone)
+            _record_activity_safely(phone, user)
         return response
 
     # ── Revert last hito (deshacer paso) ──
     if msg_lower in [HITO_VOLVER_ID, "deshacer", "deshacer paso"]:
         set_case("roadmap")
-        response = revert_last_hito(user, save_user)
-        _record_activity_safely(phone)
+        response = revert_last_hito(user, _save_roadmap_fields)
+        _record_activity_safely(phone, user)
         return response
 
     # ── Ayuda contextual del hito ──
@@ -576,7 +625,7 @@ def route_message(
     if detect_unsatisfaction(message):
         record_unsatisfaction(user, message)
         response = handle_unsatisfaction_response(user)
-        _record_reply_safely(phone, reply_to_message_id)
+        _record_reply_safely(phone, reply_to_message_id, user)
         return response
      
     # ── Manejo de opciones de insatisfacción ──
@@ -621,7 +670,7 @@ def route_message(
     # "menu_financial" siempre gane sobre este fallback genérico.
     if replied_to_reminder:
         set_case("roadmap")
-        _record_activity_safely(phone)
+        _record_activity_safely(phone, user)
         return get_roadmap_text(user)
 
     # ── AI Chat (default) ──
@@ -705,7 +754,7 @@ def handle_unsatisfaction_choice(
         }
     
     elif choice_id == "unsatisfied_continue_roadmap":
-        _record_activity_safely(phone)
+        _record_activity_safely(phone, user)
         return get_roadmap_text(user)
     
     return "No entendí tu elección. Escribe *'menu'* para ver tus opciones."

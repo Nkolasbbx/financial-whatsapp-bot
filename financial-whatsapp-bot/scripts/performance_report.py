@@ -39,6 +39,9 @@ def read_records(inputs, run=None):
                     row = json.loads(line)
                     if not isinstance(row, dict) or row.get("schema") != 1:
                         continue
+                    if row.get("kind") == "loop_lag":
+                        # Event-loop probes are reported apart (read_loop_lag).
+                        continue
                     if row.get("phase") not in {"web", "worker"}:
                         raise ValueError("Invalid phase")
                     if not isinstance(row.get("trace_id"), str) or not isinstance(row.get("run"), str):
@@ -96,6 +99,47 @@ def samples_from_records(records):
 
 def percentile95(values):
     return sorted(values)[math.ceil(len(values) * .95) - 1] if values else None
+
+
+def read_loop_lag(inputs, run=None):
+    """Returns the lag samples (ms) logged by the worker event-loop probe."""
+    paths = set()
+    for item in inputs:
+        for match in glob.glob(str(item)):
+            path = Path(match)
+            paths.update(path.rglob("*.jsonl") if path.is_dir() else [path])
+    seen, values = set(), []
+    for path in sorted(paths):
+        with path.open(encoding="utf-8-sig", errors="replace") as source:
+            for line in source:
+                if PREFIX in line:
+                    line = line.split(PREFIX, 1)[1]
+                elif not line.lstrip().startswith("{"):
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("kind") != "loop_lag":
+                    continue
+                if run is not None and row.get("run") != run:
+                    continue
+                key = (row.get("pid"), row.get("recorded_at"))
+                if key in seen or not number(row.get("lag_ms")):
+                    continue
+                seen.add(key)
+                values.append(float(row["lag_ms"]))
+    return values
+
+
+def loop_lag_section(values, title="Retraso del event loop del worker"):
+    lines = ["", f"## {title}", "",
+             "Cada muestra es una espera de 100 ms que despertó al menos 50 ms tarde. Un valor alto indica trabajo síncrono bloqueando el worker."]
+    if not values:
+        return "\n".join(lines + ["", "Sin retrasos registrados (o la sonda no estaba activa)."]) + "\n"
+    lines += ["", "| Muestras | Mediana | P95 | Máximo |", "|---:|---:|---:|---:|",
+              f"| {len(values)} | {fmt(statistics.median(values))} | {fmt(percentile95(values))} | {fmt(max(values))} |"]
+    return "\n".join(lines) + "\n"
 
 
 def aggregate(samples):
@@ -177,12 +221,13 @@ def main(argv=None):
         before, malformed = read_records(args.inputs, args.run)
         if not before:
             parser.error("No se encontraron métricas; revisa las rutas y la etiqueta.")
-        output = report(before, malformed)
+        output = report(before, malformed) + loop_lag_section(read_loop_lag(args.inputs, args.run))
         if args.compare:
             after, invalid_after = read_records(args.compare, args.compare_run)
             if not after:
                 parser.error("No hay métricas para comparar.")
-            output = comparison(before, after) + "\n" + output + "\n" + report(after, invalid_after, "Ejecución posterior")
+            output = (comparison(before, after) + "\n" + output + "\n" + report(after, invalid_after, "Ejecución posterior")
+                      + loop_lag_section(read_loop_lag(args.compare, args.compare_run), "Retraso del event loop (ejecución posterior)"))
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(output, encoding="utf-8")

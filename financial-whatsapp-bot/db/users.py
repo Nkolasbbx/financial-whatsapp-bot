@@ -338,16 +338,93 @@ def save_message(
             )
             return
 
-        dependencies.supabase.table("messages").insert({
-            "user_id": user_id,
-            "phone": phone,  # Se mantiene temporalmente por compatibilidad.
-            "role": role,
-            "channel": channel,
-            "content": content,
-        }).execute()
+        save_messages_by_user_id(
+            user_id, phone, [{"role": role, "content": content}], channel=channel,
+        )
 
     except Exception as error:
         logger.error("Supabase save_message error: %s", error)
+
+
+def save_messages_by_user_id(
+    user_id: str,
+    phone: str,
+    messages: list[dict],
+    channel: str = "whatsapp",
+) -> None:
+    """Guarda varios mensajes en un solo insert, sin volver a buscar el usuario.
+
+    Cada mensaje es {"role", "content"} y opcionalmente "created_at". Si se
+    guardan juntos (pregunta y respuesta), conviene enviar created_at: en un
+    mismo insert Postgres asigna el mismo now() a todas las filas y el orden
+    del historial quedaría indefinido. Lanza la excepción al llamador.
+    """
+    import dependencies
+
+    if not dependencies.supabase or not messages:
+        return
+
+    rows = []
+    for message in messages:
+        row = {
+            "user_id": user_id,
+            "phone": phone,  # Se mantiene temporalmente por compatibilidad.
+            "role": message["role"],
+            "channel": channel,
+            "content": message["content"],
+        }
+        if message.get("created_at"):
+            row["created_at"] = message["created_at"]
+        rows.append(row)
+
+    dependencies.supabase.table("messages").insert(rows).execute()
+
+
+class MessageCounterUnavailable(RuntimeError):
+    """append_messages_v1 no está disponible: usar insert + conteo."""
+
+
+# PostgREST no encontró la función (PGRST202) o Postgres no la conoce (42883).
+_MISSING_FUNCTION_CODES = {"PGRST202", "42883"}
+
+
+def append_messages_by_user_id(user_id: str, phone: str, messages: list[dict]) -> int:
+    """Inserta mensajes y devuelve el total del usuario en un viaje (P-10).
+
+    Usa la RPC append_messages_v1 (users.message_count se mantiene con
+    triggers). Lanza MessageCounterUnavailable si la RPC no existe o falla,
+    para que el llamador use el camino anterior sin perder los mensajes.
+    """
+    import dependencies
+
+    client = getattr(dependencies, "supabase_admin", None)
+    if client is None:
+        raise MessageCounterUnavailable("Falta el cliente administrativo")
+    payload = [
+        {key: message[key] for key in ("role", "content", "created_at", "channel") if message.get(key)}
+        for message in messages
+    ]
+    try:
+        data = client.rpc("append_messages_v1", {
+            "p_user_id": user_id, "p_phone": phone, "p_messages": payload,
+        }).execute().data
+    except Exception as error:
+        # Solo "la función no existe" garantiza que no se insertó nada. Ante
+        # otro error (timeout, red) el insert pudo ocurrir: reintentar por el
+        # camino anterior duplicaría los mensajes, así que se propaga.
+        if getattr(error, "code", None) in _MISSING_FUNCTION_CODES:
+            raise MessageCounterUnavailable(type(error).__name__) from error
+        raise
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if isinstance(data, dict):
+        data = next(iter(data.values()), None)
+    try:
+        return int(data)
+    except (TypeError, ValueError):
+        # Los mensajes ya se guardaron; sin total no se decide el resumen.
+        logger.warning("append_messages_v1 devolvió un total inesperado")
+        return 0
 
 
 def get_messages(phone: str, limit: int = 12) -> list[dict]:
@@ -367,25 +444,33 @@ def get_messages(phone: str, limit: int = 12) -> list[dict]:
             )
             return []
 
-        result = (
-            dependencies.supabase
-            .table("messages")
-            .select("role, content")
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-
-        messages = result.data or []
-
-        # La consulta trae primero los mensajes más recientes.
-        # Se invierten para entregarlos en orden cronológico.
-        return list(reversed(messages))
+        return get_messages_by_user_id(user_id, limit=limit)
 
     except Exception as error:
         logger.error("Supabase get_messages error: %s", error)
         return []
+
+
+def get_messages_by_user_id(user_id: str, limit: int = 12) -> list[dict]:
+    """Últimos mensajes en orden cronológico. Lanza la excepción al llamador."""
+    import dependencies
+
+    if not dependencies.supabase:
+        return []
+
+    result = (
+        dependencies.supabase
+        .table("messages")
+        .select("role, content")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+
+    # La consulta trae primero los mensajes más recientes.
+    # Se invierten para entregarlos en orden cronológico.
+    return list(reversed(result.data or []))
 
 
 def get_last_user_message(phone: str) -> str | None:
@@ -439,19 +524,61 @@ def contar_mensajes(phone: str) -> int:
         if not user_id:
             return 0
 
-        result = (
-            dependencies.supabase
-            .table("messages")
-            .select("id", count="exact")
-            .eq("user_id", user_id)
-            .execute()
-        )
-
-        return result.count or 0
+        return count_messages_by_user_id(user_id)
 
     except Exception as error:
         logger.error("Supabase contar_mensajes error: %s", error)
         return 0
+
+
+def count_messages_by_user_id(user_id: str) -> int:
+    """Cuenta los mensajes sin descargar filas (HEAD con count exacto)."""
+    import dependencies
+
+    if not dependencies.supabase:
+        return 0
+
+    result = (
+        dependencies.supabase
+        .table("messages")
+        .select("id", count="exact", head=True)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return result.count or 0
+
+
+def update_user_fields(phone: str, fields: dict) -> dict | None:
+    """Actualiza solo las columnas indicadas, sin reescribir el resto del perfil.
+
+    A diferencia de save_user, no pisa con una copia vieja los cambios que
+    otro proceso (panel admin, recordatorios) haya hecho en otras columnas.
+    """
+    import dependencies
+
+    if not fields:
+        return None
+    payload = {**fields, "updated_at": datetime.now(timezone.utc).isoformat()}
+    payload.pop("conversation_history", None)
+
+    if dependencies.supabase:
+        try:
+            result = (
+                dependencies.supabase
+                .table("users")
+                .update(payload)
+                .eq("phone", phone)
+                .execute()
+            )
+            return result.data[0] if result.data else None
+        except Exception as error:
+            logger.error("No se pudo actualizar el perfil (%s)", type(error).__name__)
+            return None
+
+    if phone in users_db:
+        users_db[phone] = {**users_db[phone], **payload}
+        return dict(users_db[phone])
+    return None
 
 
 def get_users_by_comuna(comuna: str) -> list[dict]:

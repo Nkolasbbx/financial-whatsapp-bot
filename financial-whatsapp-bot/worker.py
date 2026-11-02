@@ -6,7 +6,7 @@ from arq import cron
 
 import dependencies
 from config import ADMIN_COMUNA_GENERAL, ARQ_QUEUE_NAME, INGESTION_JOB_TIMEOUT_SECONDS
-from core.ia import process_ai_and_send
+from core.ia import _obtener_embeddings_ejemplos, process_ai_and_send
 from core.ingestion import (
     embed_batch_remoto,
     extract_markdown_frontmatter,
@@ -20,7 +20,7 @@ from services.alertas_tributarias import send_tax_alerts
 from services.calendar_reminders import send_due_calendar_reminders
 from services.community_notices import send_due_community_notices
 from services.financial_movements import process_financial_movement_and_send
-from services.performance import observe_financial_job
+from services.performance import monitor_loop_lag, observe_ai_job, observe_financial_job
 from services.google_calendar import sync_pending_google_events
 
 from services.ingestion_jobs import STORAGE_BUCKET
@@ -54,13 +54,31 @@ async def startup(ctx):
         raise RuntimeError(
             "El worker no puede arrancar sin: " + ", ".join(faltantes) + ". Revisa las variables de entorno."
         )
+    ctx["loop_lag_task"] = asyncio.create_task(monitor_loop_lag())
+    ctx["embedding_warmup_task"] = asyncio.create_task(_warm_up_rag_classifier())
     logger.info("Worker escuchando la cola %s", ARQ_QUEUE_NAME)
 
 
+async def _warm_up_rag_classifier() -> None:
+    """Precalcula en segundo plano los embeddings de ejemplo del clasificador
+    RAG, para que la primera consulta ambigua tras un deploy no los espere.
+    Si falla, se calculan al primer uso como antes."""
+    try:
+        await _obtener_embeddings_ejemplos()
+        logger.info("Embeddings de ejemplo del clasificador RAG listos")
+    except Exception as error:
+        logger.warning("No se pudieron precalcular los embeddings de ejemplo: %s", error)
+
+
 async def shutdown(ctx):
+    for name in ("loop_lag_task", "embedding_warmup_task"):
+        task = ctx.get(name)
+        if task is not None:
+            task.cancel()
     await dependencies.shutdown_dependencies()
 
 
+@observe_ai_job
 async def process_ai_task(
     ctx,
     phone: str,
@@ -68,6 +86,7 @@ async def process_ai_task(
     hito_context: dict | None = None,
     reformulate_mode: bool = False,
     lock_token: str | None = None,
+    performance_context: dict | None = None,
 ):
     """Job que ejecuta el worker: procesa la IA y envía la respuesta por WhatsApp.
 

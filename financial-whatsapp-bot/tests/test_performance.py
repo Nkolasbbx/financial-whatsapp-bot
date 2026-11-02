@@ -109,13 +109,58 @@ class PerformanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trace.stages["test"]["errors"], 1)
         self.assertNotIn("private failure", json.dumps(trace.record()))
 
-    def test_advisor_is_excluded_entirely(self):
-        route = perf.observe_route(lambda: "__AI_QUERY_WITH_CONTEXT__")
-        with patch.object(perf.logger, "info") as log:
-            with perf.trace_scope(perf.Trace()) as trace:
-                self.assertEqual(route(), "__AI_QUERY_WITH_CONTEXT__")
-        self.assertTrue(trace.excluded)
-        log.assert_not_called()
+    def test_advisor_route_is_measured_as_ai_case(self):
+        for result in ("__AI_QUERY__", "__AI_QUERY_WITH_CONTEXT__", "__AI_QUERY_WITH_REFORMULATE__"):
+            route = perf.observe_route(lambda result=result: result)
+            with patch.object(perf, "_emit"):
+                with perf.trace_scope(perf.Trace()) as trace:
+                    self.assertEqual(route(), result)
+            self.assertFalse(trace.excluded)
+            self.assertEqual(trace.case, "ai")
+
+    async def test_ai_queue_links_phases_without_personal_data(self):
+        with patch.object(perf, "_emit"):
+            with perf.trace_scope(perf.Trace()) as web:
+                perf.set_case("ai")
+                kwargs = perf.ai_queue_kwargs()
+        self.assertEqual(web.outcome, "queued")
+
+        @perf.observe_ai_job
+        async def job(ctx, phone, message, performance_context=None):
+            with perf.span("ai_llm"):
+                pass
+            perf._current.get().accepted()
+            return "sent"
+        with patch.object(perf, "_emit") as emit:
+            self.assertEqual(await job({"job_try": 1}, "56911111111", "private question", **kwargs), "sent")
+        worker = emit.call_args.args[0]
+        self.assertEqual((worker.trace_id, worker.phase, worker.case), (web.trace_id, "worker", "ai"))
+        self.assertIn("ai_llm", worker.stages)
+        serialized = json.dumps(worker.record())
+        for private in ("56911111111", "private question"):
+            self.assertNotIn(private, serialized)
+
+    async def test_loop_lag_probe_logs_only_when_enabled(self):
+        with patch.object(perf, "_write_line") as write, patch("time.perf_counter", side_effect=[0.0, 0.3, 1.0, 1.0]):
+            task = asyncio.ensure_future(perf.monitor_loop_lag(interval=0))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            task.cancel()
+        row = json.loads(write.call_args_list[0].args[0])
+        self.assertEqual(row["kind"], "loop_lag")
+        self.assertGreater(row["lag_ms"], 50)
+        with patch.dict(os.environ, {"PERFORMANCE_METRICS_ENABLED": "false"}):
+            self.assertIsNone(await perf.monitor_loop_lag())
+
+    def test_report_keeps_loop_lag_apart_from_samples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "metrics-1.jsonl"
+            lag = {"schema": 1, "kind": "loop_lag", "run": "baseline", "pid": 1, "lag_ms": 820.0, "recorded_at": "x"}
+            path.write_text(json.dumps(record()) + "\n" + json.dumps(lag) + "\n", encoding="utf-8")
+            records, malformed = report.read_records([directory], "baseline")
+            self.assertEqual((len(records), malformed), (1, 0))
+            self.assertEqual(report.read_loop_lag([directory], "baseline"), [820.0])
+            self.assertIn("820.0", report.loop_lag_section([820.0]))
 
     async def test_meta_send_preserves_result_and_marks_acceptance(self):
         response = {"messages": [{"id": "wamid.secret"}]}

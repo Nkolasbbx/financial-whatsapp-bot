@@ -145,6 +145,28 @@ RAG_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.6"))
 # Fragmentos "hijo" candidatos que se piden a pgvector, y cuántos bloques
 # "padre" distintos llegan finalmente al prompt (ver core/ia.py::obtener_contexto_rag).
 RAG_CANDIDATES = int(os.getenv("RAG_CANDIDATES", "20"))
+# Conexiones del pool psycopg2 (RAG y documentos). Igual a max_jobs del worker
+# para que los jobs IA en paralelo no agoten el pool.
+PG_POOL_MAX_CONN = int(os.getenv("PG_POOL_MAX_CONN", "10"))
+
+
+def _flag(name: str) -> bool:
+    return os.getenv(name, "false").strip().lower() == "true"
+
+
+# HDU optimización, Fase 2. Cada camino nuevo se activa por separado y vuelve
+# al comportamiento anterior al apagarlo, sin deploy de código.
+# Requieren las migraciones 20261105_message_context y 20261106_apply_delivery_status.
+OPT_MESSAGE_CONTEXT_RPC = _flag("OPT_MESSAGE_CONTEXT_RPC")
+OPT_DELIVERY_STATUS_RPC = _flag("OPT_DELIVERY_STATUS_RPC")
+# Rate limit en Redis en vez de la RPC check_message_rate_limit.
+OPT_REDIS_RATE_LIMIT = _flag("OPT_REDIS_RATE_LIMIT")
+# Fase 3 (P-10): guardar pregunta/respuesta y obtener el total en una llamada
+# (append_messages_v1) y resumir por mensajes nuevos desde summary_checkpoint.
+# Requiere la migración 20261107_message_counter.
+OPT_MESSAGE_COUNTER = _flag("OPT_MESSAGE_COUNTER")
+# Vigencia de la caché en memoria de catálogos estáticos (segundos; 0 = sin caché).
+CATALOG_CACHE_TTL_SECONDS = int(os.getenv("CATALOG_CACHE_TTL_SECONDS", "600"))
 RAG_TOP_PARENTS = int(os.getenv("RAG_TOP_PARENTS", "3"))
 
 # HdU15 — Ingesta automática de documentos desde el panel admin.

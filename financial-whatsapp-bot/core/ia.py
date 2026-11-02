@@ -22,6 +22,7 @@ from config import (
     MODEL_NAME,
     OLLAMA_MODEL,
     OLLAMA_URL,
+    OPT_MESSAGE_COUNTER,
     RAG_CANDIDATES,
     RAG_SIMILARITY_THRESHOLD,
     RAG_TOP_PARENTS,
@@ -46,14 +47,19 @@ from db.formalization_diagnostics import (
     get_formalization_estimate_catalog,
 )
 from db.users import (
+    MessageCounterUnavailable,
+    append_messages_by_user_id,
     contar_mensajes,
+    count_messages_by_user_id,
     get_messages,
+    get_messages_by_user_id,
     get_user,
     save_message,
-    save_user,
+    save_messages_by_user_id,
 )
 from core.menu import INTERACTIVE_BODY_LIMIT, MENU_BUTTON
 from services.message_router import split_message
+from services.performance import span
 from services.whatsapp import WhatsAppAPIError, send_interactive_buttons, send_text
 
 
@@ -139,20 +145,15 @@ def configure_ollama_endpoint(ollama_url: str, ollama_model: str, ia_api_key: st
     return endpoint_url, headers
 
 
-def llamar_llm(
+def _llm_request(
     messages: list,
-    max_tokens: int = 600,
-    temperature: float = 0.2,
-    ollama_url: str = None,
-    ollama_model: str = None,
-    ia_api_key: str = None,
-    disable_reasoning: bool = False,
-) -> str:
-    """Llama al LLM (OpenRouter/proveedor compatible OpenAI u Ollama/Ngrok según configuración en .env).
-
-    disable_reasoning envía {"reasoning": {"enabled": false}} (parámetro de
-    OpenRouter) para modelos que razonan por defecto, como Claude Haiku 5.5.
-    """
+    max_tokens: int,
+    temperature: float,
+    ollama_url: str,
+    ollama_model: str,
+    ia_api_key: str,
+    disable_reasoning: bool,
+) -> tuple[str, dict, dict]:
     endpoint_url, headers = configure_ollama_endpoint(ollama_url, ollama_model, ia_api_key)
 
     payload = {
@@ -164,6 +165,33 @@ def llamar_llm(
     }
     if disable_reasoning:
         payload["reasoning"] = {"enabled": False}
+    return endpoint_url, headers, payload
+
+
+def _llm_content(data: dict) -> str:
+    return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+
+def llamar_llm(
+    messages: list,
+    max_tokens: int = 600,
+    temperature: float = 0.2,
+    ollama_url: str = None,
+    ollama_model: str = None,
+    ia_api_key: str = None,
+    disable_reasoning: bool = False,
+) -> str:
+    """Llama al LLM (OpenRouter/proveedor compatible OpenAI u Ollama/Ngrok según configuración en .env).
+
+    Versión síncrona: solo para llamadores que ya corren en un hilo (parser
+    financiero, resumen). Dentro de una corrutina usar llamar_llm_async.
+
+    disable_reasoning envía {"reasoning": {"enabled": false}} (parámetro de
+    OpenRouter) para modelos que razonan por defecto, como Claude Haiku 5.5.
+    """
+    endpoint_url, headers, payload = _llm_request(
+        messages, max_tokens, temperature, ollama_url, ollama_model, ia_api_key, disable_reasoning,
+    )
 
     logger.info(f"🚀 Despachando inferencia a: {endpoint_url}")
     try:
@@ -174,14 +202,50 @@ def llamar_llm(
             timeout=60,
         )
         response.raise_for_status()
-        data = response.json()
-        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return _llm_content(response.json())
 
     except httpx.TimeoutException:
         logger.error("⏳ Timeout al conectar con el servidor de IA")
         return ""
     except Exception as e:
         logger.error(f"💥 Error crítico en llamar_llm: {e}")
+        return ""
+
+
+async def llamar_llm_async(
+    messages: list,
+    max_tokens: int = 600,
+    temperature: float = 0.2,
+    ollama_url: str = None,
+    ollama_model: str = None,
+    ia_api_key: str = None,
+    disable_reasoning: bool = False,
+) -> str:
+    """Igual que llamar_llm, pero sin bloquear el event loop del worker.
+
+    Reutiliza el cliente HTTP compartido (dependencies.llm_http_client) para
+    no abrir una conexión TLS nueva en cada consulta.
+    """
+    endpoint_url, headers, payload = _llm_request(
+        messages, max_tokens, temperature, ollama_url, ollama_model, ia_api_key, disable_reasoning,
+    )
+
+    logger.info(f"🚀 Despachando inferencia a: {endpoint_url}")
+    client = dependencies.llm_http_client
+    try:
+        if client is None:
+            async with httpx.AsyncClient(timeout=60) as temporary_client:
+                response = await temporary_client.post(endpoint_url, headers=headers, json=payload)
+        else:
+            response = await client.post(endpoint_url, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        return _llm_content(response.json())
+
+    except httpx.TimeoutException:
+        logger.error("⏳ Timeout al conectar con el servidor de IA")
+        return ""
+    except Exception as e:
+        logger.error(f"💥 Error crítico en llamar_llm_async: {e}")
         return ""
 
 
@@ -208,14 +272,16 @@ async def obtener_embeddings_remotos_batch(
 
     textos_con_prefijo = [f"{prefix}: {texto}" for texto in textos]
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            url,
-            headers=headers,
-            json={"inputs": textos_con_prefijo, "options": {"wait_for_model": True}},
-        )
-        response.raise_for_status()
-        data = response.json()
+    body = {"inputs": textos_con_prefijo, "options": {"wait_for_model": True}}
+    client = dependencies.embedding_http_client
+    if client is None:
+        async with httpx.AsyncClient(timeout=timeout) as temporary_client:
+            response = await temporary_client.post(url, headers=headers, json=body)
+    else:
+        # Cliente compartido: reutiliza la conexión TLS con Hugging Face.
+        response = await client.post(url, headers=headers, json=body, timeout=timeout)
+    response.raise_for_status()
+    data = response.json()
 
     if not isinstance(data, list) or len(data) != len(textos):
         raise ValueError("Formato de respuesta inesperado desde Hugging Face Inference API")
@@ -307,15 +373,50 @@ def actualizar_resumen_conversacion(phone: str) -> str | None:
 
     if dependencies.supabase:
         try:
-            dependencies.supabase.table("users").update(
-                {"resumen_conversacion": resumen}
-            ).eq("phone", phone).execute()
+            checkpoint = _summary_checkpoint(user)
+            if checkpoint is None:
+                dependencies.supabase.table("users").update(
+                    {"resumen_conversacion": resumen}
+                ).eq("phone", phone).execute()
+            else:
+                # Solo guarda si nadie más resumió mientras tanto (P-10): dos
+                # resúmenes simultáneos no se pisan y el resumen es idempotente.
+                previous, total = checkpoint
+                result = (
+                    dependencies.supabase.table("users")
+                    .update({"resumen_conversacion": resumen, "summary_checkpoint": total})
+                    .eq("phone", phone)
+                    .eq("summary_checkpoint", previous)
+                    .execute()
+                )
+                if not getattr(result, "data", None):
+                    logger.info("Otro resumen ya avanzó para %s; se descarta este", phone)
+                    return None
             logger.info(f"✅ Resumen actualizado para {phone}")
         except Exception as e:
             logger.error(f"Supabase update resumen_conversacion error: {e}")
             return None
 
     return resumen
+
+
+def _summary_checkpoint(user: dict) -> tuple[int, int] | None:
+    """(checkpoint actual, total de mensajes) si el contador está activo y migrado."""
+    if not OPT_MESSAGE_COUNTER:
+        return None
+    previous, total = user.get("summary_checkpoint"), user.get("message_count")
+    if isinstance(previous, int) and isinstance(total, int):
+        return previous, total
+    return None
+
+
+def _debe_resumir(user: dict, total_mensajes: int) -> bool:
+    """Con el contador (P-10) resume tras RESUMEN_FRECUENCIA_MENSAJES nuevos
+    desde el último resumen; sin él, mantiene el criterio por múltiplos."""
+    previous = user.get("summary_checkpoint") if OPT_MESSAGE_COUNTER else None
+    if isinstance(previous, int):
+        return total_mensajes - previous >= RESUMEN_FRECUENCIA_MENSAJES
+    return _debe_actualizar_resumen(total_mensajes)
 
 
 def actualizar_resumen_en_background(phone: str, background_tasks=None):
@@ -468,6 +569,34 @@ def _seleccionar_fragmentos(resultados, rubro_usuario: str) -> tuple[list[tuple]
     return seleccion[:RAG_TOP_PARENTS], descartados
 
 
+def _buscar_documentos(query_vector: list[float], ambitos: list[str]) -> list[tuple]:
+    """Búsqueda pgvector síncrona; se llama con asyncio.to_thread."""
+    conn = dependencies.get_pg_conn()
+    try:
+        with conn.cursor() as cur:
+            # SET LOCAL dura solo esta transacción; el pool hace rollback
+            # al devolver la conexión.
+            cur.execute(f"SET LOCAL hnsw.ef_search = {RAG_HNSW_EF_SEARCH};", None)
+            cur.execute(
+                """
+                SELECT content, metadata, embedding <=> %s::vector AS distance
+                FROM documents
+                WHERE lower(coalesce(metadata->>'comuna', 'general')) = ANY(%s)
+                  AND (
+                      metadata->>'vigencia_hasta' IS NULL
+                      OR metadata->>'vigencia_hasta' = ''
+                      OR (metadata->>'vigencia_hasta')::date >= CURRENT_DATE
+                  )
+                ORDER BY distance
+                LIMIT %s;
+            """,
+                (query_vector, ambitos, RAG_CANDIDATES),
+            )
+            return cur.fetchall()
+    finally:
+        dependencies.db_pool.putconn(conn)
+
+
 async def obtener_contexto_rag(
     message: str,
     comuna_usuario: str,
@@ -515,33 +644,13 @@ async def obtener_contexto_rag(
             raise RuntimeError("El pool PostgreSQL para RAG no está disponible")
 
         if query_vector is None:
-            query_vector = await obtener_embedding_remoto(message)
+            with span("ai_embedding"):
+                query_vector = await obtener_embedding_remoto(message)
 
-        conn = dependencies.db_pool.getconn()
-        try:
-            with conn.cursor() as cur:
-                # SET LOCAL dura solo esta transacción; el pool hace rollback
-                # al devolver la conexión.
-                cur.execute(f"SET LOCAL hnsw.ef_search = {RAG_HNSW_EF_SEARCH};", None)
-                cur.execute(
-                    """
-                    SELECT content, metadata, embedding <=> %s::vector AS distance
-                    FROM documents
-                    WHERE lower(coalesce(metadata->>'comuna', 'general')) = ANY(%s)
-                      AND (
-                          metadata->>'vigencia_hasta' IS NULL
-                          OR metadata->>'vigencia_hasta' = ''
-                          OR (metadata->>'vigencia_hasta')::date >= CURRENT_DATE
-                      )
-                    ORDER BY distance
-                    LIMIT %s;
-                """,
-                    (query_vector, ambitos, RAG_CANDIDATES),
-                )
-
-                resultados = cur.fetchall()
-        finally:
-            dependencies.db_pool.putconn(conn)
+        # psycopg2 es síncrono: la consulta corre en un hilo para no detener
+        # el event loop del worker mientras Postgres responde.
+        with span("ai_rag_query"):
+            resultados = await asyncio.to_thread(_buscar_documentos, query_vector, ambitos)
 
         seleccion, descartados = _seleccionar_fragmentos(resultados, rubro_usuario)
 
@@ -649,15 +758,14 @@ async def _obtener_embeddings_ejemplos() -> dict[str, list[list[float]]]:
 
     async with _lock_embeddings_ejemplos:
         if _cache_embeddings_ejemplos is None:
+            # Una sola petición para todas las frases (antes era una por frase).
+            vectores = await obtener_embeddings_remotos_batch(
+                [*EJEMPLOS_DOCUMENTALES, *EJEMPLOS_NO_DOCUMENTALES], prefix="passage",
+            )
+            corte = len(EJEMPLOS_DOCUMENTALES)
             _cache_embeddings_ejemplos = {
-                "documentales": [
-                    await obtener_embedding_remoto(frase, prefix="passage")
-                    for frase in EJEMPLOS_DOCUMENTALES
-                ],
-                "no_documentales": [
-                    await obtener_embedding_remoto(frase, prefix="passage")
-                    for frase in EJEMPLOS_NO_DOCUMENTALES
-                ],
+                "documentales": vectores[:corte],
+                "no_documentales": vectores[corte:],
             }
 
     return _cache_embeddings_ejemplos
@@ -1520,33 +1628,42 @@ async def get_ai_response(
 ) -> str:
     phone = user.get("phone")
     comuna_usuario = (user.get("comuna") or "").lower().strip()
+    # La pregunta se fecha al llegar al worker y la respuesta al guardarla:
+    # ambas se insertan juntas y así el historial conserva su orden.
+    asked_at = datetime.now(timezone.utc)
 
- 
     # Historial antes del RAG: sirve para armar la búsqueda de los mensajes
     # de seguimiento y luego como contexto del LLM (misma lectura).
-    history = get_messages(phone, limit=10) if phone else user.get("conversation_history", [])[-10:]
+    with span("ai_history"):
+        history = (
+            await asyncio.to_thread(_load_history, user, phone)
+            if phone else user.get("conversation_history", [])[-10:]
+        )
 
     # ── 1. RECUPERACIÓN RAG solo para consultas informativas ──
     texto_busqueda = _texto_busqueda_rag(message, history)
-    usa_rag, query_vector = await requiere_rag(texto_busqueda)
+    with span("ai_rag_decision"):
+        usa_rag, query_vector = await requiere_rag(texto_busqueda)
     if usa_rag:
-        contexto_rag = await obtener_contexto_rag(
-            texto_busqueda,
-            comuna_usuario,
-            query_vector=query_vector,
-            rubro_usuario=user.get("rubro") or "",
-            mensaje_actual=_redactar_datos_personales(message),
-        )
+        with span("ai_rag"):
+            contexto_rag = await obtener_contexto_rag(
+                texto_busqueda,
+                comuna_usuario,
+                query_vector=query_vector,
+                rubro_usuario=user.get("rubro") or "",
+                mensaje_actual=_redactar_datos_personales(message),
+            )
         contexto_texto = contexto_rag["contexto"]
         fuentes_rag = contexto_rag["fuentes"]
     else:
         contexto_texto = "No se requiere información documental para este mensaje."
         fuentes_rag = []
-    contexto_personal = await asyncio.to_thread(
-        _build_personalized_context,
-        user,
-        message,
-    )
+    with span("ai_personal_context"):
+        contexto_personal = await asyncio.to_thread(
+            _build_personalized_context,
+            user,
+            message,
+        )
  
     # ── 2. PROMPT AUMENTADO (perfil + progreso) ──
 
@@ -1582,15 +1699,16 @@ async def get_ai_response(
     messages.append({"role": "user", "content": message})
 
     # 4. Generación
-    ai_text = llamar_llm(
-        messages=messages,
-        max_tokens=600,
-        temperature=0.2,
-        ollama_url=OLLAMA_URL,
-        ollama_model=OLLAMA_MODEL,
-        ia_api_key=IA_API_KEY,
-        disable_reasoning=IA_DISABLE_REASONING,
-    )
+    with span("ai_llm"):
+        ai_text = await llamar_llm_async(
+            messages=messages,
+            max_tokens=600,
+            temperature=0.2,
+            ollama_url=OLLAMA_URL,
+            ollama_model=OLLAMA_MODEL,
+            ia_api_key=IA_API_KEY,
+            disable_reasoning=IA_DISABLE_REASONING,
+        )
 
     if not ai_text:
         return "😅 Tuve un problema al procesar tu consulta con el modelo. ¿Puedes intentar de nuevo?"
@@ -1618,14 +1736,65 @@ async def get_ai_response(
 
     # 5. Persistencia
     if phone:
-        save_message(phone, "user", message)
-        save_message(phone, "assistant", ai_text)
-
-        total_mensajes = contar_mensajes(phone)
-        if total_mensajes and _debe_actualizar_resumen(total_mensajes):
+        with span("ai_persist"):
+            total_mensajes = await asyncio.to_thread(
+                _persist_turn, user, phone, message, ai_text, asked_at,
+            )
+        if total_mensajes and _debe_resumir(user, total_mensajes):
             actualizar_resumen_en_background(phone, background_tasks)
 
     return ai_text
+
+
+def _load_history(user: dict, phone: str, limit: int = 10) -> list[dict]:
+    """Historial reciente reutilizando el UUID ya leído (sin get_user_id)."""
+    if not _valid_user_id(user.get("id")):
+        return get_messages(phone, limit=limit)
+    try:
+        return get_messages_by_user_id(str(user["id"]), limit=limit)
+    except Exception as error:
+        logger.error("Supabase get_messages error: %s", error)
+        return []
+
+
+def _persist_turn(user: dict, phone: str, message: str, ai_text: str, asked_at: datetime) -> int:
+    """Guarda pregunta y respuesta en un solo insert y devuelve el total.
+
+    Con un UUID válido son 2 accesos (insert + conteo); sin él se mantiene el
+    camino por teléfono. Un fallo al guardar no impide enviar la respuesta.
+    """
+    if not _valid_user_id(user.get("id")):
+        save_message(phone, "user", message)
+        save_message(phone, "assistant", ai_text)
+        return contar_mensajes(phone)
+
+    user_id = str(user["id"])
+    answered_at = max(datetime.now(timezone.utc), asked_at + timedelta(milliseconds=1))
+    turn = [
+        {"role": "user", "content": message, "created_at": asked_at.isoformat()},
+        {"role": "assistant", "content": ai_text, "created_at": answered_at.isoformat()},
+    ]
+    if OPT_MESSAGE_COUNTER:
+        # Un solo acceso: inserta y devuelve users.message_count (P-10).
+        try:
+            return append_messages_by_user_id(user_id, phone, turn)
+        except MessageCounterUnavailable as error:
+            logger.warning(
+                "No se pudo usar el contador de mensajes (%s); se usa el camino anterior", error,
+            )
+        except Exception as error:
+            logger.error("Supabase append_messages error: %s", type(error).__name__)
+            return 0
+    try:
+        save_messages_by_user_id(user_id, phone, turn)
+    except Exception as error:
+        logger.error("Supabase save_message error: %s", error)
+        return 0
+    try:
+        return count_messages_by_user_id(user_id)
+    except Exception as error:
+        logger.error("Supabase contar_mensajes error: %s", error)
+        return 0
 
 
 _CLOSING_LINE = "💬 ¿Tienes otra duda? Escríbela o regresa al menú:"
@@ -1666,10 +1835,12 @@ async def process_ai_and_send(
         hito_context=hito_context,
         reformulate_mode=reformulate_mode,
     )
-    await asyncio.to_thread(save_user, phone, user)
+    # get_ai_response no modifica el perfil: reescribirlo completo aquí solo
+    # costaba un acceso y podía pisar cambios hechos mientras respondía la IA.
 
     try:
-        await _send_ai_response_with_menu(phone, ai_response)
+        with span("ai_send"):
+            await _send_ai_response_with_menu(phone, ai_response)
         logger.info("Respuesta de IA enviada a %s", phone)
     except WhatsAppAPIError as error:
         logger.error("No se pudo enviar la respuesta de IA a %s: %s", phone, error)
@@ -1698,7 +1869,8 @@ async def process_ai_and_send_Twillio(
         hito_context=hito_context,
         reformulate_mode=reformulate_mode,
     )
-    save_user_fn(phone_clean, user)
+    # save_user_fn se conserva en la firma por compatibilidad; el perfil no
+    # cambia durante la respuesta y no se reescribe (ver process_ai_and_send).
 
     if twilio_client:
         try:

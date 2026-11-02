@@ -90,23 +90,26 @@ def disable_reminders(phone: str) -> bool:
     return True
 
 
-def record_roadmap_activity(phone: str) -> None:
+def record_roadmap_activity(phone: str, user: dict | None = None) -> None:
+    """Registra actividad del roadmap. Si se entrega el perfil ya leído en
+    este mensaje, se usan sus reminders_enabled y roadmap sin releerlos."""
     client = _optional_admin_client()
     if client is None:
         return
 
-    result = (
-        client.table("users")
-        .select("reminders_enabled,roadmap")
-        .eq("phone", phone)
-        .limit(1)
-        .execute()
-    )
-    if not result.data:
-        return
+    if user is None:
+        result = (
+            client.table("users")
+            .select("reminders_enabled,roadmap")
+            .eq("phone", phone)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return
+        user = result.data[0]
 
     now = _utc_now()
-    user = result.data[0]
     enabled = bool(user.get("reminders_enabled"))
     roadmap = user.get("roadmap") or []
     roadmap_completed = bool(roadmap) and all(
@@ -313,8 +316,12 @@ def update_reminder_delivery_status(
 def record_incoming_reminder_reply(
     phone: str,
     provider_message_id: str | None = None,
+    user_id: str | None = None,
 ) -> bool:
-    """Marca el recordatorio citado o el último no respondido del usuario."""
+    """Marca el recordatorio citado o el último no respondido del usuario.
+
+    user_id evita volver a buscar el usuario por teléfono cuando ya se leyó.
+    """
     client = _optional_admin_client()
     if client is None:
         return False
@@ -333,20 +340,22 @@ def record_incoming_reminder_reply(
             delivery = result.data[0]
 
     if delivery is None:
-        user = (
-            client.table("users")
-            .select("id")
-            .eq("phone", phone)
-            .limit(1)
-            .execute()
-        )
-        if not user.data:
-            return False
+        if not user_id:
+            user = (
+                client.table("users")
+                .select("id")
+                .eq("phone", phone)
+                .limit(1)
+                .execute()
+            )
+            if not user.data:
+                return False
+            user_id = user.data[0]["id"]
 
         result = (
             client.table("reminder_deliveries")
             .select("id")
-            .eq("user_id", user.data[0]["id"])
+            .eq("user_id", user_id)
             .neq("delivery_status", "failed")
             .is_("replied_at", "null")
             .order("created_at", desc=True)

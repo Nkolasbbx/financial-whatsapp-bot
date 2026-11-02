@@ -124,7 +124,20 @@ def get_formalization_estimate_catalog(*, version: str | None = None,
     El uso normal solo devuelve la versión activa. Una versión inactiva se puede
     inspeccionar expresamente durante las pruebas, sin habilitarla para usuarios.
     """
-    query = _admin_client().table("formalization_estimate_catalog_versions").select(
+    if version is None and not include_inactive:
+        # Uso normal (versión activa): cacheado por proceso, ver db/catalog_cache.py.
+        from db.catalog_cache import cached
+
+        client = _admin_client()
+        return cached(
+            "formalization_estimate_catalog:active", client,
+            lambda: _load_estimate_catalog(client, None, False),
+        )
+    return _load_estimate_catalog(_admin_client(), version, include_inactive)
+
+
+def _load_estimate_catalog(client, version: str | None, include_inactive: bool) -> dict | None:
+    query = client.table("formalization_estimate_catalog_versions").select(
         "id,version,author,prepared_at,review_by,document,active"
     )
     if version is not None:

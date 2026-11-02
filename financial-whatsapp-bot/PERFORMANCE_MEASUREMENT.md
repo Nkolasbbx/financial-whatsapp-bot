@@ -77,6 +77,7 @@ Mantener un protocolo escrito por ejecución:
 | Finanzas | `Gasté 15000 en harina` | Sin borrador previo; no confirmar el guardado si no es necesario. |
 | Resumen | `resumen del mes` | Mismo periodo y mismos movimientos. |
 | Diagnóstico | Contestar el mismo paso | Mismo estado del borrador y mismo catálogo. |
+| Asesor IA | La misma pregunta escrita (ej. `¿qué patente necesito en Recoleta?`) | Mismo historial y mismo resumen; separar preguntas con y sin RAG en etiquetas distintas. |
 
 La agrupación automática es por funcionalidad y tipo de entrada, no por contenido.
 Si se comparan acciones distintas dentro de un módulo (consultar roadmap frente
@@ -130,8 +131,17 @@ Los reportes no requieren dependencias adicionales y no contactan servicios.
   pulsa enviar en el teléfono. Termina con la aceptación de Meta, no con su
   entrega/lectura. Para movimientos encolados, el aviso inicial no cuenta como
   respuesta final: se necesita también el registro del worker.
-- Las consultas del asesor (`__AI_QUERY__` y variantes) quedan excluidas por
-  completo. El trabajo de RAG y sus consultas/embeddings no se instrumentan.
+- Las consultas del asesor (`__AI_QUERY__` y variantes) aparecen como caso `ai`.
+  La traza del web termina en `queued` y la del worker aporta el tiempo final,
+  unidas por la traza igual que en finanzas. Etapas del worker: `ai_history`,
+  `ai_rag_decision`, `ai_rag` (contiene `ai_embedding` y `ai_rag_query`),
+  `ai_personal_context`, `ai_llm`, `ai_persist` y `ai_send`. Son inclusivas: no
+  sumar `ai_rag` con `ai_rag_query`. La búsqueda pgvector usa una conexión
+  directa a Postgres y no aparece en el conteo de `execute()` de Supabase.
+- El worker registra además el retraso de su event loop (líneas con
+  `"kind":"loop_lag"`): una espera de 100 ms que despierta 50 ms tarde o más.
+  El reporte lo muestra en su propia sección. Valores altos indican trabajo
+  síncrono que bloquea a los demás jobs.
 - Se miden webhooks de Meta con un solo mensaje. Los lotes y callbacks solo de
   estados se omiten. Twilio y el panel web no forman parte de esta línea base.
 - `no_reply` también puede corresponder a duplicados o relé humano: no siempre

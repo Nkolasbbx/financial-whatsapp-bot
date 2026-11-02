@@ -40,6 +40,8 @@ class PerformanceIntegrationTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, json={"messages": [{"id": "wamid.outgoing.private"}]})
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ, {"PERFORMANCE_METRICS_ENABLED": str(enabled).lower(), "PERFORMANCE_OUTPUT_DIR": ""}))
+            stack.enter_context(patch.object(webhook, "OPT_REDIS_RATE_LIMIT", False))
+            stack.enter_context(patch.object(webhook, "get_message_context", return_value=None))
             stack.enter_context(patch.object(webhook, "verify_webhook_signature", return_value=True))
             stack.enter_context(patch.object(webhook, "is_user_blocked", return_value=False))
             stack.enter_context(patch.object(webhook, "get_pending_confirmation", new_callable=AsyncMock, return_value=None))
@@ -81,11 +83,20 @@ class PerformanceIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(trace)
         self.assertNotIn("performance_context", redis.enqueue_job.await_args.kwargs)
 
-    async def test_advisor_jobs_are_not_given_measurement_metadata(self):
-        _, redis, trace, _ = await self.execute_message("__AI_QUERY__")
-        self.assertTrue(trace.excluded)
+    async def test_advisor_jobs_carry_measurement_metadata(self):
+        _, redis, trace, sent = await self.execute_message("__AI_QUERY__")
+        self.assertFalse(trace.excluded)
+        self.assertEqual(trace.case, "ai")
+        self.assertEqual(trace.outcome, "queued")
+        args = redis.enqueue_job.await_args
+        self.assertEqual(args.args[0], "process_ai_task")
+        self.assertEqual(args.kwargs["performance_context"]["trace_id"], trace.trace_id)
+        self.assertEqual(len(sent), 1)  # el aviso «Déjame pensar» sigue saliendo
+
+    async def test_disabled_measurement_preserves_ai_job_contract(self):
+        _, redis, trace, _ = await self.execute_message("__AI_QUERY__", enabled=False)
+        self.assertIsNone(trace)
         self.assertNotIn("performance_context", redis.enqueue_job.await_args.kwargs)
-        self.assertEqual(redis.enqueue_job.await_args.args[0], "process_ai_task")
 
     def test_fastapi_route_signature_is_preserved(self):
         app = FastAPI()

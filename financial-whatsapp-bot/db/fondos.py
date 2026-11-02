@@ -136,18 +136,26 @@ def get_requirement_definitions(
     mantiene una única consulta compatible con distintas versiones del cliente
     de Supabase.
     """
-    result = (
-        _admin_client()
-        .table("fund_requirement_definitions")
-        .select("*")
-        .order("question_order", desc=False)
-        .execute()
-    )
-    definitions = {
-        row["field_key"]: row
-        for row in (result.data or [])
-        if row.get("field_key")
-    }
+    from db.catalog_cache import cached
+
+    client = _admin_client()
+
+    def load() -> dict[str, dict]:
+        result = (
+            client
+            .table("fund_requirement_definitions")
+            .select("*")
+            .order("question_order", desc=False)
+            .execute()
+        )
+        return {
+            row["field_key"]: row
+            for row in (result.data or [])
+            if row.get("field_key")
+        }
+
+    # El catálogo solo cambia por migración: se cachea por proceso (P-09).
+    definitions = cached("fund_requirement_definitions", client, load)
 
     if field_keys is None:
         return definitions
