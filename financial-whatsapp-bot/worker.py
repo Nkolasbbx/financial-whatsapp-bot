@@ -68,6 +68,7 @@ async def process_ai_task(
     hito_context: dict | None = None,
     reformulate_mode: bool = False,
     lock_token: str | None = None,
+    audio_transcript: str | None = None,
 ):
     """Job que ejecuta el worker: procesa la IA y envía la respuesta por WhatsApp.
 
@@ -84,6 +85,7 @@ async def process_ai_task(
             dependencies.ollama_available,
             hito_context=hito_context,
             reformulate_mode=reformulate_mode,
+            audio_transcript=audio_transcript,
         )
     except Exception:
         logger.exception("Fallo procesando tarea IA para %s", phone)

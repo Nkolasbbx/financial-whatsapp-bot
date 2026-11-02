@@ -53,6 +53,7 @@ from db.users import (
     save_user,
 )
 from core.menu import INTERACTIVE_BODY_LIMIT, MENU_BUTTON
+from services.audio_consent import WRONG_BUTTON, echo_prefix
 from services.message_router import split_message
 from services.whatsapp import WhatsAppAPIError, send_interactive_buttons, send_text
 
@@ -1631,18 +1632,28 @@ async def get_ai_response(
 _CLOSING_LINE = "💬 ¿Tienes otra duda? Escríbela o regresa al menú:"
 
 
-async def _send_ai_response_with_menu(phone: str, ai_text: str) -> None:
-    """Envía la respuesta de IA con un botón para regresar al Menú Principal de FinancIAl."""
-    body_with_footer = f"{ai_text}\n\n{_CLOSING_LINE}"
+async def _send_ai_response_with_menu(
+    phone: str,
+    ai_text: str,
+    audio_transcript: str | None = None,
+) -> None:
+    """Envía la respuesta de IA con un botón para regresar al Menú Principal de FinancIAl.
+
+    Si la consulta vino de un audio, la transcripción ("Esto entendí de tu
+    audio") va al comienzo del MISMO mensaje y se suma el botón "No es lo que
+    dije", para no mandar el eco como un mensaje aparte (HdU011)."""
+    prefix = echo_prefix(audio_transcript) if audio_transcript else ""
+    buttons = [*MENU_BUTTON, WRONG_BUTTON] if audio_transcript else MENU_BUTTON
+    body_with_footer = f"{prefix}{ai_text}\n\n{_CLOSING_LINE}"
 
     if len(body_with_footer) <= INTERACTIVE_BODY_LIMIT:
-        await send_interactive_buttons(phone, body_with_footer, MENU_BUTTON)
+        await send_interactive_buttons(phone, body_with_footer, buttons)
         return
 
-    for part in split_message(ai_text, 3500):
+    for part in split_message(f"{prefix}{ai_text}", 3500):
         await send_text(phone, part)
 
-    await send_interactive_buttons(phone, _CLOSING_LINE, MENU_BUTTON)
+    await send_interactive_buttons(phone, _CLOSING_LINE, buttons)
 
 
 async def process_ai_and_send(
@@ -1651,6 +1662,7 @@ async def process_ai_and_send(
     ollama_available: bool,
     hito_context: dict | None = None,
     reformulate_mode: bool = False,
+    audio_transcript: str | None = None,
 ):
     """Genera la respuesta de IA y la envía mediante WhatsApp."""
     user = await asyncio.to_thread(get_user, phone)
@@ -1669,7 +1681,7 @@ async def process_ai_and_send(
     await asyncio.to_thread(save_user, phone, user)
 
     try:
-        await _send_ai_response_with_menu(phone, ai_response)
+        await _send_ai_response_with_menu(phone, ai_response, audio_transcript)
         logger.info("Respuesta de IA enviada a %s", phone)
     except WhatsAppAPIError as error:
         logger.error("No se pudo enviar la respuesta de IA a %s: %s", phone, error)

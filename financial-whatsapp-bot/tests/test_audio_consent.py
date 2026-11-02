@@ -13,6 +13,7 @@ PHONE = "+56911112222"
 class FakeRedis:
     def __init__(self):
         self.data = {}
+        self.enqueue_job = AsyncMock()
 
     async def set(self, key, value, nx=False, ex=None):
         if nx and key in self.data:
@@ -129,14 +130,14 @@ class WebhookAudioFlowTests(unittest.IsolatedAsyncioTestCase):
         request.base_url = "http://test/"
         return request
 
-    async def _run(self, message, consent, transcript="quiero saber de patentes"):
+    async def _run(self, message, consent, transcript="quiero saber de patentes", route_result="respuesta del bot"):
         user = {"id": "u1", "onboarding_step": "done", "audio_consent": consent}
         mocks = SimpleNamespace(
             send_text=AsyncMock(),
             buttons=AsyncMock(),
             lista=AsyncMock(),
             transcribe=AsyncMock(return_value=transcript),
-            route=MagicMock(return_value="respuesta del bot"),
+            route=MagicMock(return_value=route_result),
             set_consent=MagicMock(return_value=True),
         )
         patches = [
@@ -233,6 +234,73 @@ class WebhookAudioFlowTests(unittest.IsolatedAsyncioTestCase):
         texto = m.send_text.await_args_list[0].args[1]
         self.assertIn("grabarla de nuevo", texto)
         self.assertIn("por texto", texto)
+
+
+class SingleMessageEchoTests(WebhookAudioFlowTests):
+    """El eco viaja con la respuesta de IA (un solo mensaje) o sale antes si no es IA."""
+
+    async def test_ai_answer_carries_the_transcript_instead_of_a_separate_echo(self):
+        m = await self._run(self._audio(), consent=True, route_result="__AI_QUERY__")
+        m.buttons.assert_not_awaited()  # ningún eco aparte
+        self.assertEqual(self.redis.enqueue_job.await_args.kwargs["audio_transcript"], "quiero saber de patentes")
+        self.assertEqual(self.redis.enqueue_job.await_args.args[0], "process_ai_task")
+
+    async def test_ai_with_context_also_carries_the_transcript(self):
+        with patch.object(webhook, "extract_hito_context", return_value=None):
+            await self._run(self._audio(), consent=True, route_result="__AI_QUERY_WITH_CONTEXT__")
+        self.assertEqual(self.redis.enqueue_job.await_args.kwargs["audio_transcript"], "quiero saber de patentes")
+
+    async def test_text_questions_to_the_ai_do_not_carry_a_transcript(self):
+        await self._run({"type": "text", "text": {"body": "hola"}}, consent=True, route_result="__AI_QUERY__")
+        self.assertNotIn("audio_transcript", self.redis.enqueue_job.await_args.kwargs)
+
+    async def test_non_ai_answers_still_show_the_echo_first(self):
+        m = await self._run(self._audio(), consent=True, route_result="respuesta del bot")
+        self.assertIn("Esto entendí de tu audio", m.buttons.await_args_list[0].args[1])
+        m.send_text.assert_awaited()
+
+    async def test_ambiguous_audio_shows_the_echo_before_asking_to_repeat(self):
+        m = await self._run(self._audio(), consent=True, transcript="eh")
+        self.assertIn("Esto entendí de tu audio", m.buttons.await_args_list[0].args[1])
+        self.assertIn("No estoy seguro", m.send_text.await_args.args[1])
+
+
+class AiResponseEchoTests(unittest.IsolatedAsyncioTestCase):
+    async def _send(self, text, transcript):
+        from core import ia
+        with patch.object(ia, "send_interactive_buttons", new=AsyncMock()) as buttons, \
+             patch.object(ia, "send_text", new=AsyncMock()) as texto:
+            await ia._send_ai_response_with_menu(PHONE, text, transcript)
+        return buttons, texto
+
+    async def test_echo_and_answer_go_in_one_message_with_both_buttons(self):
+        buttons, texto = await self._send("Para la patente necesitas X.", "quiero saber de patentes")
+        texto.assert_not_awaited()
+        self.assertEqual(buttons.await_count, 1)
+        body, options = buttons.await_args.args[1], buttons.await_args.args[2]
+        self.assertTrue(body.startswith("📝 *Esto entendí de tu audio:*"))
+        self.assertIn("Para la patente necesitas X.", body)
+        self.assertIn(ac.WRONG_ID, [i for i, _ in options])
+        self.assertIn("menu_financial", [i for i, _ in options])
+
+    async def test_without_a_transcript_nothing_changes(self):
+        buttons, _ = await self._send("Respuesta.", None)
+        self.assertNotIn("Esto entendí", buttons.await_args.args[1])
+        self.assertNotIn(ac.WRONG_ID, [i for i, _ in buttons.await_args.args[2]])
+
+    async def test_long_answers_keep_the_echo_on_the_first_part_and_buttons_at_the_end(self):
+        buttons, texto = await self._send("palabra " * 300, "hola")
+        self.assertIn("Esto entendí de tu audio", texto.await_args_list[0].args[1])
+        self.assertIn(ac.WRONG_ID, [i for i, _ in buttons.await_args.args[2]])
+
+    async def test_a_very_long_transcript_is_trimmed(self):
+        self.assertLessEqual(len(ac.echo_prefix("x" * 1000)), ac.MAX_ECHO_CHARS + 60)
+
+    async def test_worker_passes_the_transcript_to_the_ai_sender(self):
+        import worker
+        with patch.object(worker, "process_ai_and_send", new=AsyncMock()) as enviar:
+            await worker.process_ai_task({"redis": FakeRedis()}, PHONE, "hola", audio_transcript="hola mundo")
+        self.assertEqual(enviar.await_args.kwargs["audio_transcript"], "hola mundo")
 
 
 if __name__ == "__main__":
