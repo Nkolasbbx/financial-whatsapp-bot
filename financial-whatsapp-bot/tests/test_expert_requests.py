@@ -1,4 +1,6 @@
 import unittest
+from contextlib import asynccontextmanager
+from starlette.datastructures import FormData
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -161,8 +163,13 @@ def _row(status="in_progress", last=timedelta(hours=-1), **extra):
 
 
 def _request():
+    @asynccontextmanager
+    async def form():
+        yield FormData({"csrf_token": "test-token"})
+
     return SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(redis=object())), query_params={},
+        app=SimpleNamespace(state=SimpleNamespace(redis=SimpleNamespace(get=AsyncMock(return_value="test-token")))),
+        query_params={}, form=form,
     )
 
 
