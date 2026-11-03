@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import datetime, timezone
+from core.profile_validation import EmailUnavailableError
 
 logger = logging.getLogger("financial")
 
@@ -156,11 +157,24 @@ def update_onboarding_profile(phone: str, changes: dict) -> dict:
                 return result.data[0]
         except Exception as error:
             # Los errores de Postgres pueden contener la fila completa: no registrar PII.
+            if (
+                "email" in changes
+                and getattr(error, "code", None) == "23505"
+                and '"users_email_normalized_uidx"' in (getattr(error, "message", "") or "")
+            ):
+                raise EmailUnavailableError() from error
             logger.error("No se pudo guardar el onboarding (%s)", type(error).__name__)
             raise UserPersistenceError("No se pudo guardar el onboarding") from error
         raise UserPersistenceError("La actualización no devolvió un perfil")
     if phone not in users_db:
         raise UserPersistenceError("El perfil no existe")
+    # Solo para el modo local sin Supabase. En producción decide el índice.
+    email = (changes.get("email") or "").strip().lower()
+    if email and any(
+        key != phone and (other.get("email") or "").strip().lower() == email
+        for key, other in users_db.items()
+    ):
+        raise EmailUnavailableError()
     users_db[phone] = {**users_db[phone], **payload}
     return dict(users_db[phone])
 

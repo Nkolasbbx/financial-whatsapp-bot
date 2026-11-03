@@ -945,6 +945,52 @@ class PersonalizedAssistantContextTests(unittest.TestCase):
         self.assertIn("otras secciones disponibles", context)
 
 
+class CalendarAdvisorTests(unittest.IsolatedAsyncioTestCase):
+    user = {"id": "00000000-0000-0000-0000-000000000003",
+            "conversation_history": [{"role": "assistant", "content": "Información municipal anterior"}]}
+
+    async def ask(self, text):
+        llm = AsyncMock(return_value="Respuesta del asesor")
+        with patch.object(ia, "requiere_rag", new_callable=AsyncMock) as classifier, \
+             patch.object(ia, "obtener_contexto_rag", new_callable=AsyncMock) as rag, \
+             patch.object(ia, "llamar_llm_async", llm):
+            answer = await ia.get_ai_response(self.user, text, True)
+        self.assertEqual(answer, "Respuesta del asesor")
+        classifier.assert_not_awaited()
+        rag.assert_not_awaited()
+        llm.assert_awaited_once()
+        messages = llm.await_args.kwargs["messages"]
+        self.assertEqual([m["role"] for m in messages], ["system", "user"])
+        return messages[-1]["content"]
+
+    async def test_whatsapp_examples_pass_own_saved_events_to_llm(self):
+        for text in ("ue fechas tengo en mi calendario?", "cuales son mis fechas importantes?"):
+            with self.subTest(text=text), patch.object(ia, "get_active_calendar_events", return_value=[
+                {"event_at": "2026-11-13T11:00:00+00:00", "description": "Feria de Software", "status": "active"},
+            ]) as lookup:
+                context = await self.ask(text)
+                lookup.assert_called_once_with(self.user["id"], limit=20)
+                self.assertIn("Feria de Software", context)
+                self.assertIn("13/11/2026", context)
+
+    async def test_period_with_no_events_is_not_a_query_failure(self):
+        with patch.object(ia, "_local_today", return_value=ia.date(2026, 11, 2)), \
+             patch.object(ia, "get_calendar_events_between", return_value=[]) as lookup:
+            context = await self.ask("¿Cuáles son mis fechas importantes este mes?")
+            uid, start, end = lookup.call_args.args
+            self.assertEqual((uid, start.date(), end.date()), (self.user["id"], ia.date(2026, 11, 1), ia.date(2026, 12, 1)))
+            self.assertIn("No hay eventos registrados", context)
+        with patch.object(ia, "get_active_calendar_events", side_effect=RuntimeError("sin conexión")):
+            context = await self.ask("¿Qué fechas tengo en mi calendario?")
+            self.assertIn("no fue posible consultar", context)
+            self.assertNotIn("No hay eventos registrados", context)
+
+    def test_mixed_queries_and_other_dates_keep_general_flow(self):
+        for text in ("¿Cuándo cierra el fondo?", "¿Qué fechas tengo en mi calendario y cuánto cuesta mi patente?",
+                     "crear fecha", "eliminar fecha"):
+            self.assertFalse(ia._is_personal_calendar_lookup(text))
+
+
 class GetAiResponseMemoriaTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, total_mensajes):
         user = {

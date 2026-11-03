@@ -18,7 +18,9 @@ class ProfileValidationTests(unittest.TestCase):
     def test_rut_supports_common_formats_and_checks_digit(self):
         for text in ("12.345.678-5", "12345678-5", "123456785"):
             self.assertEqual(validate_rut(text), "12345678-5")
-        for text in ("12.345.678-9", "0-0", "12345", "12x345678-5", None):
+        self.assertEqual(validate_rut("123.456-0"), "123456-0")
+        self.assertEqual(validate_rut("6-k"), "6-K")
+        for text in ("12.345.678-9", "0-0", "12345", "123.456.789-2", "123.45-6", "12x345678-5", None):
             with self.subTest(text=text), self.assertRaises(ProfileValidationError):
                 validate_rut(text)
 

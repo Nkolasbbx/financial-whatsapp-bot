@@ -8,6 +8,10 @@ class ProfileValidationError(ValueError):
     """Respuesta que el usuario debe corregir antes de continuar."""
 
 
+class EmailUnavailableError(ProfileValidationError):
+    """El correo no está disponible para este perfil."""
+
+
 _NON_ANSWERS = {
     "hola", "buenas", "buenos dias", "buenas tardes", "buenas noches",
     "ok", "okay", "gracias", "listo", "si", "no", "no se", "ayuda",
@@ -48,7 +52,7 @@ def validate_name(value: str) -> str:
 
 def validate_rut(value: str) -> str:
     text = _clean_text(value)
-    if not re.fullmatch(r"(?:[0-9]{1,8}|[0-9]{1,2}(?:\.[0-9]{3}){2})-?[0-9kK]", text):
+    if not re.fullmatch(r"(?:[0-9]{1,8}|[0-9]{1,3}\.[0-9]{3}|[0-9]{1,2}(?:\.[0-9]{3}){2})-?[0-9kK]", text):
         raise ProfileValidationError("Escribe tu RUT con dígito verificador, por ejemplo: 12.345.678-5.")
     compact = text.replace(".", "").replace("-", "").upper()
     number, digit = compact[:-1].lstrip("0"), compact[-1]

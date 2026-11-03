@@ -2,6 +2,8 @@ import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from core.profile_validation import EmailUnavailableError
+from postgrest.exceptions import APIError
 
 from db.users import (
     UserPersistenceError, create_user_profile, get_user, update_onboarding_profile, users_db,
@@ -45,6 +47,26 @@ class OnboardingPersistenceTests(unittest.TestCase):
         self.query.execute.return_value = SimpleNamespace(data=[])
         with self.assertRaises(UserPersistenceError):
             update_onboarding_profile(self.phone, {"profile_completion_step": "rut"})
+
+    def test_only_email_unique_violation_is_a_correctable_conflict(self):
+        for name, expected in (("users_email_normalized_uidx", EmailUnavailableError),
+                               ("another_unique_index", UserPersistenceError)):
+            self.query.execute.side_effect = APIError({
+                "code": "23505", "message": f'duplicate key value violates unique constraint "{name}"',
+                "details": None, "hint": None,
+            })
+            with self.subTest(name=name), self.assertRaises(expected):
+                update_onboarding_profile(self.phone, {"email": "Ana@example.cl"})
+        self.assertEqual(self.query.execute.call_count, 2)
+        self.query.select.assert_not_called()
+
+    def test_local_email_conflict_ignores_case_spaces_and_same_owner(self):
+        users_db.update({self.phone: {"phone": self.phone}, "otro": {"email": " Ana@example.cl "}})
+        with patch.dict(sys.modules, {"dependencies": SimpleNamespace(supabase_admin=None)}):
+            with self.assertRaises(EmailUnavailableError):
+                update_onboarding_profile(self.phone, {"email": "ana@EXAMPLE.CL"})
+            self.assertNotIn("email", users_db[self.phone])
+            update_onboarding_profile("otro", {"email": "ana@example.cl"})
 
     def test_unrelated_fields_cannot_be_updated_by_onboarding(self):
         for changes in ({"id": "other"}, {"reminder_count": 0}, {"resumen_conversacion": None}, {}):
