@@ -15,7 +15,9 @@ logger = logging.getLogger("financial")
 OPEN_STATUSES = ("draft", "pending", "in_progress")
 RESOLVABLE_STATUSES = ("pending", "in_progress")
 
-_USER_FIELDS = "rubro, inicio_sii, roadmap, roadmap_completed_at"
+_USER_FIELDS = "nombre_completo, rubro, rubro_raw, inicio_sii, roadmap, roadmap_completed_at"
+# Solo para el detalle de una solicitud: el listado no necesita estos datos.
+_USER_DETAIL_FIELDS = "phone, rut, email, created_at"
 
 
 def _client():
@@ -81,7 +83,7 @@ def delete_expert_draft(request_id: str) -> None:
 def get_expert_request(request_id: str, comuna: str) -> dict | None:
     """Trae una solicitud solo si pertenece a la comuna del admin."""
     result = (
-        _client().table("expert_requests").select(f"*, users(phone, {_USER_FIELDS})")
+        _client().table("expert_requests").select(f"*, users({_USER_DETAIL_FIELDS}, {_USER_FIELDS})")
         .eq("id", request_id).eq("comuna", comuna).neq("status", "draft")
         .limit(1).execute()
     )

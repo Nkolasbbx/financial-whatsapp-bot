@@ -23,7 +23,13 @@ from fastapi.concurrency import run_in_threadpool
 
 from config import ADMIN_ACCOUNTS, CALENDAR_DEFAULT_HOUR
 from core.calendar_service import get_calendar_timezone, normalize_local_event_at, parse_stored_datetime
-from core.community_events import CATEGORIES, category_label, validate_community_event
+from core.community_events import (
+    CATEGORIES,
+    EMAIL_MAX_CHARS,
+    category_label,
+    normalize_invite_email,
+    validate_community_event,
+)
 from core.ics import build_community_ics
 from db.community_events import (
     cancel_community_event,
@@ -38,6 +44,8 @@ from db.community_events import (
 from routers.admin import _pagina_base
 from routers.portal import _versioned_static_url
 from schemas.community_events import (
+    CalendarInviteRequest,
+    CalendarInviteResponse,
     CommunityEventAdminResponse,
     CommunityEventRequest,
     DeliverySummary,
@@ -47,7 +55,12 @@ from services.admin_auth import (
     get_or_create_admin_csrf_token,
     validate_admin_csrf_token,
 )
-from services.google_calendar import account_sync_configured, sync_community_event
+from services.google_calendar import (
+    GoogleCalendarError,
+    account_sync_configured,
+    invite_to_calendar,
+    sync_community_event,
+)
 
 logger = logging.getLogger("financial")
 
@@ -219,11 +232,16 @@ def _bloque_google(account: dict, feed_url: str | None) -> str:
             <p><span class="admin-badge completo">Conectado</span></p>
             <p class="admin-hint">Cada convocatoria que crees, edites o canceles aquí se copia
             en segundos al Google Calendar del municipio.</p>"""
+        invite_disabled = ""
+        invite_hint = """Google enviará una invitación a ese correo para ver el calendario de
+            convocatorias del municipio. Quien la acepte verá las convocatorias, pero no podrá editarlas."""
     else:
         sync_html = """
             <p><span class="admin-badge en-cola">No configurado</span></p>
             <p class="admin-hint">Cuando el equipo técnico lo configure, cada convocatoria se
             copiará automáticamente al Google Calendar del municipio.</p>"""
+        invite_disabled = "disabled"
+        invite_hint = "Podrás enviar invitaciones cuando el equipo técnico configure la sincronización."
 
     if feed_url:
         webcal_url = "webcal://" + feed_url.split("://", 1)[1]
@@ -248,6 +266,17 @@ def _bloque_google(account: dict, feed_url: str | None) -> str:
             <section>
                 <h3>Sincronización automática</h3>
                 {sync_html}
+                <div class="community-invite">
+                    <h3>Invitar por correo</h3>
+                    <form id="community-invite-form" class="community-feed-row" novalidate>
+                        <input type="email" id="community-invite-email" maxlength="{EMAIL_MAX_CHARS}"
+                               placeholder="correo@municipalidad.cl" autocomplete="email"
+                               aria-label="Correo que recibirá la invitación" {invite_disabled}>
+                        <button type="submit" class="admin-btn-secondary" {invite_disabled}>Enviar invitación</button>
+                    </form>
+                    <div id="community-invite-message" role="status" aria-live="polite"></div>
+                    <p class="admin-hint">{invite_hint}</p>
+                </div>
             </section>
             <section>
                 <h3>Suscripción por enlace (.ics)</h3>
@@ -531,6 +560,44 @@ async def editar(
 
     await _sync_google(updated)
     return _serialize(updated, account)
+
+
+@router.post(
+    "/admin/api/convocatorias/invitar-calendario",
+    response_model=CalendarInviteResponse,
+)
+async def invitar_calendario(
+    payload: CalendarInviteRequest,
+    request: Request,
+    financial_admin_session: str | None = Cookie(default=None),
+    csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+):
+    account = await _api_account(request, financial_admin_session)
+    await _require_csrf(request, financial_admin_session, csrf_token)
+
+    email = normalize_invite_email(payload.email)
+    if not email:
+        raise HTTPException(status_code=400, detail="Escribe un correo válido.")
+    if not account_sync_configured(account):
+        raise HTTPException(
+            status_code=409,
+            detail="El Google Calendar del municipio aún no está configurado.",
+        )
+
+    try:
+        invited = await invite_to_calendar(email, account["google_calendar_id"])
+    except Exception as exc:
+        logger.warning("No se pudo invitar al calendario de %s: %s", account["comuna"], exc)
+        if isinstance(exc, GoogleCalendarError) and exc.status_code == 403:
+            detail = (
+                "La cuenta de servicio no puede administrar el uso compartido de este "
+                "calendario. Pide al equipo técnico que le dé ese permiso en Google Calendar."
+            )
+        else:
+            detail = "No se pudo enviar la invitación. Inténtalo de nuevo en unos minutos."
+        raise HTTPException(status_code=502, detail=detail) from exc
+
+    return CalendarInviteResponse(email=email, invited=invited)
 
 
 @router.post(

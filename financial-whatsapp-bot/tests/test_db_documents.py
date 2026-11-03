@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from db.documents import delete_ingested_document, get_stale_ingestion_jobs
+from db.documents import delete_ingested_document, get_stale_ingestion_jobs, list_recent_jobs
 
 
 def _fake_dependencies_with(conn):
@@ -36,7 +36,9 @@ class DeleteIngestedDocumentTests(unittest.TestCase):
         self.assertEqual(cur.execute.call_args_list[0].args[1], ("tramite.md", "Recoleta"))
         self.assertIn("UPDATE ingestion_jobs", update_sql)
         self.assertIn("deleted_at = now()", update_sql)
-        self.assertEqual(update_params, ("InnovaRecoleta", "job-1"))
+        # También marca las re-subidas anteriores: sus filas ya no existen.
+        self.assertIn("status = 'done'", update_sql)
+        self.assertEqual(update_params, ("InnovaRecoleta", "job-1", "tramite.md", "Recoleta"))
 
     def test_rolls_back_and_reraises_on_failure(self):
         conn = MagicMock()
@@ -51,6 +53,36 @@ class DeleteIngestedDocumentTests(unittest.TestCase):
 
         conn.rollback.assert_called_once()
         conn.commit.assert_not_called()
+
+
+class ListRecentJobsTests(unittest.TestCase):
+    def _consulta(self, *args, **kwargs):
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        conn.cursor.return_value.__enter__.return_value = cur
+        _db_pool, fake_dependencies = _fake_dependencies_with(conn)
+
+        with patch.dict(sys.modules, {"dependencies": fake_dependencies}):
+            list_recent_jobs(*args, **kwargs)
+        return cur.execute.call_args.args
+
+    def test_nunca_incluye_eliminados(self):
+        query, params = self._consulta(None)
+        self.assertIn("deleted_at IS NULL", query)
+        self.assertEqual(params, [20])
+
+    def test_aplica_comuna_y_filtros(self):
+        query, params = self._consulta("Recoleta", limit=5, nombre="patente", estado="done", rubro="textil")
+        self.assertIn("comuna = %s", query)
+        self.assertIn("file_name ILIKE %s", query)
+        self.assertIn("status = %s", query)
+        self.assertIn("%s = ANY(rubros)", query)
+        self.assertEqual(params, ["Recoleta", "%patente%", "done", "textil", 5])
+
+    def test_escapa_comodines_del_nombre(self):
+        _query, params = self._consulta(None, nombre="inicio_100%")
+        self.assertEqual(params[0], "%inicio\\_100\\%%")
 
 
 class GetStaleIngestionJobsTests(unittest.TestCase):

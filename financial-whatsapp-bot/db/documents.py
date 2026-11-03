@@ -189,7 +189,10 @@ def delete_ingested_document(file_name: str, comuna: str, job_id: str, deleted_b
     """Elimina el contenido ya ingerido de un documento: borra sus filas de
     `documents` (el asistente deja de citarlo) y marca el `ingestion_jobs`
     correspondiente con deleted_at/deleted_by, sin borrar el registro de
-    auditoría en sí. Devuelve cuántas filas se borraron de `documents`."""
+    auditoría en sí. Las re-subidas anteriores del mismo archivo también se
+    marcan: sus filas se borraron junto con las del job elegido y, si no, el
+    panel las seguiría mostrando como activas. Devuelve cuántas filas se
+    borraron de `documents`."""
     import dependencies
 
     conn = dependencies.db_pool.getconn()
@@ -200,9 +203,13 @@ def delete_ingested_document(file_name: str, comuna: str, job_id: str, deleted_b
                 """
                 UPDATE ingestion_jobs
                 SET deleted_at = now(), deleted_by = %s, updated_at = now()
-                WHERE id = %s::uuid
+                WHERE deleted_at IS NULL
+                  AND (
+                      id = %s::uuid
+                      OR (file_name = %s AND lower(comuna) = lower(%s) AND status = 'done')
+                  )
                 """,
-                (deleted_by, job_id),
+                (deleted_by, job_id, file_name, comuna),
             )
         conn.commit()
         return deleted_rows
@@ -238,14 +245,37 @@ def get_stale_ingestion_jobs(older_than_minutes: int = 60) -> list[dict]:
         dependencies.db_pool.putconn(conn)
 
 
-def list_recent_jobs(comuna: str | None, limit: int = 20) -> list[dict]:
+def list_recent_jobs(
+    comuna: str | None,
+    limit: int = 20,
+    nombre: str = "",
+    estado: str = "",
+    rubro: str = "",
+) -> list[dict]:
     """Últimas subidas de una comuna, más recientes primero — para la tabla
     de historial en /admin/documentos. Con comuna=None devuelve las de todas
-    las comunas (historial del equipo FinancIAl)."""
+    las comunas (historial del equipo FinancIAl). Los documentos eliminados
+    no aparecen: su registro de auditoría sigue en la tabla. Los filtros
+    vacíos no se aplican."""
     import dependencies
 
-    where = "WHERE comuna = %s" if comuna is not None else ""
-    params = (comuna, limit) if comuna is not None else (limit,)
+    condiciones = ["deleted_at IS NULL"]
+    params: list = []
+    if comuna is not None:
+        condiciones.append("comuna = %s")
+        params.append(comuna)
+    if nombre:
+        # Los nombres de archivo suelen llevar "_", que en LIKE es comodín.
+        patron = nombre.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        condiciones.append("file_name ILIKE %s")
+        params.append(f"%{patron}%")
+    if estado:
+        condiciones.append("status = %s")
+        params.append(estado)
+    if rubro:
+        condiciones.append("%s = ANY(rubros)")
+        params.append(rubro)
+    params.append(limit)
 
     conn = dependencies.db_pool.getconn()
     try:
@@ -253,7 +283,7 @@ def list_recent_jobs(comuna: str | None, limit: int = 20) -> list[dict]:
             cur.execute(
                 f"""
                 SELECT * FROM ingestion_jobs
-                {where}
+                WHERE {" AND ".join(condiciones)}
                 ORDER BY created_at DESC
                 LIMIT %s
                 """,

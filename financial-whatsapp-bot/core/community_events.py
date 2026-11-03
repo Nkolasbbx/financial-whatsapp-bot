@@ -39,6 +39,8 @@ NOTICE_PLACE_FALLBACK = "Revisa los detalles en tu calendario web"
 
 _DST_ERROR_FRAGMENT = "cambio de horario"
 _URL_PATTERN = re.compile(r"^https?://\S+$", re.IGNORECASE)
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_MAX_CHARS = 254
 
 
 def _clean_text(value: Any) -> str:
@@ -149,6 +151,14 @@ def validate_community_event(
         "notice_at": notice_at,
     }
     return cleaned, errors
+
+
+def normalize_invite_email(value: Any) -> str | None:
+    """Correo en minúsculas para invitar al calendario, o None si no es válido."""
+    email = _clean_text(value).lower()
+    if len(email) > EMAIL_MAX_CHARS or not _EMAIL_PATTERN.match(email):
+        return None
+    return email
 
 
 def category_label(category: str | None) -> str:

@@ -166,6 +166,24 @@ def _request():
     )
 
 
+class PersonaTests(unittest.TestCase):
+    def test_name_is_fixed_only_when_written_in_a_single_case(self):
+        self.assertEqual(panel._nombre_persona({"nombre_completo": "maría gonzález"}), "María González")
+        self.assertEqual(panel._nombre_persona({"nombre_completo": "MARÍA GONZÁLEZ"}), "María González")
+        self.assertEqual(panel._nombre_persona({"nombre_completo": "Juan de la Cruz"}), "Juan de la Cruz")
+        self.assertEqual(panel._nombre_persona({"nombre_completo": None}), "")
+
+    def test_initials_use_first_and_last_word(self):
+        self.assertEqual(panel._iniciales({"nombre_completo": "Juan de la Cruz"}), "JC")
+        self.assertEqual(panel._iniciales({"nombre_completo": "Ana"}), "A")
+        self.assertEqual(panel._iniciales({}), "E")
+
+    def test_business_text_ignores_button_ids_and_repeated_rubro(self):
+        self.assertEqual(panel._negocio_txt({"rubro": "textil", "rubro_raw": "rubro_textil"}), "")
+        self.assertEqual(panel._negocio_txt({"rubro": "textil", "rubro_raw": "Textil"}), "")
+        self.assertEqual(panel._negocio_txt({"rubro": "textil", "rubro_raw": "Hago polerones"}), "Hago polerones")
+
+
 class WindowTests(unittest.TestCase):
     def test_window_is_24h_from_last_user_message(self):
         restante = panel.window_remaining(_row(last=timedelta(hours=-1)))
@@ -228,6 +246,67 @@ class AdminPanelTests(unittest.IsolatedAsyncioTestCase):
     async def test_detail_page_never_shows_the_phone_number(self):
         response = await self._with(_row(), lambda: panel.detalle("abcd1234-0000", _request(), "sid"))
         self.assertNotIn(b"56911112222", response.body)
+
+    def _row_con_perfil(self, status="pending", **perfil):
+        row = _row(status)
+        row["users"] = {
+            **row["users"], "nombre_completo": "María González", "rut": "12345678-5",
+            "email": "maria@ejemplo.cl", "rubro_raw": "Vendo empanadas", "created_at": _iso(timedelta(days=-30)),
+            **perfil,
+        }
+        return row
+
+    async def test_detail_shows_the_person_behind_the_request(self):
+        response = await self._with(self._row_con_perfil(), lambda: panel.detalle("abcd1234-0000", _request(), "sid"))
+        body = response.body.decode()
+        self.assertIn("María González", body)
+        self.assertIn(">MG<", body)
+        self.assertIn("<dd>12.345.678-5</dd>", body)
+        self.assertIn('href="mailto:maria@ejemplo.cl"', body)
+        self.assertIn("«Vendo empanadas»", body)
+        self.assertIn("Lo que necesita María", body)
+        self.assertIn("María recibe un aviso", body)
+        self.assertNotIn("Emprendedor ABCD", body)
+        self.assertNotIn("56911112222", body)
+
+    async def test_detail_without_profile_keeps_the_alias(self):
+        response = await self._with(_row("pending"), lambda: panel.detalle("abcd1234-0000", _request(), "sid"))
+        body = response.body.decode()
+        self.assertIn("Emprendedor ABCD", body)
+        self.assertIn("El emprendedor recibe un aviso", body)
+        self.assertNotIn("<dt>RUT</dt>", body)
+        self.assertNotIn("<dt>Correo</dt>", body)
+
+    async def test_profile_data_is_html_escaped(self):
+        row = self._row_con_perfil(nombre_completo="<b>Ana</b> Pérez", rubro_raw="<i>ropa</i>", email='a"@b.cl')
+        response = await self._with(row, lambda: panel.detalle("abcd1234-0000", _request(), "sid"))
+        body = response.body.decode()
+        self.assertNotIn("<b>Ana", body)
+        self.assertNotIn("<i>ropa", body)
+        self.assertNotIn('a"@b.cl', body)
+
+    async def test_conversation_labels_messages_with_the_first_name(self):
+        row = self._row_con_perfil("in_progress")
+        mensajes = [{"id": 1, "sender": "user", "content": "Hola", "created_at": _iso(timedelta(hours=-1))}]
+        async def run():
+            with patch.object(panel, "list_expert_messages", return_value=mensajes):
+                return await panel.detalle("abcd1234-0000", _request(), "sid")
+        body = (await self._with(row, run)).body.decode()
+        self.assertIn("María · ", body)
+        self.assertIn("Escribe tu respuesta a María", body)
+
+    async def test_list_shows_the_name_without_rut_or_email(self):
+        request = _request()
+        request.query_params = {}
+        fila = self._row_con_perfil()
+        with patch.object(panel, "_auth", new=AsyncMock(return_value={"comuna": "Recoleta", "nombre": "x"})), \
+             patch.object(panel, "_pop_flash", new=AsyncMock(return_value=None)), \
+             patch.object(panel, "list_expert_requests", side_effect=lambda c, st, limit=50: [fila] if st == ("pending",) else []):
+            body = (await panel.lista(request, "sid")).body.decode()
+        self.assertIn("María González", body)
+        self.assertNotIn("12.345.678-5", body)
+        self.assertNotIn("12345678-5", body)
+        self.assertNotIn("maria@ejemplo.cl", body)
 
     async def test_detail_shows_topic_reason_and_context(self):
         response = await self._with(_row(), lambda: panel.detalle("abcd1234-0000", _request(), "sid"))

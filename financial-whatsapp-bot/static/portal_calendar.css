@@ -51,10 +51,10 @@
 }
 
 /* El glifo "+" se ve más abajo que el resto del texto por sus métricas
-   de fuente; se sube un par de px para que quede a la misma altura. */
+   de fuente; se sube para que su centro coincida con el del botón. */
 .calendar-button-plus {
     position: relative;
-    top: -1px;
+    top: -3px;
     font-size: 1.1em;
 }
 

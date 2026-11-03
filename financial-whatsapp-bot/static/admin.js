@@ -16,3 +16,28 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
 });
+
+// Listado de emprendedores: el filtro de hito se ajusta sin esperar a enviar el
+// formulario. Cada rubro tiene sus propios hitos, y los formalizados no tienen
+// ninguno pendiente. Sin JS el servidor aplica las mismas reglas al filtrar.
+document.addEventListener("DOMContentLoaded", () => {
+    const selectHito = document.querySelector("select[data-opciones-por-rubro]");
+    if (!selectHito) return;
+
+    const { rubro: selectRubro, estado: selectEstado } = selectHito.form.elements;
+    const opcionesPorRubro = JSON.parse(selectHito.dataset.opcionesPorRubro);
+
+    const actualizarHito = () => {
+        const opciones = opcionesPorRubro[selectRubro.value] || [];
+        const sinHito = selectEstado.value === "formalizado";
+        const elegido = selectHito.value;
+
+        selectHito.length = 1; // Conserva solo la opción "Todos"
+        opciones.forEach(([id, texto]) => selectHito.add(new Option(texto, id)));
+        selectHito.value = !sinHito && opciones.some(([id]) => id === elegido) ? elegido : "";
+        selectHito.disabled = sinHito;
+    };
+
+    selectRubro.addEventListener("change", actualizarHito);
+    selectEstado.addEventListener("change", actualizarHito);
+});

@@ -62,6 +62,16 @@ def validate_rut(value: str) -> str:
     return f"{number}-{digit}"
 
 
+def format_rut(value: str | None) -> str:
+    """RUT para mostrar: 12.345.678-5 o 1.234.567-8. validate_rut lo guarda sin
+    puntos; un valor que no tenga forma de RUT se devuelve tal cual."""
+    text = (value or "").strip()
+    compact = text.replace(".", "").replace("-", "").upper()
+    if not re.fullmatch(r"[0-9]+[0-9K]", compact):
+        return text
+    return f"{int(compact[:-1]):,}".replace(",", ".") + f"-{compact[-1]}"
+
+
 def validate_email(value: str) -> str:
     text = _clean_text(value)
     error = "Escribe un correo válido, por ejemplo: nombre@ejemplo.cl."

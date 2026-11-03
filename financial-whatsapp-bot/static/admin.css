@@ -444,12 +444,6 @@ select:focus-visible {
     color: #1e40af;
 }
 
-.admin-badge.eliminado {
-    background: #e4e4e7;
-    border-color: #a1a1aa;
-    color: #3f3f46;
-}
-
 /* Estados de la ingesta de documentos: colores semánticos (no de marca)
    a pedido explícito — verde/rojo/azul se leen de un vistazo en una
    tabla de estados, cosa que la paleta de marca no resuelve bien aquí. */
@@ -810,6 +804,32 @@ select:focus-visible {
     font-size: 26px;
 }
 
+.admin-person {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.admin-avatar {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 9999px;
+    background: var(--emerald);
+    color: var(--petrol);
+    font-size: 16px;
+    font-weight: 800;
+}
+
+.admin-avatar-lg {
+    width: 56px;
+    height: 56px;
+    font-size: 20px;
+}
+
 .admin-facts {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -830,6 +850,16 @@ select:focus-visible {
     margin: 0;
     font-weight: 700;
     color: var(--petrol);
+    overflow-wrap: anywhere;
+}
+
+.admin-facts dd a {
+    color: var(--petrol);
+    transition: color 300ms;
+}
+
+.admin-facts dd a:hover {
+    color: var(--emerald);
 }
 
 .admin-facts dd small {
@@ -1041,6 +1071,20 @@ select:focus-visible {
     color: var(--petrol);
 }
 
+/* Las opciones de hito llevan el nombre del trámite: no deben desbordar en móvil */
+.admin-filters label {
+    max-width: 100%;
+}
+
+.admin-filters select {
+    max-width: 100%;
+}
+
+.admin-filters select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .admin-filters .admin-filter-check {
     flex-direction: row;
     align-items: center;
@@ -1148,14 +1192,28 @@ select:focus-visible {
     color: var(--emerald);
 }
 
+.community-invite {
+    margin-top: 24px;
+}
+
 .community-feed-row {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
     margin-bottom: 10px;
 }
 
+.community-feed-row button {
+    white-space: nowrap;
+}
+
+.community-feed-row :is(input, button):disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
 .community-feed-row input {
-    flex: 1;
+    flex: 1 1 200px;
     min-width: 0;
     padding: 10px 14px;
     border: 1px solid color-mix(in srgb, var(--petrol) 30%, transparent);
