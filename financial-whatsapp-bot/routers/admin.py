@@ -39,7 +39,7 @@ from services.admin_auth import (
     es_equipo,
     get_admin_session_account,
 )
-from config import ADMIN_COMUNA_GENERAL, INGESTION_MAX_BATCH_FILES, INGESTION_MAX_BATCH_MB
+from config import ADMIN_COMUNA_GENERAL, INGESTION_MAX_BATCH_FILES, INGESTION_MAX_BATCH_MB, SESSION_COOKIE_SECURE
 from services.ingestion_jobs import enqueue_document_ingestion, validate_batch, validate_upload
 
 logger = logging.getLogger("financial")
@@ -165,6 +165,7 @@ async def login(
         _SESSION_COOKIE,
         session_id,
         max_age=24 * 3600,
+        secure=SESSION_COOKIE_SECURE,
         httponly=True,
         samesite="lax",
     )
@@ -180,7 +181,7 @@ async def logout(
     await destroy_admin_session(redis, financial_admin_session)
 
     response = Response(status_code=303, headers={"Location": "/admin/login"})
-    response.delete_cookie(_SESSION_COOKIE)
+    response.delete_cookie(_SESSION_COOKIE, secure=SESSION_COOKIE_SECURE, httponly=True, samesite="lax")
     return response
 
 

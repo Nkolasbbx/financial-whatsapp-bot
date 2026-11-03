@@ -24,7 +24,7 @@ from fastapi import APIRouter, Cookie, Request, Response
 
 from core.alertas_tributarias import get_calendario_sii
 from core.roadmaps import get_pending_milestone
-from config import CALENDAR_DEFAULT_HOUR, REMINDER_TIMEZONE
+from config import CALENDAR_DEFAULT_HOUR, REMINDER_TIMEZONE, SESSION_COOKIE_SECURE
 from db.users import get_messages, get_user
 from services.portal_auth import (
     create_session,
@@ -358,6 +358,7 @@ async def acceso(token: str, request: Request, tab: str = "resumen"):
         _SESSION_COOKIE,
         session_id,
         max_age=7 * 24 * 3600,
+        secure=SESSION_COOKIE_SECURE,
         httponly=True,
         samesite="lax",
     )
@@ -373,7 +374,7 @@ async def logout(
     await destroy_session(redis, financial_session)
 
     response = Response(status_code=303, headers={"Location": "/portal"})
-    response.delete_cookie(_SESSION_COOKIE)
+    response.delete_cookie(_SESSION_COOKIE, secure=SESSION_COOKIE_SECURE, httponly=True, samesite="lax")
     return response
 
 

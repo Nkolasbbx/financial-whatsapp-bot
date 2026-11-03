@@ -4,6 +4,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _is_local_environment(env):
+    # Una configuración local copiada a un servicio de Railway no debe abrirlo.
+    return env.get("APP_ENV", "").strip().lower() == "local" and not any(
+        env.get(name) for name in ("RAILWAY_PROJECT_ID", "RAILWAY_ENVIRONMENT_ID", "RAILWAY_SERVICE_ID")
+    )
+
+
+LOCAL_ENVIRONMENT = _is_local_environment(os.environ)
+ENABLE_TEST_CHAT = LOCAL_ENVIRONMENT and os.getenv("ENABLE_TEST_CHAT", "").strip().lower() == "true"
+SESSION_COOKIE_SECURE = not LOCAL_ENVIRONMENT
+
+
 # If using twilio
 DEBUG= os.getenv("DEBUG", "False").lower() == "true"
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
