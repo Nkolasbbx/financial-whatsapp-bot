@@ -1,7 +1,7 @@
 import unittest
 
 from core.profile_validation import (
-    ProfileValidationError, validate_address, validate_email, validate_name, validate_rut,
+    ProfileValidationError, format_rut, validate_address, validate_email, validate_name, validate_rut,
 )
 
 
@@ -21,6 +21,18 @@ class ProfileValidationTests(unittest.TestCase):
         for text in ("12.345.678-9", "0-0", "12345", "12x345678-5", None):
             with self.subTest(text=text), self.assertRaises(ProfileValidationError):
                 validate_rut(text)
+
+    def test_format_rut_adds_dots_according_to_length(self):
+        for text, expected in (
+            ("12345678-5", "12.345.678-5"),
+            ("1234567-8", "1.234.567-8"),
+            ("12.345.678-5", "12.345.678-5"),
+            ("7654321k", "7.654.321-K"),
+            ("no es rut", "no es rut"),
+            (None, ""),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(format_rut(text), expected)
 
     def test_email_validates_format_without_claiming_ownership(self):
         self.assertEqual(validate_email(" Ana+negocio@EJEMPLO.CL "), "Ana+negocio@ejemplo.cl")

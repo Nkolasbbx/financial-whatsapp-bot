@@ -606,7 +606,7 @@ def get_users_by_comuna(comuna: str) -> list[dict]:
             dependencies.supabase_admin
             .table("users")
             .select(
-                "phone, rubro, comuna, inicio_sii, onboarding_step, "
+                "phone, nombre_completo, rubro, comuna, inicio_sii, onboarding_step, "
                 "roadmap, roadmap_completed_at, created_at"
             )
             .eq("comuna", comuna)

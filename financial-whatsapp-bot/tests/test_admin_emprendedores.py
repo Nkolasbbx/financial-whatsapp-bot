@@ -1,20 +1,29 @@
+import html
+import json
+import re
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import dependencies
+from db.users import get_users_by_comuna
 from routers import admin
 
 ACCOUNT = {"comuna": "Recoleta", "nombre": "InnovaRecoleta"}
 ROADMAP = [{"id": 1, "title": "Iniciar actividades en el SII", "done": False}]
 
 
-def _usuario(i: int, formalizado: bool = False, rubro: str = "textil") -> dict:
+def _ruta(total: int, pendiente: int) -> list[dict]:
+    return [{"id": n, "title": f"Trámite {n}", "done": n < pendiente} for n in range(1, total + 1)]
+
+
+def _usuario(i: int, formalizado: bool = False, rubro: str = "textil", roadmap: list[dict] | None = None) -> dict:
     return {
         "phone": f"+5691234{i:04d}",
         "rubro": rubro,
-        "roadmap": ROADMAP,
+        "roadmap": ROADMAP if roadmap is None else roadmap,
         "roadmap_completed_at": "2026-10-01T00:00:00Z" if formalizado else None,
     }
 
@@ -95,6 +104,142 @@ class EmprendedoresTests(unittest.TestCase):
         self.usuarios.clear()
         response = self.client.get("/admin/emprendedores")
         self.assertIn("No hay emprendedores registrados todavía.", response.text)
+
+    def test_muestra_el_nombre_escapado_y_corrige_mayusculas(self):
+        self.usuarios[:] = [
+            {**_usuario(1), "nombre_completo": "  maría gonzález "},
+            {**_usuario(2), "nombre_completo": "Ana <b>de la Fuente</b>"},
+            {**_usuario(3), "nombre_completo": None},
+        ]
+        response = self.client.get("/admin/emprendedores")
+        self.assertIn("<th>Nombre</th>", response.text)
+        self.assertIn("<td>María González</td>", response.text)
+        self.assertIn("<td>Ana &lt;b&gt;de la Fuente&lt;/b&gt;</td>", response.text)
+        self.assertIn("<td>—</td>", response.text)
+
+    def test_la_consulta_de_la_comuna_trae_el_nombre(self):
+        cliente = MagicMock()
+        tabla = cliente.table.return_value
+        tabla.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
+        with patch.object(dependencies, "supabase_admin", cliente):
+            get_users_by_comuna("Recoleta")
+        self.assertIn("nombre_completo", tabla.select.call_args.args[0])
+
+    def _rutas_de_distinto_largo(self):
+        self.usuarios[:] = [
+            _usuario(1, rubro="textil", roadmap=_ruta(6, pendiente=3)),
+            _usuario(2, rubro="textil", roadmap=_ruta(6, pendiente=6)),
+            _usuario(3, rubro="alimentos", roadmap=_ruta(7, pendiente=3)),
+            _usuario(4, rubro="alimentos", roadmap=_ruta(7, pendiente=7)),
+            _usuario(5, rubro="alimentos", formalizado=True, roadmap=[]),
+        ]
+
+    def _opciones_de_hito(self, response) -> list[str]:
+        select = re.search(r'<select name="hito"[^>]*>(.*?)</select>', response.text).group(1)
+        return re.findall(r'<option value="(\d+)"', select)
+
+    def test_las_opciones_de_hito_dependen_del_rubro(self):
+        self._rutas_de_distinto_largo()
+        for query, total in (("", 7), ("?rubro=textil", 6), ("?rubro=alimentos", 7)):
+            response = self.client.get(f"/admin/emprendedores{query}")
+            self.assertEqual(self._opciones_de_hito(response), [str(n) for n in range(1, total + 1)])
+
+    def test_las_opciones_llevan_el_tramite_solo_con_un_rubro_elegido(self):
+        self._rutas_de_distinto_largo()
+        self.usuarios[0]["roadmap"][3]["title"] = "Patente <Municipal>"
+
+        response = self.client.get("/admin/emprendedores?rubro=textil")
+        self.assertIn('<option value="4">4 - Patente &lt;Municipal&gt; (0)</option>', response.text)
+
+        response = self.client.get("/admin/emprendedores?rubro=alimentos")
+        self.assertIn('<option value="4">4 - Trámite 4 (0)</option>', response.text)
+
+        response = self.client.get("/admin/emprendedores")
+        self.assertIn('<option value="4">4 (0)</option>', response.text)
+
+    def test_las_opciones_cuentan_a_las_personas_en_cada_hito(self):
+        self._rutas_de_distinto_largo()
+        # Un perfil antiguo puede conservar su ruta aunque ya se haya formalizado: no cuenta.
+        self.usuarios.append(_usuario(6, rubro="alimentos", formalizado=True, roadmap=_ruta(7, pendiente=3)))
+
+        response = self.client.get("/admin/emprendedores?rubro=alimentos")
+        self.assertIn('<option value="3">3 - Trámite 3 (1)</option>', response.text)
+        self.assertIn('<option value="5">5 - Trámite 5 (0)</option>', response.text)
+
+        response = self.client.get("/admin/emprendedores")
+        self.assertIn('<option value="3">3 (2)</option>', response.text)
+        self.assertIn('<option value="6">6 (1)</option>', response.text)
+        self.assertIn('<option value="5">5 (0)</option>', response.text)
+
+    def test_el_html_le_entrega_al_js_las_opciones_de_cada_rubro(self):
+        self.usuarios[:] = [
+            _usuario(1, rubro="textil", roadmap=_ruta(1, pendiente=1)),
+            _usuario(2, rubro="alimentos", roadmap=_ruta(2, pendiente=1)),
+        ]
+        response = self.client.get("/admin/emprendedores")
+        atributo = re.search(r'data-opciones-por-rubro="([^"]*)"', response.text).group(1)
+        self.assertEqual(
+            json.loads(html.unescape(atributo)),
+            {
+                "textil": [["1", "1 - Trámite 1 (1)"]],
+                "alimentos": [["1", "1 - Trámite 1 (1)"], ["2", "2 - Trámite 2 (0)"]],
+                "": [["1", "1 (2)"], ["2", "2 (0)"]],
+            },
+        )
+
+    def test_filtro_de_hito_usa_el_hito_pendiente(self):
+        self._rutas_de_distinto_largo()
+        response = self.client.get("/admin/emprendedores?hito=3")
+        self.assertEqual(self._filas(response), 2)
+        self.assertIn('<option value="3" selected>', response.text)
+        self.assertIn("+56912340001", response.text)
+        self.assertIn("+56912340003", response.text)
+
+        response = self.client.get("/admin/emprendedores?hito=3&rubro=alimentos")
+        self.assertEqual(self._filas(response), 1)
+        self.assertIn("+56912340003", response.text)
+
+    def test_hito_que_el_rubro_no_tiene_se_ignora(self):
+        self._rutas_de_distinto_largo()
+        response = self.client.get("/admin/emprendedores?hito=7&rubro=textil")
+        self.assertEqual(self._filas(response), 2)
+        self.assertNotIn(" selected>7<", response.text)
+
+    def test_hito_invalido_se_ignora(self):
+        self._rutas_de_distinto_largo()
+        for hito in ("0", "8", "abc"):
+            response = self.client.get(f"/admin/emprendedores?hito={hito}")
+            self.assertEqual(self._filas(response), 5)
+
+    def test_filtro_de_hito_excluye_a_los_formalizados(self):
+        self._rutas_de_distinto_largo()
+        # Un perfil antiguo puede conservar su ruta aunque ya se haya formalizado.
+        self.usuarios.append(_usuario(6, rubro="alimentos", formalizado=True, roadmap=_ruta(7, pendiente=3)))
+        response = self.client.get("/admin/emprendedores?hito=3")
+        self.assertEqual(self._filas(response), 2)
+        self.assertNotIn("+56912340006", response.text)
+
+    def test_con_formalizados_el_filtro_de_hito_se_desactiva(self):
+        self._rutas_de_distinto_largo()
+        response = self.client.get("/admin/emprendedores?hito=3&estado=formalizado")
+        self.assertEqual(self._filas(response), 1)
+        self.assertIn("+56912340005", response.text)
+        self.assertNotIn("Ningún emprendedor coincide", response.text)
+        self.assertRegex(response.text, r'<select name="hito"[^>]* disabled>')
+        self.assertNotIn('<option value="3" selected>', response.text)
+
+        response = self.client.get("/admin/emprendedores?estado=progreso")
+        self.assertNotRegex(response.text, r'<select name="hito"[^>]* disabled>')
+
+    def test_filtro_de_hito_se_conserva_al_paginar(self):
+        self.usuarios[:] = [_usuario(i, roadmap=_ruta(6, pendiente=2)) for i in range(30)]
+        response = self.client.get("/admin/emprendedores?hito=2")
+        self.assertIn('href="/admin/emprendedores?hito=2&amp;pagina=2"', response.text)
+
+    def test_comuna_sin_rutas_no_ofrece_hitos(self):
+        self.usuarios[:] = [_usuario(1, formalizado=True, roadmap=[])]
+        response = self.client.get("/admin/emprendedores")
+        self.assertEqual(self._opciones_de_hito(response), [])
 
     def test_el_panel_principal_enlaza_al_listado_en_vez_de_mostrar_la_tabla(self):
         response = self.client.get("/admin")

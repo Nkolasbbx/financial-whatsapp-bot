@@ -24,6 +24,15 @@ class CommunityEventRequest(BaseModel):
     link: str | None = None
 
 
+class CalendarInviteRequest(BaseModel):
+    email: str | None = None
+
+
+class CalendarInviteResponse(BaseModel):
+    email: str
+    invited: bool
+
+
 class DeliverySummary(BaseModel):
     sent: int = 0
     failed: int = 0

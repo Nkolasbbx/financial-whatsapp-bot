@@ -27,8 +27,54 @@
         });
     }
 
+    function bindInviteForm() {
+        const form = document.getElementById("community-invite-form");
+        const shared = window.FinancialCalendar;
+        if (!form || !shared) {
+            return;
+        }
+        const emailInput = document.getElementById("community-invite-email");
+        const submitButton = form.querySelector('button[type="submit"]');
+        const messageElement = document.getElementById("community-invite-message");
+        const settings = {
+            csrfToken: document
+                .querySelector('meta[name="financial-csrf-token"]')
+                ?.getAttribute("content"),
+            sessionExpiredMessage: "Tu sesión venció. Vuelve a iniciar sesión.",
+        };
+
+        form.addEventListener("submit", async function (event) {
+            event.preventDefault();
+            shared.setMessage(messageElement, "");
+            submitButton.disabled = true;
+            try {
+                const result = await shared.jsonRequest(
+                    "/admin/api/convocatorias/invitar-calendario",
+                    {
+                        method: "POST",
+                        body: JSON.stringify({ email: emailInput.value }),
+                    },
+                    settings
+                );
+                shared.setMessage(
+                    messageElement,
+                    result.invited
+                        ? `Invitación enviada a ${result.email}.`
+                        : `${result.email} ya tiene acceso al calendario.`,
+                    "success"
+                );
+                form.reset();
+            } catch (error) {
+                shared.setMessage(messageElement, error.message, "error");
+            } finally {
+                submitButton.disabled = false;
+            }
+        });
+    }
+
     document.addEventListener("DOMContentLoaded", function () {
         bindCopyButtons();
+        bindInviteForm();
 
         const container = document.getElementById("community-calendar");
         if (!container) {

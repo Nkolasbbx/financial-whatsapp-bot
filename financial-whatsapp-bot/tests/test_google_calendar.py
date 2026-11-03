@@ -70,6 +70,68 @@ class GoogleRequestTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(google_calendar.GoogleCalendarError):
             await google_calendar.upsert_google_event(EVENT, "cal-id", transport=transport)
 
+    async def test_invite_shares_calendar_read_only_and_notifies(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.method == "GET":
+                return httpx.Response(404)
+            return httpx.Response(200, json={"role": "reader"})
+
+        invited = await google_calendar.invite_to_calendar(
+            "admin@recoleta.cl",
+            "municipio@group.calendar.google.com",
+            transport=httpx.MockTransport(handler),
+        )
+
+        self.assertTrue(invited)
+        self.assertEqual([request.method for request in requests], ["GET", "POST"])
+        self.assertIn("user%3Aadmin%40recoleta.cl", str(requests[0].url))
+        self.assertEqual(requests[1].url.params["sendNotifications"], "true")
+        self.assertEqual(
+            json.loads(requests[1].content),
+            {"role": "reader", "scope": {"type": "user", "value": "admin@recoleta.cl"}},
+        )
+
+    async def test_invite_does_not_touch_existing_access(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"role": "owner"})
+
+        invited = await google_calendar.invite_to_calendar(
+            "admin@recoleta.cl",
+            "cal-id",
+            transport=httpx.MockTransport(handler),
+        )
+
+        self.assertFalse(invited)
+        self.assertEqual([request.method for request in requests], ["GET"])
+
+    async def test_invite_again_after_access_was_removed(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json={"role": "none"})
+            return httpx.Response(200, json={"role": "reader"})
+
+        invited = await google_calendar.invite_to_calendar(
+            "admin@recoleta.cl",
+            "cal-id",
+            transport=httpx.MockTransport(handler),
+        )
+
+        self.assertTrue(invited)
+
+    async def test_invite_without_sharing_permission_keeps_the_status(self):
+        transport = httpx.MockTransport(lambda request: httpx.Response(403, text="forbidden"))
+
+        with self.assertRaises(google_calendar.GoogleCalendarError) as context:
+            await google_calendar.invite_to_calendar("admin@recoleta.cl", "cal-id", transport=transport)
+
+        self.assertEqual(context.exception.status_code, 403)
+
 
 class SyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_disabled_sync_makes_no_calls(self):

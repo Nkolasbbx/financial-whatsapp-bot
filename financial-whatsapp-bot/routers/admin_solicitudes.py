@@ -5,7 +5,9 @@ Solicitudes de contacto con un experto (HdU16), lado del admin municipal.
 El admin ve las solicitudes de SU comuna, toma una y conversa con el
 emprendedor desde el panel. Los mensajes salen y entran por el número del
 bot: el teléfono del emprendedor nunca se renderiza acá, y el emprendedor
-nunca ve el del admin.
+nunca ve el del admin. Sí se muestra su nombre (el RUT y el correo, solo en
+el detalle de la solicitud); las cuentas previas al perfil ampliado no lo
+tienen y siguen apareciendo con un alias.
 
 La lista se ordena por urgencia (primero las que están por cerrar su ventana
 de 24 h de WhatsApp) y se puede filtrar por tema, rubro, formalización y
@@ -20,6 +22,8 @@ from fastapi.responses import JSONResponse
 
 from core.calendar_service import get_calendar_timezone
 from core.expert_flow import TOPIC_LABELS, TOPICS
+from core.onboarding import RUBRO_DISPLAY
+from core.profile_validation import format_rut
 from core.roadmaps import get_pending_milestone
 from db.expert_requests import (
     add_expert_message,
@@ -31,7 +35,7 @@ from db.expert_requests import (
     resolve_expert_request,
     take_expert_request,
 )
-from routers.admin import _flash_html, _opciones, _pagina_base, _pop_flash, _set_flash
+from routers.admin import _flash_html, _nombre_persona, _opciones, _pagina_base, _pop_flash, _set_flash
 from services.admin_auth import get_admin_session_account
 from services.whatsapp import WhatsAppAPIError, send_text
 
@@ -53,6 +57,41 @@ _ESTADOS = {
 
 def _alias(request_row: dict) -> str:
     return f"Emprendedor {str(request_row['id'])[:4].upper()}"
+
+
+def _nombre_visible(fila: dict) -> str:
+    return _nombre_persona(fila.get("users") or {}) or _alias(fila)
+
+
+def _primer_nombre(usuario: dict, sin_nombre: str = "el emprendedor") -> str:
+    partes = _nombre_persona(usuario).split()
+    return partes[0] if partes else sin_nombre
+
+
+def _iniciales(usuario: dict) -> str:
+    partes = _nombre_persona(usuario).split()
+    if not partes:
+        return "E"
+    return (partes[0][0] + (partes[-1][0] if len(partes) > 1 else "")).upper()
+
+
+def _avatar(usuario: dict, grande: bool = False) -> str:
+    clase = "admin-avatar admin-avatar-lg" if grande else "admin-avatar"
+    return f'<span class="{clase}" aria-hidden="true">{html.escape(_iniciales(usuario))}</span>'
+
+
+def _rubro_txt(usuario: dict) -> str:
+    rubro = usuario.get("rubro") or ""
+    return RUBRO_DISPLAY.get(rubro, rubro.capitalize()) or "—"
+
+
+def _negocio_txt(usuario: dict) -> str:
+    """Cómo describió su negocio, si lo escribió con sus palabras: al usar los
+    botones del onboarding se guarda el id de la opción (rubro_textil)."""
+    negocio = (usuario.get("rubro_raw") or "").strip()
+    if negocio.startswith("rubro_") or negocio.lower() in ((usuario.get("rubro") or "").lower(), _rubro_txt(usuario).lower()):
+        return ""
+    return negocio
 
 
 def _fecha_local(value: str | None) -> str:
@@ -174,8 +213,9 @@ def _tema_html(fila: dict) -> str:
 def _tabla(titulo: str, filas: list[dict], vacio: str) -> str:
     cuerpo = "\n".join(
         f"""<tr>
-            <td><strong>{html.escape(_alias(r))}</strong>
-                <div class="admin-wait">{html.escape((r.get("users") or {}).get("rubro") or "—")}</div></td>
+            <td><div class="admin-person">{_avatar(r.get("users") or {})}
+                <div><strong>{html.escape(_nombre_visible(r))}</strong>
+                <div class="admin-wait">{html.escape(_rubro_txt(r.get("users") or {}))}</div></div></div></td>
             <td>{_tema_html(r)}</td>
             <td>{html.escape(_formalizado_txt(r.get("users") or {}))}
                 <div class="admin-wait">{html.escape(_progreso_txt(r.get("users") or {}))}</div></td>
@@ -271,6 +311,7 @@ def _hilo_html(
     request_id: str | None = None,
     puede_responder: bool = False,
     seleccionado: int | None = None,
+    remitente: str = "Emprendedor",
 ) -> str:
     if not mensajes:
         return '<p class="admin-thread-empty">Todavía no hay mensajes en esta conversación.</p>'
@@ -293,36 +334,40 @@ def _hilo_html(
             marca = ""
         burbujas.append(
             f'<div class="admin-msg admin-msg-{"expert" if es_experto else "user"}{marca}">'
-            f'<span class="admin-msg-meta">{"Tú" if es_experto else "Emprendedor"} · {html.escape(_fecha_local(m.get("created_at")))}</span>'
+            f'<span class="admin-msg-meta">{"Tú" if es_experto else html.escape(remitente)} · {html.escape(_fecha_local(m.get("created_at")))}</span>'
             f'{cita}<p>{html.escape(m["content"])}</p>{responder}</div>'
         )
     return "\n".join(burbujas)
 
 
 def _bloque_motivo(fila: dict) -> str:
+    usuario = fila.get("users") or {}
     motivo = (fila.get("reason") or "").strip()
-    texto = html.escape(motivo) if motivo else "El emprendedor no dejó detalle."
+    quien = html.escape(_primer_nombre(usuario, "el emprendedor"))
+    texto = html.escape(motivo) if motivo else f"{quien[0].upper()}{quien[1:]} no dejó detalle."
+    titulo = f"Lo que necesita {quien}" if _nombre_persona(usuario) else "Motivo de la solicitud"
     return f"""
     <div class="admin-card">
-        <h2>Motivo de la solicitud</h2>
+        <h2>{titulo}</h2>
         <blockquote class="admin-reason">{texto}</blockquote>
     </div>"""
 
 
-def _bloque_tomar(request_id: str, nombre: str, restante: timedelta) -> str:
+def _bloque_tomar(request_id: str, nombre: str, restante: timedelta, usuario: dict | None = None) -> str:
+    quien = html.escape(_primer_nombre(usuario or {}))
     if restante <= timedelta(0):
-        return """
+        return f"""
     <div class="admin-card">
         <h2>No se puede tomar todavía</h2>
-        <p class="admin-error">La ventana de 24 h de WhatsApp ya se cerró: no se le puede escribir hasta que el emprendedor vuelva a escribir.</p>
+        <p class="admin-error">La ventana de 24 h de WhatsApp ya se cerró: no se le puede escribir hasta que {quien} vuelva a escribir.</p>
     </div>"""
     return f"""
     <div class="admin-card admin-card-feature">
         <h2>Tomar esta solicitud</h2>
         <p class="subtitulo">Esto es lo que pasa al tomarla:</p>
         <ol class="admin-steps">
-            <li><span>El emprendedor recibe un aviso de que un experto de <strong>{html.escape(nombre)}</strong> lo atenderá por su chat de WhatsApp.</span></li>
-            <li><span>El asistente de IA queda en pausa solo para él, hasta que cierres la conversación.</span></li>
+            <li><span>{quien[0].upper()}{quien[1:]} recibe un aviso de que un experto de <strong>{html.escape(nombre)}</strong> tomó su solicitud y le escribirá por WhatsApp.</span></li>
+            <li><span>El asistente de IA queda en pausa solo en ese chat, hasta que cierres la conversación.</span></li>
             <li><span>Puedes escribirle desde aquí mientras la ventana de WhatsApp siga abierta ({_ventana_html(restante)}).</span></li>
         </ol>
         <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/tomar">
@@ -337,7 +382,10 @@ def _bloque_conversacion(
     restante: timedelta,
     nombre: str,
     responder: dict | None = None,
+    usuario: dict | None = None,
 ) -> str:
+    usuario = usuario or {}
+    quien = html.escape(_primer_nombre(usuario))
     if restante > timedelta(0):
         cita = ""
         if responder:
@@ -349,15 +397,15 @@ def _bloque_conversacion(
             <input type="hidden" name="responder_a" value="{int(responder["id"])}">"""
         composer = f"""
         <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/mensaje" class="admin-compose">
-            <label for="mensaje">Escribe tu respuesta</label>{cita}
+            <label for="mensaje">Escribe tu respuesta a {quien}</label>{cita}
             <textarea id="mensaje" name="mensaje" rows="3" maxlength="{MAX_MESSAGE_CHARS}" required
-                      placeholder="El emprendedor lo recibe en su WhatsApp como «{html.escape(nombre)}»"></textarea>
+                      placeholder="{quien[0].upper()}{quien[1:]} lo recibe en su WhatsApp como «{html.escape(nombre)}»"></textarea>
             <div class="admin-form-actions">
                 <button type="submit" class="admin-btn">Enviar mensaje</button>
             </div>
         </form>"""
     else:
-        composer = '<p class="admin-error">La ventana de 24 h de WhatsApp está cerrada: no se puede enviar texto libre hasta que el emprendedor vuelva a escribir.</p>'
+        composer = f'<p class="admin-error">La ventana de 24 h de WhatsApp está cerrada: no se puede enviar texto libre hasta que {quien} vuelva a escribir.</p>'
     cerrar = f"""
         <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/resolver"
               onsubmit="return confirm('¿Marcar como resuelta? El emprendedor vuelve a hablar con el asistente.')">
@@ -369,6 +417,7 @@ def _bloque_conversacion(
     hilo = _hilo_html(
         mensajes, request_id, puede_responder=restante > timedelta(0),
         seleccionado=responder["id"] if responder else None,
+        remitente=_primer_nombre(usuario, "Emprendedor"),
     )
     return f"""
     <div class="admin-card">
@@ -406,6 +455,7 @@ async def hilo(
         "hilo_html": _hilo_html(
             mensajes, request_id, puede_responder=restante > timedelta(0),
             seleccionado=citado["id"] if citado else None,
+            remitente=_primer_nombre(fila.get("users") or {}, "Emprendedor"),
         ),
         "ventana_html": _ventana_html(restante) if status != "resolved" else "—",
     })
@@ -435,22 +485,23 @@ async def detalle(
     mensajes = list_expert_messages(request_id)
 
     if status == "pending":
-        cuerpo = _bloque_tomar(request_id, nombre, restante)
+        cuerpo = _bloque_tomar(request_id, nombre, restante, usuario)
     elif status == "in_progress":
         responder = _mensaje_citable(mensajes, request.query_params.get("responder"))
-        cuerpo = _bloque_conversacion(request_id, mensajes, restante, nombre, responder)
+        cuerpo = _bloque_conversacion(request_id, mensajes, restante, nombre, responder, usuario)
     else:
         cerrada_por = fila.get("closed_by") or "—"
         cierre = f"{_fecha_local(fila.get('resolved_at'))} por {cerrada_por}"
+        quien = html.escape(_primer_nombre(usuario))
         aviso = (
-            '<p class="admin-hint">El emprendedor terminó la conversación. Puedes dejarla cerrada o volver a dejarla pendiente.</p>'
+            f'<p class="admin-hint">{quien[0].upper()}{quien[1:]} terminó la conversación. Puedes dejarla cerrada o volver a dejarla pendiente.</p>'
             if str(cerrada_por).startswith("emprendedor") else ""
         )
         cuerpo = f"""
     <div class="admin-card">
         <h2>Conversación</h2>
         <p class="subtitulo">Resuelta el {html.escape(cierre)}.</p>
-        <div class="admin-thread">{_hilo_html(mensajes)}</div>
+        <div class="admin-thread">{_hilo_html(mensajes, remitente=_primer_nombre(usuario, "Emprendedor"))}</div>
         {aviso}
         <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/reabrir"
               onsubmit="return confirm('¿Dejar esta solicitud pendiente otra vez?')">
@@ -462,7 +513,7 @@ async def detalle(
     </div>"""
 
     ventana = (
-        f'<span id="ventana-valor">{_ventana_html(restante)}</span><small>se renueva cuando el emprendedor escribe · '
+        f'<span id="ventana-valor">{_ventana_html(restante)}</span><small>se renueva cuando {html.escape(_primer_nombre(usuario))} escribe · '
         f'<a href="/admin/solicitudes/{html.escape(request_id)}">Actualizar</a></small>'
         if status != "resolved" else "—"
     )
@@ -473,16 +524,35 @@ async def detalle(
         '<script src="/static/admin_solicitudes.js"></script>'
         if status in ("pending", "in_progress") else ""
     )
+    negocio = _negocio_txt(usuario)
+    negocio_html = f"<small>«{html.escape(negocio)}»</small>" if negocio else ""
+    correo = (usuario.get("email") or "").strip()
+    correo_html = (
+        f'<div><dt>Correo</dt><dd><a href="mailto:{html.escape(correo, quote=True)}">{html.escape(correo)}</a></dd></div>'
+        if correo else ""
+    )
+    rut = (usuario.get("rut") or "").strip()
+    rut_html = f"<div><dt>RUT</dt><dd>{html.escape(format_rut(rut))}</dd></div>" if rut else ""
+    registro = _fecha_local(usuario.get("created_at"))[:10]
+    subtitulo = f"En FinancIAl desde el {registro}" if usuario.get("created_at") else ""
     contenido = f"""
     {_flash_html(flash)}
     <div class="admin-card">
         <div class="admin-req-head">
-            <h2>{html.escape(_alias(fila))}</h2>
+            <div class="admin-person">
+                {_avatar(usuario, grande=True)}
+                <div>
+                    <h2>{html.escape(_nombre_visible(fila))}</h2>
+                    <div class="admin-wait">{html.escape(subtitulo)}</div>
+                </div>
+            </div>
             {_badge(status)}
         </div>
         <dl class="admin-facts">
             <div><dt>Tema</dt><dd>{html.escape(tema)}</dd></div>
-            <div><dt>Rubro</dt><dd>{html.escape(usuario.get("rubro") or "—")}</dd></div>
+            <div><dt>Rubro</dt><dd>{html.escape(_rubro_txt(usuario))}{negocio_html}</dd></div>
+            {correo_html}
+            {rut_html}
             <div><dt>Formalización</dt><dd>{html.escape(_formalizado_txt(usuario))}</dd></div>
             <div><dt>Roadmap</dt><dd>{html.escape(_progreso_txt(usuario))}<small>Hito actual: {html.escape(hito_txt)}</small></dd></div>
             <div><dt>Solicitada</dt><dd>{html.escape(_fecha_local(fila.get("created_at")))}<small>{html.escape(_hace(fila.get("created_at")))}</small></dd></div>

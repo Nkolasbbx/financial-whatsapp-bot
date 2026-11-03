@@ -2,7 +2,8 @@
 
 Integración de ida (panel → Google) con una cuenta de servicio: cada
 municipio comparte su calendario con el correo de la cuenta de servicio
-(«Hacer cambios en eventos») y configura el ID del calendario en su cuenta
+(«Hacer cambios y administrar el uso compartido», necesario para invitar
+por correo desde el panel) y configura el ID del calendario en su cuenta
 admin (ver ADMIN_ACCOUNTS en config.py). No hay pantalla de login de Google
 ni tokens por usuario.
 
@@ -36,7 +37,10 @@ from services.calendar_reminders import format_calendar_template_date
 
 logger = logging.getLogger("financial")
 
-GOOGLE_SCOPES = ("https://www.googleapis.com/auth/calendar.events",)
+GOOGLE_SCOPES = (
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.acl",
+)
 _API_BASE = "https://www.googleapis.com/calendar/v3"
 _HTTP_TIMEOUT_SECONDS = 5.0
 # La HdU no pide hora de término: en Google se muestra un bloque de 1 hora.
@@ -48,7 +52,9 @@ _credentials_lock = threading.Lock()
 
 
 class GoogleCalendarError(RuntimeError):
-    pass
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def sync_enabled() -> bool:
@@ -135,7 +141,8 @@ def _events_url(calendar_id: str) -> str:
 def _raise_for_status(response: httpx.Response) -> None:
     if response.status_code >= 400:
         raise GoogleCalendarError(
-            f"Google Calendar respondió {response.status_code}: {response.text[:500]}"
+            f"Google Calendar respondió {response.status_code}: {response.text[:500]}",
+            status_code=response.status_code,
         )
 
 
@@ -182,6 +189,40 @@ async def delete_google_event(
     if response.status_code in (404, 410):
         return
     _raise_for_status(response)
+
+
+async def invite_to_calendar(
+    email: str,
+    calendar_id: str,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> bool:
+    """Comparte el calendario en modo lectura; Google envía la invitación.
+
+    Una cuenta de servicio no puede invitar asistentes a un evento sin
+    delegación de Workspace, así que se invita al calendario completo. Si el
+    correo ya tiene acceso devuelve False y no toca la regla: insertarla
+    rebajaría a lectura a quien hoy puede editar.
+    """
+    token = await _access_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{_API_BASE}/calendars/{quote(calendar_id, safe='')}/acl"
+
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS, transport=transport) as client:
+        existing = await client.get(f"{url}/{quote(f'user:{email}', safe='')}", headers=headers)
+        if existing.status_code == 200 and existing.json().get("role") != "none":
+            return False
+        if existing.status_code not in (200, 404):
+            _raise_for_status(existing)
+
+        response = await client.post(
+            url,
+            params={"sendNotifications": "true"},
+            json={"role": "reader", "scope": {"type": "user", "value": email}},
+            headers=headers,
+        )
+    _raise_for_status(response)
+    return True
 
 
 async def sync_community_event(event: dict) -> str:

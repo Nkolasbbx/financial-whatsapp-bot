@@ -228,6 +228,15 @@ class SubirDocumentosTests(unittest.TestCase):
         self.assertNotIn("Eliminar", tabla)
         self.assertNotIn("ambitos", page)  # el selector de ámbito es solo del equipo
 
+    def test_municipio_filtra_solo_dentro_de_su_comuna(self):
+        recientes = unittest.mock.MagicMock(return_value=[])
+        with patch.object(admin, "list_recent_jobs", recientes):
+            page = self.client.get("/admin/documentos", params={"ambito": "El Bosque", "estado": "failed"}).text
+
+        recientes.assert_called_once_with("Recoleta", limit=20, nombre="", estado="failed", rubro="")
+        self.assertIn('aria-label="Filtrar documentos"', page)
+        self.assertNotIn('name="ambito"', page)
+
 
 EQUIPO = {"comuna": "general", "nombre": "Equipo FinancIAl", "rol": "equipo"}
 
@@ -284,11 +293,42 @@ class EquipoDocumentosTests(unittest.TestCase):
 
     def test_pagina_muestra_selector_e_historial_de_todas_las_comunas(self):
         page = self.client.get("/admin/documentos").text
-        self.list_recent.assert_called_once_with(None, limit=20)
+        self.list_recent.assert_called_once_with(None, limit=20, nombre="", estado="", rubro="")
         self.assertIn("Nacional (todas las comunas)", page)
         self.assertIn("<th>Ámbito</th>", page)
         self.assertNotIn("Documentos nacionales (FinancIAl)", page)
         self.assertNotIn('href="/admin/emprendedores"', page)
+
+    def test_equipo_filtra_por_ambito_y_demas_campos(self):
+        page = self.client.get(
+            "/admin/documentos",
+            params={"q": " inicio_sii ", "ambito": "El Bosque", "rubro": "general", "estado": "done"},
+        ).text
+        self.list_recent.assert_called_once_with(
+            "El Bosque", limit=20, nombre="inicio_sii", estado="done", rubro="general"
+        )
+        self.assertIn('<option value="El Bosque" selected>', page)
+        self.assertIn('value="inicio_sii"', page)
+        self.assertIn("Ningún documento coincide con esos filtros.", page)
+
+    def test_valores_de_filtro_fuera_de_las_listas_se_ignoran(self):
+        self.client.get(
+            "/admin/documentos",
+            params={"ambito": "Providencia", "rubro": "inventado", "estado": "eliminado"},
+        )
+        self.list_recent.assert_called_once_with(None, limit=20, nombre="", estado="", rubro="")
+
+    def test_eliminar_conserva_los_filtros_de_la_busqueda(self):
+        job = {"id": "job-1", "file_name": "patentes.md", "comuna": "El Bosque", "status": "done"}
+        self.list_recent.return_value = [job]
+
+        page = self.client.get("/admin/documentos", params={"q": "patentes", "estado": "done"}).text
+        self.assertIn("/admin/documentos/job-1/eliminar?q=patentes&amp;estado=done", page)
+
+        with patch.object(admin, "get_ingestion_job", return_value=job), \
+             patch.object(admin, "delete_ingested_document"):
+            response = self.client.post("/admin/documentos/job-1/eliminar?q=patentes&estado=done")
+        self.assertEqual(response.headers["location"], "/admin/documentos?q=patentes&estado=done")
 
     def test_equipo_consulta_y_elimina_jobs_de_cualquier_comuna(self):
         job = {"id": "job-1", "file_name": "patentes.md", "comuna": "El Bosque", "status": "done"}

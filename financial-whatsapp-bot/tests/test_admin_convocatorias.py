@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from fastapi import HTTPException
 
 from routers import admin_convocatorias as panel
-from schemas.community_events import CommunityEventRequest
+from schemas.community_events import CalendarInviteRequest, CommunityEventRequest
 
 ACCOUNT = {"comuna": "Recoleta", "nombre": "InnovaRecoleta"}
 EVENT_ID = "11111111-2222-3333-4444-555555555555"
@@ -111,6 +111,86 @@ class AdminApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.notice_status, "programado")
         self.assertTrue(result.editable)
         self.assertEqual(result.google_sync_status, "disabled")
+
+    async def test_invite_uses_the_account_calendar_and_normalizes_the_email(self):
+        account = dict(ACCOUNT, google_calendar_id="cal-recoleta")
+        self.mocks[0].return_value = account
+        with (
+            patch.object(panel, "account_sync_configured", return_value=True),
+            patch.object(panel, "invite_to_calendar", new=AsyncMock(return_value=True)) as invite_mock,
+        ):
+            result = await panel.invitar_calendario(
+                CalendarInviteRequest(email="  Admin@Recoleta.CL "), REQUEST, "session", "csrf"
+            )
+
+        invite_mock.assert_awaited_once_with("admin@recoleta.cl", "cal-recoleta")
+        self.assertEqual(result.email, "admin@recoleta.cl")
+        self.assertTrue(result.invited)
+
+    async def test_invite_without_valid_csrf_is_rejected(self):
+        self.mocks[1].return_value = False
+        with (
+            patch.object(panel, "invite_to_calendar", new=AsyncMock()) as invite_mock,
+            self.assertRaises(HTTPException) as context,
+        ):
+            await panel.invitar_calendario(
+                CalendarInviteRequest(email="admin@recoleta.cl"), REQUEST, "session", None
+            )
+
+        self.assertEqual(context.exception.status_code, 403)
+        invite_mock.assert_not_awaited()
+
+    async def test_invite_rejects_invalid_email(self):
+        for email in (None, "", "admin", "admin@recoleta", "a b@recoleta.cl", "a@b@recoleta.cl"):
+            with (
+                self.subTest(email=email),
+                patch.object(panel, "account_sync_configured", return_value=True),
+                patch.object(panel, "invite_to_calendar", new=AsyncMock()) as invite_mock,
+                self.assertRaises(HTTPException) as context,
+            ):
+                await panel.invitar_calendario(
+                    CalendarInviteRequest(email=email), REQUEST, "session", "csrf"
+                )
+            self.assertEqual(context.exception.status_code, 400)
+            invite_mock.assert_not_awaited()
+
+    async def test_invite_without_google_configured_is_rejected(self):
+        with (
+            patch.object(panel, "account_sync_configured", return_value=False),
+            patch.object(panel, "invite_to_calendar", new=AsyncMock()) as invite_mock,
+            self.assertRaises(HTTPException) as context,
+        ):
+            await panel.invitar_calendario(
+                CalendarInviteRequest(email="admin@recoleta.cl"), REQUEST, "session", "csrf"
+            )
+
+        self.assertEqual(context.exception.status_code, 409)
+        invite_mock.assert_not_awaited()
+
+    async def test_invite_explains_missing_sharing_permission(self):
+        self.mocks[0].return_value = dict(ACCOUNT, google_calendar_id="cal-recoleta")
+        error = panel.GoogleCalendarError("403", status_code=403)
+        with (
+            patch.object(panel, "account_sync_configured", return_value=True),
+            patch.object(panel, "invite_to_calendar", new=AsyncMock(side_effect=error)),
+            self.assertRaises(HTTPException) as context,
+        ):
+            await panel.invitar_calendario(
+                CalendarInviteRequest(email="admin@recoleta.cl"), REQUEST, "session", "csrf"
+            )
+
+        self.assertEqual(context.exception.status_code, 502)
+        self.assertIn("uso compartido", context.exception.detail)
+
+    def test_invite_form_is_disabled_until_google_is_configured(self):
+        with patch.object(panel, "account_sync_configured", return_value=False):
+            disabled = panel._bloque_google(ACCOUNT, None)
+        with patch.object(panel, "account_sync_configured", return_value=True):
+            enabled = panel._bloque_google(ACCOUNT, None)
+
+        self.assertIn('id="community-invite-form"', disabled)
+        self.assertIn("disabled>Enviar invitación", disabled)
+        self.assertNotIn("disabled>Enviar invitación", enabled)
 
     async def test_edit_after_notice_was_sent_is_rejected(self):
         sent = _stored(notice_at=_iso(timedelta(hours=-1)), notice_sent_at=_iso(timedelta(minutes=-50)))

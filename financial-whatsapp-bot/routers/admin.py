@@ -268,7 +268,7 @@ async def dashboard(
 
     <div class="admin-card">
         <h2>Emprendedores de {html.escape(comuna)}</h2>
-        <p class="subtitulo">El listado completo tiene su propia página, con búsqueda por teléfono y filtros por estado y rubro.</p>
+        <p class="subtitulo">El listado completo tiene su propia página, con búsqueda por teléfono y filtros por estado, rubro e hito.</p>
         <a class="admin-btn-secondary" href="/admin/emprendedores">Ver listado completo</a>
     </div>
 
@@ -319,7 +319,48 @@ def _solo_digitos(texto: str) -> str:
     return "".join(c for c in texto if c.isdigit())
 
 
-def _filtrar_emprendedores(usuarios: list[dict], telefono: str, estado: str, rubro: str) -> list[dict]:
+def _nombre_persona(usuario: dict) -> str:
+    """Nombre completo para mostrar, o "" si no lo tiene. El onboarding lo guarda
+    tal como se escribió: solo se corrige si viene todo en minúsculas o mayúsculas."""
+    nombre = (usuario.get("nombre_completo") or "").strip()
+    return nombre.title() if nombre in (nombre.lower(), nombre.upper()) else nombre
+
+
+def _hito_pendiente(u: dict) -> dict | None:
+    """El hito en que va el usuario, el mismo que muestra la tabla. Quien ya se
+    formalizó no tiene ninguno, aunque un perfil antiguo conserve su ruta."""
+    return None if u.get("roadmap_completed_at") else get_pending_milestone(u)
+
+
+def _opciones_hito_por_rubro(usuarios: list[dict]) -> dict[str, list[tuple[str, str]]]:
+    """Las opciones del filtro de hito de cada rubro y, bajo "", las de todos.
+
+    Se leen de las rutas guardadas, igual que la tabla: cada usuario conserva la
+    que recibió en el onboarding. Cada opción indica cuántas personas van en ese
+    hito, sin considerar la búsqueda por teléfono. El mismo número es un trámite
+    distinto en cada rubro: el título solo se puede mostrar con un rubro elegido.
+    """
+    titulos: dict[str, dict[str, str]] = {}
+    personas: Counter[tuple[str, str]] = Counter()
+    for u in usuarios:
+        rubro = u.get("rubro") or "No definido"
+        del_rubro = titulos.setdefault(rubro, {})
+        for hito in u.get("roadmap") or []:
+            del_rubro.setdefault(str(hito["id"]), hito["title"])
+        pendiente = _hito_pendiente(u)
+        if pendiente:
+            personas[rubro, str(pendiente["id"])] += 1
+
+    opciones = {
+        rubro: [(id_hito, f"{id_hito} - {titulo} ({personas[rubro, id_hito]})") for id_hito, titulo in hitos.items()]
+        for rubro, hitos in titulos.items()
+    }
+    ids = sorted({id_hito for hitos in titulos.values() for id_hito in hitos}, key=int)
+    opciones[""] = [(id_hito, f"{id_hito} ({sum(personas[rubro, id_hito] for rubro in titulos)})") for id_hito in ids]
+    return opciones
+
+
+def _filtrar_emprendedores(usuarios: list[dict], telefono: str, estado: str, rubro: str, hito: str) -> list[dict]:
     digitos = _solo_digitos(telefono)
     resultado = []
     for u in usuarios:
@@ -329,6 +370,9 @@ def _filtrar_emprendedores(usuarios: list[dict], telefono: str, estado: str, rub
         if rubro and (u.get("rubro") or "No definido") != rubro:
             continue
         if digitos and digitos not in _solo_digitos(u.get("phone") or ""):
+            continue
+        pendiente = _hito_pendiente(u)
+        if hito and (not pendiente or str(pendiente["id"]) != hito):
             continue
         resultado.append(u)
     return resultado
@@ -343,6 +387,7 @@ def _fila_emprendedor(u: dict) -> str:
     hito_titulo = "Formalización completa" if completo else (hito["title"] if hito else "Sin roadmap asignado")
     rubro = u.get("rubro") or "No definido"
     return f"""<tr>
+        <td>{html.escape(_nombre_persona(u) or "—")}</td>
         <td>{html.escape(u.get("phone", ""))}</td>
         <td><span class="admin-badge {estado_clase}">{estado}</span></td>
         <td>{html.escape("(" + numero_hito + ") - " + hito_titulo)}</td>
@@ -385,8 +430,15 @@ async def emprendedores(
     telefono = params.get("q", "").strip()[:20]
     estado = params.get("estado", "") if params.get("estado", "") in dict(_ESTADOS_EMPRENDEDOR) else ""
     rubro = params.get("rubro", "") if params.get("rubro", "") in rubros else ""
+    opciones_hito_por_rubro = _opciones_hito_por_rubro(usuarios)
+    opciones_hito = opciones_hito_por_rubro[rubro]
+    # Un hito que el rubro elegido no tiene se ignora, igual que cualquier otro
+    # valor inválido. Con "Formalizados" el filtro se desactiva: no tienen hito
+    # pendiente, así que combinarlos nunca daría resultados.
+    sin_hito = estado == "formalizado"
+    hito = params.get("hito", "") if not sin_hito and params.get("hito", "") in dict(opciones_hito) else ""
 
-    filtrados = _filtrar_emprendedores(usuarios, telefono, estado, rubro)
+    filtrados = _filtrar_emprendedores(usuarios, telefono, estado, rubro, hito)
     total_paginas = max(1, math.ceil(len(filtrados) / EMPRENDEDORES_POR_PAGINA))
     try:
         pagina = int(params.get("pagina", "1"))
@@ -403,7 +455,7 @@ async def emprendedores(
             resumen += f" (de {len(usuarios)} en total)"
     else:
         vacio = "Ningún emprendedor coincide con esos filtros." if usuarios else "No hay emprendedores registrados todavía."
-        filas = f'<tr><td colspan="4">{vacio}</td></tr>'
+        filas = f'<tr><td colspan="5">{vacio}</td></tr>'
         resumen = ""
 
     opciones_rubro = [(r, RUBRO_DISPLAY.get(r, r)) for r in rubros]
@@ -412,6 +464,7 @@ async def emprendedores(
         <label>Teléfono <input type="search" name="q" value="{html.escape(telefono)}" inputmode="numeric" placeholder="Ej: 56912345678"></label>
         <label>Estado <select name="estado">{_opciones(_ESTADOS_EMPRENDEDOR, estado, "Todos")}</select></label>
         <label>Rubro <select name="rubro">{_opciones(opciones_rubro, rubro, "Todos")}</select></label>
+        <label title="Hito pendiente: los formalizados ya no tienen uno.">Hito <select name="hito" data-opciones-por-rubro="{html.escape(json.dumps(opciones_hito_por_rubro))}"{" disabled" if sin_hito else ""}>{_opciones(opciones_hito, hito, "Todos")}</select></label>
         <button type="submit" class="admin-btn-secondary">Filtrar</button>
         <a href="/admin/emprendedores" class="admin-filter-clear">Limpiar</a>
     </form>
@@ -421,13 +474,13 @@ async def emprendedores(
         <p class="subtitulo">{html.escape(resumen)}</p>
         <table class="admin-table">
             <thead>
-                <tr><th>Teléfono</th><th>Estado</th><th>Hito</th><th>Rubro</th></tr>
+                <tr><th>Nombre</th><th>Teléfono</th><th>Estado</th><th>Hito</th><th>Rubro</th></tr>
             </thead>
             <tbody>
                 {filas}
             </tbody>
         </table>
-        {_paginacion_html(pagina, total_paginas, {"q": telefono, "estado": estado, "rubro": rubro})}
+        {_paginacion_html(pagina, total_paginas, {"q": telefono, "estado": estado, "rubro": rubro, "hito": hito})}
     </div>
     """
     return Response(content=_pagina_base("Emprendedores", contenido, account), media_type="text/html")
@@ -441,6 +494,7 @@ _ESTADO_LABELS = {
     "done": ("Listo", "completo"),
     "failed": ("Error", "error"),
 }
+_MAX_BUSQUEDA_DOCUMENTO = 100
 
 
 def _ambito_label(comuna: str | None) -> str:
@@ -449,7 +503,7 @@ def _ambito_label(comuna: str | None) -> str:
     return comuna or "—"
 
 
-def _fila_ingestion_job(job: dict, mostrar_ambito: bool = False) -> str:
+def _fila_ingestion_job(job: dict, mostrar_ambito: bool = False, query: str = "") -> str:
     label, badge_clase = _ESTADO_LABELS.get(job["status"], (job["status"], "en-cola"))
     rubros = ", ".join(RUBRO_DISPLAY.get(r, r) for r in (job.get("rubros") or [])) or "—"
     vigencia = job.get("vigencia_hasta")
@@ -457,11 +511,7 @@ def _fila_ingestion_job(job: dict, mostrar_ambito: bool = False) -> str:
     detalle = ""
     acciones = "—"
 
-    if job.get("deleted_at"):
-        label, badge_clase = "Eliminado", "eliminado"
-        fecha = str(job["deleted_at"])[:16].replace("T", " ")
-        detalle = f'<div class="subtitulo">Eliminado por {html.escape(job.get("deleted_by") or "—")} el {html.escape(fecha)}</div>'
-    elif job["status"] == "failed" and job.get("error_message"):
+    if job["status"] == "failed" and job.get("error_message"):
         detalle = f'<div class="subtitulo">{html.escape(job["error_message"][:200])}</div>'
     elif job.get("review_flag"):
         review = job.get("review_details") if isinstance(job.get("review_details"), dict) else {}
@@ -472,13 +522,14 @@ def _fila_ingestion_job(job: dict, mostrar_ambito: bool = False) -> str:
             avisos.append("⚠️ Revisar: puede haber contenido no legible (tablas/imágenes).")
         detalle = "".join(f'<div class="subtitulo">{aviso}</div>' for aviso in avisos)
 
-    if job["status"] == "done" and not job.get("deleted_at"):
-        acciones = f'''<form method="post" action="/admin/documentos/{job["id"]}/eliminar"
+    if job["status"] == "done":
+        destino = f'/admin/documentos/{job["id"]}/eliminar' + (f"?{query}" if query else "")
+        acciones = f'''<form method="post" action="{html.escape(destino)}"
                 onsubmit="return confirm('¿Eliminar este documento? El asistente dejará de citarlo.')">
             <button type="submit" class="admin-delete-button">Eliminar</button>
         </form>'''
 
-    pendiente = job["status"] in ("queued", "processing") and not job.get("deleted_at")
+    pendiente = job["status"] in ("queued", "processing")
     data_attrs = f' data-job-id="{html.escape(str(job["id"]))}"' if pendiente else ""
 
     ambito = f"<td>{html.escape(_ambito_label(job.get('comuna')))}</td>" if mostrar_ambito else ""
@@ -584,7 +635,24 @@ def _tabla_documentos_nacionales() -> str:
     """
 
 
-def _pagina_documentos(account: dict, flash: dict | None = None) -> str:
+def _filtros_documentos(account: dict, rubros: list[tuple[str, str]], filtros: dict[str, str]) -> str:
+    ambito = ""
+    if es_equipo(account):
+        opciones_ambito = [(c, _ambito_label(c)) for c in _ambitos_permitidos(account)]
+        ambito = f'<label>Ámbito <select name="ambito">{_opciones(opciones_ambito, filtros["ambito"], "Todos")}</select></label>'
+    opciones_estado = [(k, v[0]) for k, v in _ESTADO_LABELS.items()]
+    return f"""
+    <form method="get" action="/admin/documentos" class="admin-filters" aria-label="Filtrar documentos">
+        <label>Documento <input type="search" name="q" value="{html.escape(filtros["q"], quote=True)}" maxlength="{_MAX_BUSQUEDA_DOCUMENTO}" placeholder="Nombre del archivo"></label>
+        {ambito}
+        <label>Rubro <select name="rubro">{_opciones(rubros, filtros["rubro"], "Todos")}</select></label>
+        <label>Estado <select name="estado">{_opciones(opciones_estado, filtros["estado"], "Todos")}</select></label>
+        <button type="submit" class="admin-btn-secondary">Filtrar</button>
+        <a href="/admin/documentos" class="admin-filter-clear">Limpiar</a>
+    </form>"""
+
+
+def _pagina_documentos(account: dict, params, flash: dict | None = None) -> str:
     equipo = es_equipo(account)
     rubros_config = [{"value": "general", "label": "General (todos los rubros)"}] + [
         {"value": rubro, "label": RUBRO_DISPLAY.get(rubro, rubro)} for rubro in RUBROS_ACTIVOS
@@ -601,10 +669,23 @@ def _pagina_documentos(account: dict, flash: dict | None = None) -> str:
         ]
     config_js = json.dumps(config)
 
-    jobs = list_recent_jobs(None if equipo else account["comuna"], limit=20)
+    # Un valor fuera de las listas se ignora, igual que en los demás filtros
+    # del panel. Un municipio no filtra por ámbito: solo ve su comuna.
+    opciones_rubro = [(r["value"], r["label"]) for r in rubros_config]
+    filtros = {
+        "q": params.get("q", "").strip()[:_MAX_BUSQUEDA_DOCUMENTO],
+        "ambito": params.get("ambito", "") if equipo and params.get("ambito", "") in _ambitos_permitidos(account) else "",
+        "rubro": params.get("rubro", "") if params.get("rubro", "") in dict(opciones_rubro) else "",
+        "estado": params.get("estado", "") if params.get("estado", "") in _ESTADO_LABELS else "",
+    }
+    query = urlencode({k: v for k, v in filtros.items() if v})
+
+    comuna = (filtros["ambito"] or None) if equipo else account["comuna"]
+    jobs = list_recent_jobs(comuna, limit=20, nombre=filtros["q"], estado=filtros["estado"], rubro=filtros["rubro"])
     columnas = 7 if equipo else 6
-    filas = "\n".join(_fila_ingestion_job(job, mostrar_ambito=equipo) for job in jobs) or (
-        f'<tr><td colspan="{columnas}">Todavía no se han subido documentos.</td></tr>'
+    vacio = "Ningún documento coincide con esos filtros." if query else "Todavía no se han subido documentos."
+    filas = "\n".join(_fila_ingestion_job(job, mostrar_ambito=equipo, query=query) for job in jobs) or (
+        f'<tr><td colspan="{columnas}">{vacio}</td></tr>'
     )
 
     if equipo:
@@ -646,6 +727,8 @@ def _pagina_documentos(account: dict, flash: dict | None = None) -> str:
         </form>
     </div>
 
+    {_filtros_documentos(account, opciones_rubro, filtros)}
+
     <div class="admin-card">
         <h2>{titulo_historial}</h2>
         <table class="admin-table">
@@ -674,7 +757,7 @@ async def documentos_form(
         return Response(status_code=303, headers={"Location": "/admin/login"})
 
     flash = await _pop_flash(redis, financial_admin_session)
-    return Response(content=_pagina_documentos(account, flash=flash), media_type="text/html")
+    return Response(content=_pagina_documentos(account, request.query_params, flash=flash), media_type="text/html")
 
 
 def _parse_vigencia(valor: str | None) -> str | None:
@@ -701,8 +784,9 @@ def _parse_fuente(nombre: str | None, url: str | None) -> tuple[str | None, str 
     return nombre, url
 
 
-def _redirect_documentos() -> Response:
-    return Response(status_code=303, headers={"Location": "/admin/documentos"})
+def _redirect_documentos(query: str = "") -> Response:
+    destino = f"/admin/documentos?{query}" if query else "/admin/documentos"
+    return Response(status_code=303, headers={"Location": destino})
 
 
 @router.post("/documentos/subir")
@@ -830,11 +914,12 @@ async def eliminar_documento(
             redis, financial_admin_session, "error",
             "Solo se pueden eliminar documentos ya procesados y no eliminados previamente.",
         )
-        return _redirect_documentos()
+        return _redirect_documentos(request.url.query)
 
     delete_ingested_document(
         job["file_name"], job["comuna"], job_id, account.get("nombre", account["comuna"])
     )
 
     await _set_flash(redis, financial_admin_session, "ok", f"«{job['file_name']}» fue eliminado del asistente.")
-    return _redirect_documentos()
+    # Vuelve a la misma búsqueda: se pueden eliminar varios sin rehacer el filtro.
+    return _redirect_documentos(request.url.query)
