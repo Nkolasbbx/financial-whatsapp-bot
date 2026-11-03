@@ -1,6 +1,7 @@
 import asyncio
 import time
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -943,6 +944,55 @@ class PersonalizedAssistantContextTests(unittest.TestCase):
 
         self.assertIn("formato inválido", context)
         self.assertIn("otras secciones disponibles", context)
+
+
+class CurrentDateTests(unittest.IsolatedAsyncioTestCase):
+    def test_direct_date_questions_do_not_capture_calendar_or_mixed_queries(self):
+        for text in ("que dia es hoy?", "¿Cuál es la fecha de hoy?", "¿A qué fecha estamos?", "fecha de hoy"):
+            self.assertTrue(ia._asks_current_date(text), text)
+        for text in ("¿Qué eventos tengo hoy?", "¿Qué día es hoy y cuánto gasté?", "¿Qué día es la feria?"):
+            self.assertFalse(ia._asks_current_date(text), text)
+
+    def test_clock_uses_chilean_date_even_when_utc_is_already_next_day(self):
+        with patch.object(ia, "REMINDER_TIMEZONE", "America/Santiago"):
+            utc = datetime(2026, 11, 4, 1, 0, tzinfo=timezone.utc)
+            self.assertEqual(ia._current_date_text(utc), "martes 3 de noviembre de 2026")
+            context = ia._temporal_context(utc)
+            self.assertIn("2026-11-03T22:00:00-03:00", context)
+            self.assertIn("America/Santiago", context)
+            self.assertIn("miércoles 4 de noviembre de 2026",
+                          ia._current_date_text(datetime(2026, 11, 4, 4, 0, tzinfo=timezone.utc)))
+
+    async def test_today_uses_clock_not_history_llm_rag_or_calendar_and_is_saved(self):
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 11, 4, 1, 0, tzinfo=timezone.utc).astimezone(tz)
+        user = {"phone": "test", "resumen_conversacion": "La feria es el 13 de noviembre"}
+        with patch.object(ia, "datetime", Clock), patch.object(ia, "REMINDER_TIMEZONE", "America/Santiago"), \
+             patch.object(ia, "_general_advisor_messages", new_callable=AsyncMock) as general, \
+             patch.object(ia, "llamar_llm_async", new_callable=AsyncMock) as llm, \
+             patch.object(ia, "get_active_calendar_events") as events, \
+             patch.object(ia, "_persist_turn", return_value=1) as save:
+            answer = await ia.get_ai_response(user, "que dia es hoy?", True)
+        self.assertIn("martes 3 de noviembre de 2026", answer)
+        self.assertNotIn("13 de noviembre", answer)
+        general.assert_not_awaited()
+        llm.assert_not_awaited()
+        events.assert_not_called()
+        save.assert_called_once()
+        self.assertEqual(save.call_args.args[3], answer)
+
+    async def test_general_and_calendar_prompts_always_receive_clock_reference(self):
+        with patch.object(ia, "_general_advisor_messages", new=AsyncMock(return_value=(
+                 [{"role": "system", "content": "Asesor general"}, {"role": "user", "content": "hola"}], []))), \
+             patch.object(ia, "get_active_calendar_events", return_value=[]), \
+             patch.object(ia, "llamar_llm_async", new=AsyncMock(return_value="Respuesta")) as llm:
+            for text in ("hola", "¿Cuáles son mis fechas importantes?"):
+                await ia.get_ai_response({"id": "00000000-0000-0000-0000-000000000003"}, text, True)
+                prompt = llm.await_args.kwargs["messages"][0]["content"]
+                self.assertIn("[RELOJ ACTUAL DEL SERVIDOR]", prompt)
+                self.assertIn("Las fechas del historial", prompt)
 
 
 class CalendarAdvisorTests(unittest.IsolatedAsyncioTestCase):

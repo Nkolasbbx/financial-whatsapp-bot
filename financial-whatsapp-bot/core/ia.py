@@ -999,6 +999,33 @@ def _local_today() -> date:
     return datetime.now(ZoneInfo(REMINDER_TIMEZONE)).date()
 
 
+def _asks_current_date(message: str) -> bool:
+    text = " ".join(_normalizar_mensaje(message).split())
+    return bool(re.fullmatch(
+        r"(?:que (?:dia|fecha) es hoy|cual es la fecha(?: de hoy| actual)?"
+        r"|(?:a|en) que fecha estamos|que dia (?:es|estamos)|fecha de hoy)",
+        text,
+    ))
+
+
+def _current_date_text(now: datetime) -> str:
+    local = now.astimezone(ZoneInfo(REMINDER_TIMEZONE))
+    days = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+    months = ("enero", "febrero", "marzo", "abril", "mayo", "junio",
+              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+    return f"{days[local.weekday()]} {local.day} de {months[local.month - 1]} de {local.year}"
+
+
+def _temporal_context(now: datetime) -> str:
+    return (
+        f"[RELOJ ACTUAL DEL SERVIDOR]\nHoy es {_current_date_text(now)}. "
+        f"Fecha y hora local: {now.astimezone(ZoneInfo(REMINDER_TIMEZONE)).isoformat(timespec='seconds')}. "
+        f"Zona horaria: {REMINDER_TIMEZONE}. "
+        "Esta es la referencia para hoy, mañana y los períodos relativos. "
+        "Las fechas del historial, del resumen o de los eventos no indican la fecha actual."
+    )
+
+
 def _month_bounds(
     message: str,
     *,
@@ -1726,6 +1753,10 @@ async def get_ai_response(
 ) -> str:
     phone = user.get("phone")
     asked_at = datetime.now(timezone.utc)
+    if _asks_current_date(message):
+        answer = f"📅 Hoy es *{_current_date_text(asked_at)}* (hora de Chile)."
+        await _save_ai_turn(user, phone, message, answer, asked_at, background_tasks)
+        return answer
     if not hito_context and not reformulate_mode and _is_personal_calendar_lookup(message):
         # Esta pregunta no necesita historial ni fuentes municipales. La identidad
         # procede del perfil que cargó el worker, nunca del texto del mensaje.
@@ -1745,6 +1776,8 @@ async def get_ai_response(
         ]
     else:
         messages, fuentes_rag = await _general_advisor_messages(user, message, hito_context, reformulate_mode)
+
+    messages[0]["content"] = _temporal_context(asked_at) + "\n\n" + messages[0]["content"]
 
     # 4. Generación
     with span("ai_llm"):
@@ -1782,7 +1815,12 @@ async def get_ai_response(
         )
         ai_text = f"{ai_text.rstrip()}\n\n*Fuentes y fecha de la información:*\n{citas}"
 
-    # 5. Persistencia
+    await _save_ai_turn(user, phone, message, ai_text, asked_at, background_tasks)
+    return ai_text
+
+
+async def _save_ai_turn(user, phone, message, ai_text, asked_at, background_tasks):
+    """Conserva el historial también cuando responde el reloj sin usar el modelo."""
     if phone:
         with span("ai_persist"):
             total_mensajes = await asyncio.to_thread(
@@ -1790,8 +1828,6 @@ async def get_ai_response(
             )
         if total_mensajes and _debe_resumir(user, total_mensajes):
             actualizar_resumen_en_background(phone, background_tasks)
-
-    return ai_text
 
 
 def _load_history(user: dict, phone: str, limit: int = 10) -> list[dict]:
