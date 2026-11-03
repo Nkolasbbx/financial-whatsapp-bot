@@ -136,6 +136,23 @@ async def download_media(media_id: str) -> tuple[bytes, str]:
             await client.aclose()
 
 
+async def send_typing_indicator(message_id: str) -> None:
+    """Muestra los tres puntos ("escribiendo…") al usuario y marca su mensaje
+    como leído. Dura hasta que se le responda o 25 segundos, lo que ocurra
+    primero. `message_id` es el wamid del mensaje que acaba de llegar."""
+    if not message_id:
+        raise WhatsAppAPIError("Falta el id del mensaje para mostrar el indicador")
+
+    await _post_message(
+        {
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": message_id,
+            "typing_indicator": {"type": "text"},
+        }
+    )
+
+
 async def send_text(
     phone: str,
     content: str,

@@ -65,6 +65,7 @@ from services.whatsapp import (
     send_interactive_buttons,
     send_interactive_list,
     send_text,
+    send_typing_indicator,
     verify_webhook_signature,
 )
 
@@ -215,9 +216,19 @@ async def _send_response(phone: str, result) -> None:
         await send_text(phone, part)
 
 
-async def _send_progress_notice(phone: str, text: str) -> None:
+async def _send_progress_notice(phone: str, text: str, message_id: str | None = None) -> None:
     """Aviso de que la respuesta está en camino. El job ya quedó encolado, así
-    que un fallo del aviso solo se registra: no debe impedir la respuesta."""
+    que un fallo del aviso solo se registra: no debe impedir la respuesta.
+
+    Con `message_id` se muestran los tres puntos de "escribiendo…" en vez de un
+    mensaje de texto (un mensaje menos en el chat). Si Meta rechaza el
+    indicador, se envía el texto de siempre para que nunca quede en silencio."""
+    if message_id:
+        try:
+            await send_typing_indicator(message_id)
+            return
+        except WhatsAppAPIError as error:
+            logger.warning("No se pudo mostrar el indicador de escritura a %s: %s", phone, error)
     try:
         await send_text(phone, text)
     except WhatsAppAPIError as error:
@@ -644,7 +655,7 @@ async def whatsapp_webhook(request: Request):
                                 **ai_queue_kwargs(),
                             )
                             hand_off_to_worker = True
-                            await _send_progress_notice(phone, "🤔 Déjame pensar tu respuesta...")
+                            await _send_progress_notice(phone, "🤔 Déjame pensar tu respuesta...", message_id)
 
                         elif result == "__FINANCIAL_PARSE__":
                             await redis.enqueue_job(
@@ -655,7 +666,7 @@ async def whatsapp_webhook(request: Request):
                                 **financial_queue_kwargs(),
                             )
                             hand_off_to_worker = True
-                            await _send_progress_notice(phone, "🧾 Estoy revisando el movimiento...")
+                            await _send_progress_notice(phone, "🧾 Estoy revisando el movimiento...", message_id)
 
                         elif result == "__AI_QUERY_WITH_CONTEXT__":
                             user = (
@@ -674,7 +685,7 @@ async def whatsapp_webhook(request: Request):
                                 **ai_queue_kwargs(),
                             )
                             hand_off_to_worker = True
-                            await _send_progress_notice(phone, "🤔 Te ayudo con este hito...")
+                            await _send_progress_notice(phone, "🤔 Te ayudo con este hito...", message_id)
 
                         elif isinstance(result, str) and result.startswith(CONFIRM_PREFIX):
                             # Acción que cambia datos, pedida por audio: se le
