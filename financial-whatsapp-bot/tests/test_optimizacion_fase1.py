@@ -82,6 +82,7 @@ class EnqueueBeforeNoticeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(webhook, "get_pending_confirmation", new_callable=AsyncMock, return_value=None),
             patch.object(webhook, "check_message_rate_limit", return_value={"allowed": True}),
             patch.object(webhook, "route_message", return_value=route_result),
+            patch.object(webhook, "send_typing_indicator", new=AsyncMock(side_effect=WhatsAppAPIError("indicador no disponible"))),
             patch.object(webhook, "send_text", side_effect=send_text),
             patch.object(webhook, "get_user", return_value={"roadmap": []}),
         ):
@@ -137,7 +138,7 @@ class MilestoneSavesOnlyRoadmapTests(unittest.TestCase):
                         {"title": "Segundo hito", "desc": "Completar", "done": False}],
         }
         client = RecordingClient({"users": [user]})
-        with patch.object(dependencies, "supabase", client):
+        with patch.object(dependencies, "supabase_admin", client):
             mark_hito_done(user, message_router._save_roadmap_fields)
 
         self.assertEqual([(name, op) for name, op, _ in client.calls], [("users", "update")])

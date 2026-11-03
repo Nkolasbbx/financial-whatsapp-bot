@@ -166,12 +166,13 @@ def get_alertas_fondos_proximos(
     limite = today + timedelta(days=dias_anticipacion)
 
     try:
-        import dependencies
-        if not dependencies.supabase:
+        from db.client import get_backend_client
+        client = get_backend_client()
+        if client is None:
             return []
 
         result = (
-            dependencies.supabase
+            client
             .table("fondos")
             .select("nombre, fecha_cierre, link, emoji")
             .eq("activo", True)

@@ -372,11 +372,13 @@ def actualizar_resumen_conversacion(phone: str) -> str | None:
         logger.error(f"llamar_llm devolvió vacío al generar resumen para {phone}")
         return None
 
-    if dependencies.supabase:
+    from db.client import get_backend_client
+    client = get_backend_client()
+    if client:
         try:
             checkpoint = _summary_checkpoint(user)
             if checkpoint is None:
-                dependencies.supabase.table("users").update(
+                client.table("users").update(
                     {"resumen_conversacion": resumen}
                 ).eq("phone", phone).execute()
             else:
@@ -384,7 +386,7 @@ def actualizar_resumen_conversacion(phone: str) -> str | None:
                 # resúmenes simultáneos no se pisan y el resumen es idempotente.
                 previous, total = checkpoint
                 result = (
-                    dependencies.supabase.table("users")
+                    client.table("users")
                     .update({"resumen_conversacion": resumen, "summary_checkpoint": total})
                     .eq("phone", phone)
                     .eq("summary_checkpoint", previous)

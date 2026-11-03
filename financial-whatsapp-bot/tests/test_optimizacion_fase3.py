@@ -148,7 +148,7 @@ class SummaryCheckpointTests(unittest.TestCase):
             patch.object(ia, "get_messages", return_value=[{"role": "user", "content": "hola"}]),
             patch.object(ia, "get_user", return_value=user),
             patch.object(ia, "llamar_llm", return_value="Temas principales:\n- Patente"),
-            patch.object(dependencies, "supabase", SimpleNamespace(table=lambda name: table)),
+            patch.object(dependencies, "supabase_admin", SimpleNamespace(table=lambda name: table)),
         ):
             result = ia.actualizar_resumen_conversacion(PHONE)
         return result, table
@@ -179,8 +179,8 @@ class WorkerBudgetWithCounterTests(unittest.IsolatedAsyncioTestCase):
                 calls.append(self.name)
                 return SimpleNamespace(data=[], count=0)
 
-        supabase = SimpleNamespace(table=lambda name: Table(name))
         admin = MagicMock()
+        admin.table.side_effect = lambda name: Table(name)
         admin.rpc.return_value.execute.side_effect = lambda: (calls.append("rpc:append_messages_v1"), SimpleNamespace(data=8))[1]
         user = {"id": USER_ID, "phone": PHONE, "comuna": "", "rubro": "", "summary_checkpoint": 0}
 
@@ -189,7 +189,6 @@ class WorkerBudgetWithCounterTests(unittest.IsolatedAsyncioTestCase):
             return user
 
         with (
-            patch.object(dependencies, "supabase", supabase),
             patch.object(dependencies, "supabase_admin", admin),
             patch.object(ia, "OPT_MESSAGE_COUNTER", True),
             patch.object(ia, "get_user", side_effect=get_user),

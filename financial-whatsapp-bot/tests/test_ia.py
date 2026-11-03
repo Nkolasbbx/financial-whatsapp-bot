@@ -415,7 +415,7 @@ class ActualizarResumenConversacionTests(unittest.TestCase):
             patch.object(ia, "RES_URL", "https://openrouter.ai/api/v1"),
             patch.object(ia, "RES_MODEL", "openai/gpt-4o-mini"),
             patch.object(ia, "RES_KEY", res_key),
-            patch.object(dependencies, "supabase", self.supabase),
+            patch.object(dependencies, "supabase_admin", self.supabase),
         )
 
     def test_prompt_combines_previous_summary_messages_and_required_sections(self):
@@ -1057,7 +1057,7 @@ class AiWorkerAccessBudgetTests(unittest.IsolatedAsyncioTestCase):
     async def _respond(self, supabase):
         user = {"id": USER_ID, "phone": "56911111111", "comuna": "Recoleta", "rubro": "Panadería"}
         with (
-            patch.object(dependencies, "supabase", supabase),
+            patch.object(dependencies, "supabase_admin", supabase),
             patch.object(ia, "get_user", MagicMock(side_effect=lambda phone: (supabase.table("users").execute(), user)[1])),
             patch.object(ia, "requiere_rag", AsyncMock(return_value=(False, None))),
             patch.object(ia, "llamar_llm_async", AsyncMock(return_value="Respuesta")),

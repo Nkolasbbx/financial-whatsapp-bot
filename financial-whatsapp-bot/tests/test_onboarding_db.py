@@ -18,7 +18,7 @@ class OnboardingPersistenceTests(unittest.TestCase):
         self.query.eq.return_value = self.query
         self.query.limit.return_value = self.query
         self.query.upsert.return_value = self.query
-        patcher = patch.dict(sys.modules, {"dependencies": SimpleNamespace(supabase=self.client)})
+        patcher = patch.dict(sys.modules, {"dependencies": SimpleNamespace(supabase_admin=self.client)})
         patcher.start()
         self.addCleanup(patcher.stop)
         memory = patch.dict(users_db, {}, clear=True)

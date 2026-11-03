@@ -30,22 +30,18 @@ _ONBOARDING_FIELDS = {
 
 
 def _profile_client():
-    import dependencies
-
-    client = dependencies.supabase
-    if client is None and (
-        getattr(dependencies, "SUPABASE_URL", None)
-        or getattr(dependencies, "SUPABASE_KEY", None)
-    ):
-        raise UserPersistenceError("Supabase está configurado pero su cliente no está disponible")
-    return client
+    from db.client import get_backend_client
+    try:
+        return get_backend_client()
+    except RuntimeError as error:
+        raise UserPersistenceError(str(error)) from error
 
 
 def get_user(phone: str, *, strict: bool = False) -> dict | None:
     """Obtiene el perfil de un usuario mediante su número telefónico."""
     import dependencies
 
-    client = _profile_client() if strict else dependencies.supabase
+    client = _profile_client()
     if client:
         try:
             result = (
@@ -74,14 +70,11 @@ def get_user(phone: str, *, strict: bool = False) -> dict | None:
 
                 return user
 
-            if strict:
-                return None
+            return None
 
         except Exception as error:
-            if strict:
-                logger.error("No se pudo consultar el perfil (%s)", type(error).__name__)
-                raise UserPersistenceError("No se pudo consultar el perfil") from error
-            logger.error("Supabase get_user error: %s", error)
+            logger.error("No se pudo consultar el perfil (%s)", type(error).__name__)
+            raise UserPersistenceError("No se pudo consultar el perfil") from error
 
     return users_db.get(phone)
 
@@ -100,7 +93,7 @@ def is_user_blocked(phone: str) -> bool:
     """
     import dependencies
 
-    client = getattr(dependencies, "supabase_admin", None) or dependencies.supabase
+    client = _profile_client()
     if client:
         try:
             result = (
@@ -176,10 +169,11 @@ def get_user_id(phone: str) -> str | None:
     """Obtiene el UUID interno de un usuario mediante su teléfono."""
     import dependencies
 
-    if dependencies.supabase:
+    client = _profile_client()
+    if client:
         try:
             result = (
-                dependencies.supabase
+                client
                 .table("users")
                 .select("id")
                 .eq("phone", phone)
@@ -189,9 +183,11 @@ def get_user_id(phone: str) -> str | None:
 
             if result.data:
                 return result.data[0]["id"]
+            return None
 
         except Exception as error:
-            logger.error("Supabase get_user_id error: %s", error)
+            logger.error("No se pudo consultar el ID (%s)", type(error).__name__)
+            raise UserPersistenceError("No se pudo consultar el usuario") from error
 
     user = users_db.get(phone)
 
@@ -240,10 +236,11 @@ def save_user(phone: str, data: dict) -> dict | None:
         )
         db_data.pop("roadmap", None)
 
-    if dependencies.supabase:
+    client = _profile_client()
+    if client:
         try:
             result = (
-                dependencies.supabase
+                client
                 .table("users")
                 .upsert(db_data, on_conflict="phone")
                 .execute()
@@ -257,6 +254,7 @@ def save_user(phone: str, data: dict) -> dict | None:
         except Exception as error:
             # El perfil incluye RUT/correo: una excepción puede incluir la fila.
             logger.error("Supabase save_user error (%s)", type(error).__name__)
+            raise UserPersistenceError("No se pudo guardar el perfil") from error
 
     users_db[phone] = db_data
     return db_data
@@ -284,7 +282,7 @@ def reset_user_profile(phone: str, current_user: dict) -> dict | None:
     if "updated_at" in current_user:
         reset_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-    client = dependencies.supabase_admin or dependencies.supabase
+    client = _profile_client()
     if client:
         try:
             result = (
@@ -321,7 +319,7 @@ def save_message(
     """Guarda un mensaje asociado al UUID interno del usuario."""
     import dependencies
 
-    if not dependencies.supabase:
+    if _profile_client() is None:
         logger.warning(
             "No se guardó el mensaje porque Supabase no está configurado"
         )
@@ -361,7 +359,10 @@ def save_messages_by_user_id(
     """
     import dependencies
 
-    if not dependencies.supabase or not messages:
+    if not messages:
+        return
+    client = _profile_client()
+    if client is None:
         return
 
     rows = []
@@ -377,7 +378,7 @@ def save_messages_by_user_id(
             row["created_at"] = message["created_at"]
         rows.append(row)
 
-    dependencies.supabase.table("messages").insert(rows).execute()
+    client.table("messages").insert(rows).execute()
 
 
 class MessageCounterUnavailable(RuntimeError):
@@ -431,7 +432,7 @@ def get_messages(phone: str, limit: int = 12) -> list[dict]:
     """Obtiene los últimos mensajes del usuario en orden cronológico."""
     import dependencies
 
-    if not dependencies.supabase:
+    if _profile_client() is None:
         return []
 
     try:
@@ -447,19 +448,20 @@ def get_messages(phone: str, limit: int = 12) -> list[dict]:
         return get_messages_by_user_id(user_id, limit=limit)
 
     except Exception as error:
-        logger.error("Supabase get_messages error: %s", error)
-        return []
+        logger.error("No se pudo consultar el historial (%s)", type(error).__name__)
+        raise UserPersistenceError("No se pudo consultar el historial") from error
 
 
 def get_messages_by_user_id(user_id: str, limit: int = 12) -> list[dict]:
     """Últimos mensajes en orden cronológico. Lanza la excepción al llamador."""
     import dependencies
 
-    if not dependencies.supabase:
+    client = _profile_client()
+    if client is None:
         return []
 
     result = (
-        dependencies.supabase
+        client
         .table("messages")
         .select("role, content")
         .eq("user_id", user_id)
@@ -477,7 +479,8 @@ def get_last_user_message(phone: str) -> str | None:
     """Obtiene solamente el mensaje de usuario más reciente."""
     import dependencies
 
-    if not dependencies.supabase:
+    client = _profile_client()
+    if client is None:
         return None
 
     try:
@@ -491,7 +494,7 @@ def get_last_user_message(phone: str) -> str | None:
             return None
 
         result = (
-            dependencies.supabase
+            client
             .table("messages")
             .select("content")
             .eq("user_id", user_id)
@@ -507,15 +510,15 @@ def get_last_user_message(phone: str) -> str | None:
         return result.data[0].get("content")
 
     except Exception as error:
-        logger.error("Supabase get_last_user_message error: %s", error)
-        return None
+        logger.error("No se pudo consultar el último mensaje (%s)", type(error).__name__)
+        raise UserPersistenceError("No se pudo consultar el último mensaje") from error
 
 
 def contar_mensajes(phone: str) -> int:
     """Cuenta el total de mensajes asociados a un usuario."""
     import dependencies
 
-    if not dependencies.supabase:
+    if _profile_client() is None:
         return 0
 
     try:
@@ -527,19 +530,20 @@ def contar_mensajes(phone: str) -> int:
         return count_messages_by_user_id(user_id)
 
     except Exception as error:
-        logger.error("Supabase contar_mensajes error: %s", error)
-        return 0
+        logger.error("No se pudieron contar los mensajes (%s)", type(error).__name__)
+        raise UserPersistenceError("No se pudieron contar los mensajes") from error
 
 
 def count_messages_by_user_id(user_id: str) -> int:
     """Cuenta los mensajes sin descargar filas (HEAD con count exacto)."""
     import dependencies
 
-    if not dependencies.supabase:
+    client = _profile_client()
+    if client is None:
         return 0
 
     result = (
-        dependencies.supabase
+        client
         .table("messages")
         .select("id", count="exact", head=True)
         .eq("user_id", user_id)
@@ -561,10 +565,11 @@ def update_user_fields(phone: str, fields: dict) -> dict | None:
     payload = {**fields, "updated_at": datetime.now(timezone.utc).isoformat()}
     payload.pop("conversation_history", None)
 
-    if dependencies.supabase:
+    client = _profile_client()
+    if client:
         try:
             result = (
-                dependencies.supabase
+                client
                 .table("users")
                 .update(payload)
                 .eq("phone", phone)
@@ -633,7 +638,7 @@ def set_audio_consent(phone: str, accepted: bool) -> bool:
     """Guarda si el usuario aceptó (o rechazó) que se procesen sus audios."""
     import dependencies
 
-    client = dependencies.supabase_admin or dependencies.supabase
+    client = _profile_client()
     if client is None:
         logger.warning("No se guardó el consentimiento de audio: Supabase no está configurado")
         return False
