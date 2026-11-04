@@ -183,7 +183,7 @@
         }
 
         // Aviso sugerido: un día antes a la misma hora; si ese momento ya
-        // pasó, la próxima hora en punto (nunca después de la actividad).
+        // pasó, la próxima hora en punto, solo si es anterior a la actividad.
         function suggestedNotice(eventAtValue) {
             const [datePart, timePart] = eventAtValue.split("T");
             const previousDay = new Date(`${datePart}T00:00:00Z`);
@@ -193,7 +193,7 @@
                 return candidate;
             }
             const nextHour = shared.defaultDateTime(null, defaultHour);
-            return nextHour < eventAtValue ? nextHour : eventAtValue;
+            return nextHour < eventAtValue ? nextHour : "";
         }
 
         function addParagraph(text) {

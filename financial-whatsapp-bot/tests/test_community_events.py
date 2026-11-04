@@ -75,11 +75,11 @@ class ValidationTests(unittest.TestCase):
 
     def test_notice_after_activity(self):
         _, errors = validate_community_event(_valid(notice_at="2030-03-21T10:00"), now=NOW)
-        self.assertEqual(errors, ["El aviso no puede ser posterior a la actividad."])
+        self.assertEqual(errors, ["El aviso debe ser anterior a la actividad."])
 
-    def test_notice_at_same_time_as_activity_is_allowed(self):
+    def test_notice_at_same_time_as_activity_is_rejected(self):
         _, errors = validate_community_event(_valid(notice_at="2030-03-20T10:00"), now=NOW)
-        self.assertEqual(errors, [])
+        self.assertEqual(errors, ["El aviso debe ser anterior a la actividad."])
 
     def test_link_must_be_http(self):
         _, errors = validate_community_event(_valid(link="recoleta.cl/taller"), now=NOW)

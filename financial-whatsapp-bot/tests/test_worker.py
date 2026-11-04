@@ -79,6 +79,20 @@ class ReminderCronJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.hour, set(range(24)))
         self.assertFalse(job.run_at_startup)
 
+    def test_community_cron_is_registered_every_fifteen_minutes(self):
+        jobs = {job.coroutine: job for job in worker.WorkerSettings.cron_jobs}
+        job = jobs[worker.run_community_job]
+        self.assertEqual(job.minute, {0, 15, 30, 45})
+        self.assertEqual(job.hour, set(range(24)))
+        self.assertFalse(job.run_at_startup)
+
+    async def test_google_failure_does_not_prevent_community_notice_service(self):
+        with patch.object(worker, "send_due_community_notices", new=AsyncMock(return_value={"community_sent": 1})) as notices, \
+             patch.object(worker, "sync_pending_google_events", new=AsyncMock(side_effect=RuntimeError("Google offline"))) as google:
+            await worker.run_community_job({})
+        notices.assert_awaited_once_with()
+        google.assert_awaited_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()
