@@ -238,7 +238,8 @@ async def init_dependencies() -> None:
     else:
         logger.warning(
             "SUPABASE_SERVICE_ROLE_KEY no configurada; "
-            "los recordatorios automáticos quedan deshabilitados"
+            "el acceso persistente a perfiles, historial y demás tablas internas "
+            "no estará disponible"
         )
 
     if SUPABASE_DB_DSN:

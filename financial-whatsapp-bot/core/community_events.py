@@ -125,8 +125,8 @@ def validate_community_event(
         errors.append("La actividad debe ser en una fecha futura.")
     if notice_at is not None and notice_at <= current:
         errors.append("El aviso debe programarse en una fecha futura.")
-    if event_at is not None and notice_at is not None and notice_at > event_at:
-        errors.append("El aviso no puede ser posterior a la actividad.")
+    if event_at is not None and notice_at is not None and notice_at >= event_at:
+        errors.append("El aviso debe ser anterior a la actividad.")
 
     location = _clean_text(data.get("location")) or None
     if location and len(location) > LOCATION_MAX_CHARS:

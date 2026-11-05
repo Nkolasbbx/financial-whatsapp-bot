@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from config import DEBUG
+from config import DEBUG, ENABLE_TEST_CHAT
 from dependencies import lifespan
 from routers import (
     admin,
@@ -21,7 +21,6 @@ from routers import (
     portal_funds,
     portal_roadmap,
     reminders,
-    test,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -43,7 +42,9 @@ else:
     logging.getLogger("financial").info("🚀 Modo producción: usando webhook de Meta")
 
 app.include_router(webhook.router)
-app.include_router(test.router)
+if ENABLE_TEST_CHAT:
+    from routers import test
+    app.include_router(test.router)
 app.include_router(reminders.router)
 app.include_router(portal.router)
 app.include_router(portal_calendar.router)

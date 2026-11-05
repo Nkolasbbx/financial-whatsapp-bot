@@ -38,8 +38,10 @@ from services.admin_auth import (
     destroy_admin_session,
     es_equipo,
     get_admin_session_account,
+    get_or_create_admin_csrf_token,
 )
-from config import ADMIN_COMUNA_GENERAL, INGESTION_MAX_BATCH_FILES, INGESTION_MAX_BATCH_MB
+from services.admin_forms import csrf_input, require_form_csrf
+from config import ADMIN_COMUNA_GENERAL, INGESTION_MAX_BATCH_FILES, INGESTION_MAX_BATCH_MB, SESSION_COOKIE_SECURE
 from services.ingestion_jobs import enqueue_document_ingestion, validate_batch, validate_upload
 
 logger = logging.getLogger("financial")
@@ -165,6 +167,7 @@ async def login(
         _SESSION_COOKIE,
         session_id,
         max_age=24 * 3600,
+        secure=SESSION_COOKIE_SECURE,
         httponly=True,
         samesite="lax",
     )
@@ -180,7 +183,7 @@ async def logout(
     await destroy_admin_session(redis, financial_admin_session)
 
     response = Response(status_code=303, headers={"Location": "/admin/login"})
-    response.delete_cookie(_SESSION_COOKIE)
+    response.delete_cookie(_SESSION_COOKIE, secure=SESSION_COOKIE_SECURE, httponly=True, samesite="lax")
     return response
 
 
@@ -503,7 +506,7 @@ def _ambito_label(comuna: str | None) -> str:
     return comuna or "—"
 
 
-def _fila_ingestion_job(job: dict, mostrar_ambito: bool = False, query: str = "") -> str:
+def _fila_ingestion_job(job: dict, csrf_token: str, mostrar_ambito: bool = False, query: str = "") -> str:
     label, badge_clase = _ESTADO_LABELS.get(job["status"], (job["status"], "en-cola"))
     rubros = ", ".join(RUBRO_DISPLAY.get(r, r) for r in (job.get("rubros") or [])) or "—"
     vigencia = job.get("vigencia_hasta")
@@ -526,6 +529,7 @@ def _fila_ingestion_job(job: dict, mostrar_ambito: bool = False, query: str = ""
         destino = f'/admin/documentos/{job["id"]}/eliminar' + (f"?{query}" if query else "")
         acciones = f'''<form method="post" action="{html.escape(destino)}"
                 onsubmit="return confirm('¿Eliminar este documento? El asistente dejará de citarlo.')">
+            {csrf_input(csrf_token)}
             <button type="submit" class="admin-delete-button">Eliminar</button>
         </form>'''
 
@@ -652,7 +656,7 @@ def _filtros_documentos(account: dict, rubros: list[tuple[str, str]], filtros: d
     </form>"""
 
 
-def _pagina_documentos(account: dict, params, flash: dict | None = None) -> str:
+def _pagina_documentos(account: dict, params, csrf_token: str, flash: dict | None = None) -> str:
     equipo = es_equipo(account)
     rubros_config = [{"value": "general", "label": "General (todos los rubros)"}] + [
         {"value": rubro, "label": RUBRO_DISPLAY.get(rubro, rubro)} for rubro in RUBROS_ACTIVOS
@@ -684,7 +688,7 @@ def _pagina_documentos(account: dict, params, flash: dict | None = None) -> str:
     jobs = list_recent_jobs(comuna, limit=20, nombre=filtros["q"], estado=filtros["estado"], rubro=filtros["rubro"])
     columnas = 7 if equipo else 6
     vacio = "Ningún documento coincide con esos filtros." if query else "Todavía no se han subido documentos."
-    filas = "\n".join(_fila_ingestion_job(job, mostrar_ambito=equipo, query=query) for job in jobs) or (
+    filas = "\n".join(_fila_ingestion_job(job, csrf_token, mostrar_ambito=equipo, query=query) for job in jobs) or (
         f'<tr><td colspan="{columnas}">{vacio}</td></tr>'
     )
 
@@ -717,6 +721,7 @@ def _pagina_documentos(account: dict, params, flash: dict | None = None) -> str:
         </p>
         <form id="upload-form" class="admin-upload-form" method="post" action="/admin/documentos/subir"
               enctype="multipart/form-data" data-config="{html.escape(config_js, quote=True)}">
+            {csrf_input(csrf_token)}
             <label>
                 Archivos (PDF o Markdown)
                 <input type="file" id="archivos" name="archivos" accept=".pdf,.md" multiple required>
@@ -757,7 +762,9 @@ async def documentos_form(
         return Response(status_code=303, headers={"Location": "/admin/login"})
 
     flash = await _pop_flash(redis, financial_admin_session)
-    return Response(content=_pagina_documentos(account, request.query_params, flash=flash), media_type="text/html")
+    token = await get_or_create_admin_csrf_token(redis, financial_admin_session)
+    return Response(content=_pagina_documentos(account, request.query_params, token, flash=flash), media_type="text/html",
+                    headers={"Cache-Control": "no-store"})
 
 
 def _parse_vigencia(valor: str | None) -> str | None:
@@ -802,6 +809,7 @@ async def subir_documento(
     ambitos = _ambitos_permitidos(account)
     form = await request.form()
     try:
+        await require_form_csrf(request, financial_admin_session, form)
         # El navegador manda una parte vacía si no se eligió ningún archivo.
         archivos = [a for a in form.getlist("archivos") if getattr(a, "filename", "")]
 
@@ -905,6 +913,7 @@ async def eliminar_documento(
     if not account:
         return Response(status_code=303, headers={"Location": "/admin/login"})
 
+    await require_form_csrf(request, financial_admin_session)
     job = get_ingestion_job(job_id)
     if not _puede_gestionar(account, job):
         return Response(status_code=404)

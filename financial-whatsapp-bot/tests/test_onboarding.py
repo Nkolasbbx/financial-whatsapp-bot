@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import Mock
 
 from core.onboarding import SII_EXPLANATION, needs_onboarding, process_onboarding
+from core.profile_validation import EmailUnavailableError
 
 
 def make_user(**overrides) -> dict:
@@ -136,6 +137,16 @@ class ProfileOnboardingTests(unittest.TestCase):
         self.send("12345678-5")
         self.send("ana@")
         self.assertEqual(self.user["profile_completion_step"], "email")
+
+    def test_email_conflict_preserves_step_and_allows_retry(self):
+        self.user.update(nombre_completo="Ana", rut="12345678-5", profile_completion_step="email")
+        before = copy.deepcopy(self.user)
+        reply = process_onboarding(self.user, "ocupado@example.cl", Mock(side_effect=EmailUnavailableError))
+        self.assertIn("correo no está disponible", reply["body"])
+        self.assertEqual(self.user, before)
+        self.send("nuevo@example.cl")
+        self.assertEqual(self.user["email"], "nuevo@example.cl")
+        self.assertEqual(self.user["onboarding_step"], "1")
 
     def test_existing_user_only_completes_missing_data_and_preserves_progress(self):
         self.user = make_user(

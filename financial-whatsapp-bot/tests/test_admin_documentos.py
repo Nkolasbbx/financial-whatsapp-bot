@@ -27,6 +27,15 @@ class FakeRedis:
         self.data.pop(key, None)
 
 
+class BrowserFormClient(TestClient):
+    """Envía el mismo campo oculto que el formulario HTML de la sesión."""
+    def post(self, url, **kwargs):
+        sid = self.cookies.get("financial_admin_session")
+        token = self.app.state.redis.data.setdefault("admin_csrf:" + sid, "token-" + sid)
+        data = {"csrf_token": token, **kwargs.pop("data", {})}
+        return super().post(url, data=data, **kwargs)
+
+
 class ValidateBatchTests(unittest.TestCase):
     def test_lote_valido(self):
         self.assertIsNone(validate_batch([("a.pdf", 1000), ("b.md", 2000)]))
@@ -52,7 +61,7 @@ class SubirDocumentosTests(unittest.TestCase):
         app = FastAPI()
         app.state.redis = self.redis
         app.include_router(admin.router)
-        self.client = TestClient(app, follow_redirects=False)
+        self.client = BrowserFormClient(app, follow_redirects=False)
         self.client.cookies.set("financial_admin_session", "sesion-1")
 
         for target, new in (
@@ -247,7 +256,7 @@ class EquipoDocumentosTests(unittest.TestCase):
         app = FastAPI()
         app.state.redis = self.redis
         app.include_router(admin.router)
-        self.client = TestClient(app, follow_redirects=False)
+        self.client = BrowserFormClient(app, follow_redirects=False)
         self.client.cookies.set("financial_admin_session", "sesion-equipo")
 
         self.session_mock = AsyncMock(return_value=EQUIPO)
@@ -350,7 +359,7 @@ class MunicipioPermisosTests(unittest.TestCase):
         app = FastAPI()
         app.state.redis = FakeRedis()
         app.include_router(admin.router)
-        self.client = TestClient(app, follow_redirects=False)
+        self.client = BrowserFormClient(app, follow_redirects=False)
         self.client.cookies.set("financial_admin_session", "sesion-1")
         patcher = patch.object(admin, "get_admin_session_account", AsyncMock(return_value=ACCOUNT))
         patcher.start()

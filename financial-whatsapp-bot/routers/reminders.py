@@ -5,6 +5,7 @@ from fastapi import APIRouter, Header, HTTPException
 
 from config import CRON_SECRET
 from services.calendar_reminders import send_due_calendar_reminders
+from services.community_notices import send_due_community_notices
 from services.reminders import send_due_reminders
 from services.alertas_tributarias import send_tax_alerts
 
@@ -38,6 +39,7 @@ async def run_reminders(
         ("roadmap", send_due_reminders),
         ("alerts", send_tax_alerts),
         ("calendar", send_due_calendar_reminders),
+        ("community", send_due_community_notices),
     )
     for name, service in services:
         try:

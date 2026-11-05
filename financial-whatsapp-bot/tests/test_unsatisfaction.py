@@ -54,7 +54,7 @@ class UnsatisfactionTests(unittest.TestCase):
         )
         supabase = MagicMock()
         supabase.table.return_value = query
-        fake_dependencies = SimpleNamespace(supabase=supabase)
+        fake_dependencies = SimpleNamespace(supabase_admin=supabase)
 
         with patch.dict(sys.modules, {"dependencies": fake_dependencies}):
             result = get_last_user_message("+56911111111")
@@ -98,7 +98,7 @@ class CompletedRoadmapReminderTests(unittest.TestCase):
 
     @patch("services.message_router.record_roadmap_activity")
     @patch("services.message_router.clear_completed_roadmap_schedule_by_phone")
-    @patch("services.message_router.save_user")
+    @patch("services.message_router.update_user_fields")
     @patch("services.message_router.get_user")
     def test_last_milestone_clears_reminder_schedule_immediately(
         self,
@@ -125,7 +125,7 @@ class CompletedRoadmapReminderTests(unittest.TestCase):
 
     @patch("services.message_router.record_roadmap_activity")
     @patch("services.message_router.clear_completed_roadmap_schedule_by_phone")
-    @patch("services.message_router.save_user")
+    @patch("services.message_router.update_user_fields")
     @patch("services.message_router.get_user")
     def test_intermediate_milestone_reschedules_normal_activity(
         self,

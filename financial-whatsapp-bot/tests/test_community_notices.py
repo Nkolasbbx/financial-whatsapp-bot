@@ -51,6 +51,8 @@ class CommunityNoticeTests(unittest.IsolatedAsyncioTestCase):
         phone, template, language, parameters = send_mock.await_args_list[0].args
         self.assertEqual(phone, "+56911111111")
         self.assertEqual(template, community_notices.COMMUNITY_TEMPLATE_NAME)
+        self.assertEqual(language, community_notices.COMMUNITY_TEMPLATE_LANGUAGE)
+        self.assertEqual(len(parameters), 5)
         self.assertEqual(parameters[0], "InnovaRecoleta")
         self.assertEqual(parameters[1], "Taller de marketing digital")
 

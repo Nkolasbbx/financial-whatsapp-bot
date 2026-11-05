@@ -36,7 +36,8 @@ from db.expert_requests import (
     take_expert_request,
 )
 from routers.admin import _flash_html, _nombre_persona, _opciones, _pagina_base, _pop_flash, _set_flash
-from services.admin_auth import get_admin_session_account
+from services.admin_auth import get_admin_session_account, get_or_create_admin_csrf_token
+from services.admin_forms import csrf_input, require_form_csrf
 from services.whatsapp import WhatsAppAPIError, send_text
 
 logger = logging.getLogger("financial")
@@ -353,7 +354,7 @@ def _bloque_motivo(fila: dict) -> str:
     </div>"""
 
 
-def _bloque_tomar(request_id: str, nombre: str, restante: timedelta, usuario: dict | None = None) -> str:
+def _bloque_tomar(request_id: str, nombre: str, restante: timedelta, csrf_token: str, usuario: dict | None = None) -> str:
     quien = html.escape(_primer_nombre(usuario or {}))
     if restante <= timedelta(0):
         return f"""
@@ -371,6 +372,7 @@ def _bloque_tomar(request_id: str, nombre: str, restante: timedelta, usuario: di
             <li><span>Puedes escribirle desde aquí mientras la ventana de WhatsApp siga abierta ({_ventana_html(restante)}).</span></li>
         </ol>
         <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/tomar">
+            {csrf_input(csrf_token)}
             <button type="submit" class="admin-btn">Tomar solicitud</button>
         </form>
     </div>"""
@@ -381,6 +383,7 @@ def _bloque_conversacion(
     mensajes: list[dict],
     restante: timedelta,
     nombre: str,
+    csrf_token: str,
     responder: dict | None = None,
     usuario: dict | None = None,
 ) -> str:
@@ -404,6 +407,7 @@ def _bloque_conversacion(
             <input type="hidden" name="responder_a" value="{int(responder["id"])}">"""
         composer = f"""
         <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/mensaje" class="admin-compose">
+            {csrf_input(csrf_token)}
             <label for="mensaje">Escribe tu respuesta a {quien}</label>{cita}
             <textarea id="mensaje" name="mensaje" rows="3" maxlength="{MAX_MESSAGE_CHARS}" required
                       placeholder="{quien[0].upper()}{quien[1:]} lo recibe en su WhatsApp como «{html.escape(nombre)}»"></textarea>
@@ -412,13 +416,16 @@ def _bloque_conversacion(
             </div>
         </form>"""
     else:
-        composer = f"""
-        <p class="admin-error">La ventana de 24 h de WhatsApp está cerrada: no se puede enviar texto libre hasta que {quien} vuelva a escribir.</p>
-        <div class="admin-form-actions">{cerrar}
-        </div>"""
-    form_resolver = f"""
-        <form id="form-resolver" method="post" action="/admin/solicitudes/{html.escape(request_id)}/resolver"
-              onsubmit="return confirm('¿Marcar como resuelta? El emprendedor vuelve a hablar con el asistente.')"></form>"""
+        composer = f'<p class="admin-error">La ventana de 24 h de WhatsApp está cerrada: no se puede enviar texto libre hasta que {quien} vuelva a escribir.</p>'
+    cerrar = f"""
+        <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/resolver"
+              onsubmit="return confirm('¿Marcar como resuelta? El emprendedor vuelve a hablar con el asistente.')">
+            {csrf_input(csrf_token)}
+            <div class="admin-form-actions">
+                <span class="admin-hint">¿Ya resolviste su consulta?</span>
+                <button type="submit" class="admin-btn-secondary">Marcar como resuelta</button>
+            </div>
+        </form>"""
     hilo = _hilo_html(
         mensajes, request_id, puede_responder=restante > timedelta(0),
         seleccionado=responder["id"] if responder else None,
@@ -489,11 +496,12 @@ async def detalle(
     nombre = account.get("nombre", account["comuna"])
     mensajes = list_expert_messages(request_id)
 
+    token = await get_or_create_admin_csrf_token(request.app.state.redis, financial_admin_session)
     if status == "pending":
-        cuerpo = _bloque_tomar(request_id, nombre, restante, usuario)
+        cuerpo = _bloque_tomar(request_id, nombre, restante, token, usuario)
     elif status == "in_progress":
         responder = _mensaje_citable(mensajes, request.query_params.get("responder"))
-        cuerpo = _bloque_conversacion(request_id, mensajes, restante, nombre, responder, usuario)
+        cuerpo = _bloque_conversacion(request_id, mensajes, restante, nombre, token, responder, usuario)
     else:
         cerrada_por = fila.get("closed_by") or "—"
         cierre = f"{_fecha_local(fila.get('resolved_at'))} por {cerrada_por}"
@@ -510,6 +518,7 @@ async def detalle(
         {aviso}
         <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/reabrir"
               onsubmit="return confirm('¿Dejar esta solicitud pendiente otra vez?')">
+            {csrf_input(token)}
             <div class="admin-form-actions">
                 <span class="admin-hint">Queda cerrada si no haces nada.</span>
                 <button type="submit" class="admin-btn-secondary">Dejar pendiente</button>
@@ -569,8 +578,9 @@ async def detalle(
     {_bloque_motivo(fila)}
     {cuerpo}
     {vigia}
-    <p><a class="admin-back-link" href="/admin/solicitudes">← Volver a las solicitudes</a></p>"""
-    return Response(content=_pagina_base("Solicitud de experto", contenido, account), media_type="text/html")
+    <p><a href="/admin/solicitudes">← Volver a las solicitudes</a></p>"""
+    return Response(content=_pagina_base("Solicitud de experto", contenido, account), media_type="text/html",
+                    headers={"Cache-Control": "no-store"})
 
 
 async def _notificar(phone: str, texto: str, reply_to: str | None = None) -> bool:
@@ -592,6 +602,7 @@ async def tomar(request_id: str, request: Request, financial_admin_session: str 
     account = await _auth(request, financial_admin_session)
     if not account:
         return _redirect("/admin/login")
+    await require_form_csrf(request, financial_admin_session)
     redis = request.app.state.redis
     destino = f"/admin/solicitudes/{request_id}"
 
@@ -636,6 +647,7 @@ async def enviar_mensaje(
     account = await _auth(request, financial_admin_session)
     if not account:
         return _redirect("/admin/login")
+    await require_form_csrf(request, financial_admin_session)
     redis = request.app.state.redis
     destino = f"/admin/solicitudes/{request_id}"
 
@@ -672,6 +684,7 @@ async def resolver(request_id: str, request: Request, financial_admin_session: s
     account = await _auth(request, financial_admin_session)
     if not account:
         return _redirect("/admin/login")
+    await require_form_csrf(request, financial_admin_session)
     redis = request.app.state.redis
 
     fila = get_expert_request(request_id, account["comuna"])
@@ -695,6 +708,7 @@ async def reabrir(request_id: str, request: Request, financial_admin_session: st
     account = await _auth(request, financial_admin_session)
     if not account:
         return _redirect("/admin/login")
+    await require_form_csrf(request, financial_admin_session)
     redis = request.app.state.redis
 
     fila = get_expert_request(request_id, account["comuna"])

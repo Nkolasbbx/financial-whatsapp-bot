@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from core.menu import get_menu_widget
 from core.profile_validation import (
     PROFILE_VALIDATORS,
+    EmailUnavailableError,
     ProfileValidationError,
     has_valid_profile_value,
 )
@@ -192,7 +193,7 @@ PROFILE_BACK_OPTIONS = [(PROFILE_BACK_ID, "↩️ Volver")]
 _PROFILE_QUESTIONS = {
     "nombre_completo": "¿Cuál es tu nombre completo?\nPor ejemplo: María González.",
     "rut": "¿Cuál es tu RUT personal?\nIncluye el dígito verificador, por ejemplo: 12.345.678-5.",
-    "email": "¿Cuál es tu correo electrónico?\nPor ejemplo: nombre@ejemplo.cl.",
+    "email": "¿Cuál es tu correo electrónico? Usa uno propio para este perfil.\nPor ejemplo: nombre@ejemplo.cl.",
 }
 
 
@@ -375,6 +376,8 @@ def process_onboarding(user: dict, message: str, save_user_fn) -> dict:
         saved = save_user_fn(user["phone"], changes)
         if not isinstance(saved, dict) or not saved:
             raise RuntimeError("No se confirmó el guardado del onboarding")
+    except EmailUnavailableError:
+        return _profile_prompt("email", "Ese correo no está disponible. Prueba con otro; conservamos tu progreso.\n\n")
     except Exception as error:
         logger.error("No se pudo guardar el paso del onboarding (%s)", type(error).__name__)
         return {

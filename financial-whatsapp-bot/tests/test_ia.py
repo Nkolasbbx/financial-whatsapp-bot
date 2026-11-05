@@ -1,6 +1,7 @@
 import asyncio
 import time
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -415,7 +416,7 @@ class ActualizarResumenConversacionTests(unittest.TestCase):
             patch.object(ia, "RES_URL", "https://openrouter.ai/api/v1"),
             patch.object(ia, "RES_MODEL", "openai/gpt-4o-mini"),
             patch.object(ia, "RES_KEY", res_key),
-            patch.object(dependencies, "supabase", self.supabase),
+            patch.object(dependencies, "supabase_admin", self.supabase),
         )
 
     def test_prompt_combines_previous_summary_messages_and_required_sections(self):
@@ -945,6 +946,101 @@ class PersonalizedAssistantContextTests(unittest.TestCase):
         self.assertIn("otras secciones disponibles", context)
 
 
+class CurrentDateTests(unittest.IsolatedAsyncioTestCase):
+    def test_direct_date_questions_do_not_capture_calendar_or_mixed_queries(self):
+        for text in ("que dia es hoy?", "¿Cuál es la fecha de hoy?", "¿A qué fecha estamos?", "fecha de hoy"):
+            self.assertTrue(ia._asks_current_date(text), text)
+        for text in ("¿Qué eventos tengo hoy?", "¿Qué día es hoy y cuánto gasté?", "¿Qué día es la feria?"):
+            self.assertFalse(ia._asks_current_date(text), text)
+
+    def test_clock_uses_chilean_date_even_when_utc_is_already_next_day(self):
+        with patch.object(ia, "REMINDER_TIMEZONE", "America/Santiago"):
+            utc = datetime(2026, 11, 4, 1, 0, tzinfo=timezone.utc)
+            self.assertEqual(ia._current_date_text(utc), "martes 3 de noviembre de 2026")
+            context = ia._temporal_context(utc)
+            self.assertIn("2026-11-03T22:00:00-03:00", context)
+            self.assertIn("America/Santiago", context)
+            self.assertIn("miércoles 4 de noviembre de 2026",
+                          ia._current_date_text(datetime(2026, 11, 4, 4, 0, tzinfo=timezone.utc)))
+
+    async def test_today_uses_clock_not_history_llm_rag_or_calendar_and_is_saved(self):
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 11, 4, 1, 0, tzinfo=timezone.utc).astimezone(tz)
+        user = {"phone": "test", "resumen_conversacion": "La feria es el 13 de noviembre"}
+        with patch.object(ia, "datetime", Clock), patch.object(ia, "REMINDER_TIMEZONE", "America/Santiago"), \
+             patch.object(ia, "_general_advisor_messages", new_callable=AsyncMock) as general, \
+             patch.object(ia, "llamar_llm_async", new_callable=AsyncMock) as llm, \
+             patch.object(ia, "get_active_calendar_events") as events, \
+             patch.object(ia, "_persist_turn", return_value=1) as save:
+            answer = await ia.get_ai_response(user, "que dia es hoy?", True)
+        self.assertIn("martes 3 de noviembre de 2026", answer)
+        self.assertNotIn("13 de noviembre", answer)
+        general.assert_not_awaited()
+        llm.assert_not_awaited()
+        events.assert_not_called()
+        save.assert_called_once()
+        self.assertEqual(save.call_args.args[3], answer)
+
+    async def test_general_and_calendar_prompts_always_receive_clock_reference(self):
+        with patch.object(ia, "_general_advisor_messages", new=AsyncMock(return_value=(
+                 [{"role": "system", "content": "Asesor general"}, {"role": "user", "content": "hola"}], []))), \
+             patch.object(ia, "get_active_calendar_events", return_value=[]), \
+             patch.object(ia, "llamar_llm_async", new=AsyncMock(return_value="Respuesta")) as llm:
+            for text in ("hola", "¿Cuáles son mis fechas importantes?"):
+                await ia.get_ai_response({"id": "00000000-0000-0000-0000-000000000003"}, text, True)
+                prompt = llm.await_args.kwargs["messages"][0]["content"]
+                self.assertIn("[RELOJ ACTUAL DEL SERVIDOR]", prompt)
+                self.assertIn("Las fechas del historial", prompt)
+
+
+class CalendarAdvisorTests(unittest.IsolatedAsyncioTestCase):
+    user = {"id": "00000000-0000-0000-0000-000000000003",
+            "conversation_history": [{"role": "assistant", "content": "Información municipal anterior"}]}
+
+    async def ask(self, text):
+        llm = AsyncMock(return_value="Respuesta del asesor")
+        with patch.object(ia, "requiere_rag", new_callable=AsyncMock) as classifier, \
+             patch.object(ia, "obtener_contexto_rag", new_callable=AsyncMock) as rag, \
+             patch.object(ia, "llamar_llm_async", llm):
+            answer = await ia.get_ai_response(self.user, text, True)
+        self.assertEqual(answer, "Respuesta del asesor")
+        classifier.assert_not_awaited()
+        rag.assert_not_awaited()
+        llm.assert_awaited_once()
+        messages = llm.await_args.kwargs["messages"]
+        self.assertEqual([m["role"] for m in messages], ["system", "user"])
+        return messages[-1]["content"]
+
+    async def test_whatsapp_examples_pass_own_saved_events_to_llm(self):
+        for text in ("ue fechas tengo en mi calendario?", "cuales son mis fechas importantes?"):
+            with self.subTest(text=text), patch.object(ia, "get_active_calendar_events", return_value=[
+                {"event_at": "2026-11-13T11:00:00+00:00", "description": "Feria de Software", "status": "active"},
+            ]) as lookup:
+                context = await self.ask(text)
+                lookup.assert_called_once_with(self.user["id"], limit=20)
+                self.assertIn("Feria de Software", context)
+                self.assertIn("13/11/2026", context)
+
+    async def test_period_with_no_events_is_not_a_query_failure(self):
+        with patch.object(ia, "_local_today", return_value=ia.date(2026, 11, 2)), \
+             patch.object(ia, "get_calendar_events_between", return_value=[]) as lookup:
+            context = await self.ask("¿Cuáles son mis fechas importantes este mes?")
+            uid, start, end = lookup.call_args.args
+            self.assertEqual((uid, start.date(), end.date()), (self.user["id"], ia.date(2026, 11, 1), ia.date(2026, 12, 1)))
+            self.assertIn("No hay eventos registrados", context)
+        with patch.object(ia, "get_active_calendar_events", side_effect=RuntimeError("sin conexión")):
+            context = await self.ask("¿Qué fechas tengo en mi calendario?")
+            self.assertIn("no fue posible consultar", context)
+            self.assertNotIn("No hay eventos registrados", context)
+
+    def test_mixed_queries_and_other_dates_keep_general_flow(self):
+        for text in ("¿Cuándo cierra el fondo?", "¿Qué fechas tengo en mi calendario y cuánto cuesta mi patente?",
+                     "crear fecha", "eliminar fecha"):
+            self.assertFalse(ia._is_personal_calendar_lookup(text))
+
+
 class GetAiResponseMemoriaTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, total_mensajes):
         user = {
@@ -1057,7 +1153,7 @@ class AiWorkerAccessBudgetTests(unittest.IsolatedAsyncioTestCase):
     async def _respond(self, supabase):
         user = {"id": USER_ID, "phone": "56911111111", "comuna": "Recoleta", "rubro": "Panadería"}
         with (
-            patch.object(dependencies, "supabase", supabase),
+            patch.object(dependencies, "supabase_admin", supabase),
             patch.object(ia, "get_user", MagicMock(side_effect=lambda phone: (supabase.table("users").execute(), user)[1])),
             patch.object(ia, "requiere_rag", AsyncMock(return_value=(False, None))),
             patch.object(ia, "llamar_llm_async", AsyncMock(return_value="Respuesta")),
