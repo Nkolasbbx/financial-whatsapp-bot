@@ -10,7 +10,12 @@ logger = logging.getLogger("financial")
 users_db: dict[str, dict] = {}
 
 # bloqueado se preserva: reiniciar el perfil no debe desbloquear al usuario.
-_RESET_PRESERVED_FIELDS = {"id", "phone", "auth_user_id", "created_at", "bloqueado"}
+# message_count lo mantienen triggers sobre messages (20261107_message_counter)
+# y el reinicio no borra mensajes: anularlo violaría NOT NULL y ponerlo en 0
+# lo desalinearía del conteo real.
+_RESET_PRESERVED_FIELDS = {
+    "id", "phone", "auth_user_id", "created_at", "bloqueado", "message_count",
+}
 _RESET_SAFE_DEFAULTS = {
     "onboarding_step": 0,
     "reminders_enabled": False,
@@ -293,6 +298,15 @@ def reset_user_profile(phone: str, current_user: dict) -> dict | None:
     for column, value in _RESET_SAFE_DEFAULTS.items():
         if column in current_user or column == "onboarding_step":
             reset_payload[column] = value
+    if "summary_checkpoint" in current_user:
+        # El resumen se borra: el próximo debe contar solo mensajes posteriores
+        # al reinicio. Al cambiar el checkpoint, un resumen en curso (que
+        # actualiza con .eq("summary_checkpoint", previo)) se descarta y no
+        # restaura el resumen anterior.
+        message_count = current_user.get("message_count")
+        reset_payload["summary_checkpoint"] = (
+            message_count if isinstance(message_count, int) else 0
+        )
     if "updated_at" in current_user:
         reset_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -310,7 +324,12 @@ def reset_user_profile(phone: str, current_user: dict) -> dict | None:
                 return result.data[0]
             return None
         except Exception as error:
-            logger.error("Supabase reset_user_profile error: %s", error)
+            # El detalle de PostgREST incluye la fila (teléfono, RUT, correo).
+            logger.error(
+                "Supabase reset_user_profile error (%s, code=%s)",
+                type(error).__name__,
+                getattr(error, "code", None),
+            )
             return None
 
     reset_user = {

@@ -69,6 +69,30 @@ class UserProfileResetTests(unittest.TestCase):
         for field in ("nombre_completo", "rut", "email", "direccion_negocio", "profile_completion_step"):
             self.assertIsNone(payload[field])
 
+    def test_database_reset_keeps_message_counter_not_null(self):
+        # Migración 20261107: message_count y summary_checkpoint son NOT NULL.
+        client = MagicMock()
+        query = client.table.return_value
+        query.update.return_value.eq.return_value.execute.return_value = SimpleNamespace(
+            data=[{"id": "user-1", "phone": "+56911111111", "onboarding_step": 0}]
+        )
+        current_user = {
+            "id": "user-1",
+            "phone": "+56911111111",
+            "onboarding_step": "done",
+            "resumen_conversacion": "Resumen anterior",
+            "message_count": 42,
+            "summary_checkpoint": 30,
+        }
+
+        with patch("db.users._profile_client", return_value=client):
+            reset_user_profile("+56911111111", current_user)
+
+        payload = query.update.call_args.args[0]
+        self.assertNotIn("message_count", payload)
+        self.assertEqual(payload["summary_checkpoint"], 42)
+        self.assertIsNone(payload["resumen_conversacion"])
+
     @patch("services.message_router.process_onboarding", return_value="onboarding")
     @patch("services.message_router.reset_user_profile")
     @patch("services.message_router.get_user")
