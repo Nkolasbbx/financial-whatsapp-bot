@@ -49,8 +49,8 @@ MAX_MESSAGE_CHARS = 1000
 REASON_PREVIEW_CHARS = 90
 
 _ESTADOS = {
-    "pending": ("Pendiente", "en-cola"),
-    "in_progress": ("En atención", "procesando"),
+    "pending": ("Pendiente", "pendiente"),
+    "in_progress": ("En atención", "en-atencion"),
     "resolved": ("Resuelta", "listo"),
 }
 
@@ -173,7 +173,7 @@ def _redirect(path: str) -> Response:
 
 
 def _badge(status: str) -> str:
-    label, clase = _ESTADOS.get(status, (status, "en-cola"))
+    label, clase = _ESTADOS.get(status, (status, "pendiente"))
     return f'<span class="admin-badge {clase}">{html.escape(label)}</span>'
 
 
@@ -210,7 +210,7 @@ def _tema_html(fila: dict) -> str:
     return chip + (f'<div class="admin-wait">{html.escape(motivo)}</div>' if motivo else "")
 
 
-def _tabla(titulo: str, filas: list[dict], vacio: str) -> str:
+def _tabla(titulo: str, filas: list[dict], vacio: str, status: str) -> str:
     cuerpo = "\n".join(
         f"""<tr>
             <td><div class="admin-person">{_avatar(r.get("users") or {})}
@@ -225,11 +225,11 @@ def _tabla(titulo: str, filas: list[dict], vacio: str) -> str:
         </tr>"""
         for r in filas
     ) or f'<tr><td colspan="6">{html.escape(vacio)}</td></tr>'
-    conteo = f" ({len(filas)})" if filas else ""
+    conteo = f' <span class="admin-badge {_ESTADOS[status][1]}">{len(filas)}</span>' if filas else ""
     return f"""
     <div class="admin-card">
         <h2>{html.escape(titulo)}{conteo}</h2>
-        <table class="admin-table">
+        <table class="admin-table admin-table-solicitudes">
             <thead><tr><th>Emprendedor</th><th>Tema y motivo</th><th>Contexto</th><th>Solicitada</th><th>Ventana WhatsApp</th><th></th></tr></thead>
             <tbody>{cuerpo}</tbody>
         </table>
@@ -274,9 +274,9 @@ async def lista(request: Request, financial_admin_session: str | None = Cookie(d
     contenido = (
         _flash_html(flash)
         + _filtros_html(rubros, tema, rubro, formalizado, vence)
-        + _tabla("Pendientes", preparar(pendientes), "No hay solicitudes pendientes con esos filtros.")
-        + _tabla("En atención", preparar(en_atencion), "No hay conversaciones en curso con esos filtros.")
-        + _tabla("Resueltas (recientes)", preparar(resueltas, abiertas=False), "Todavía no hay solicitudes resueltas.")
+        + _tabla("Pendientes", preparar(pendientes), "No hay solicitudes pendientes con esos filtros.", "pending")
+        + _tabla("En atención", preparar(en_atencion), "No hay conversaciones en curso con esos filtros.", "in_progress")
+        + _tabla("Resueltas (recientes)", preparar(resueltas, abiertas=False), "Todavía no hay solicitudes resueltas.", "resolved")
     )
     return Response(content=_pagina_base("Solicitudes de experto", contenido, account), media_type="text/html")
 
@@ -362,7 +362,7 @@ def _bloque_tomar(request_id: str, nombre: str, restante: timedelta, usuario: di
         <p class="admin-error">La ventana de 24 h de WhatsApp ya se cerró: no se le puede escribir hasta que {quien} vuelva a escribir.</p>
     </div>"""
     return f"""
-    <div class="admin-card admin-card-feature">
+    <div class="admin-card">
         <h2>Tomar esta solicitud</h2>
         <p class="subtitulo">Esto es lo que pasa al tomarla:</p>
         <ol class="admin-steps">
@@ -386,6 +386,13 @@ def _bloque_conversacion(
 ) -> str:
     usuario = usuario or {}
     quien = html.escape(_primer_nombre(usuario))
+    # Va en la misma fila que "Enviar mensaje", pero es otro formulario (no se
+    # pueden anidar): el botón se conecta al suyo con el atributo form.
+    cerrar = """
+                <span class="admin-resolve">
+                    <span class="admin-hint">¿Ya resolviste su consulta?</span>
+                    <button type="submit" form="form-resolver" class="admin-btn-secondary">Marcar como resuelta</button>
+                </span>"""
     if restante > timedelta(0):
         cita = ""
         if responder:
@@ -401,19 +408,17 @@ def _bloque_conversacion(
             <textarea id="mensaje" name="mensaje" rows="3" maxlength="{MAX_MESSAGE_CHARS}" required
                       placeholder="{quien[0].upper()}{quien[1:]} lo recibe en su WhatsApp como «{html.escape(nombre)}»"></textarea>
             <div class="admin-form-actions">
-                <button type="submit" class="admin-btn">Enviar mensaje</button>
+                <button type="submit" class="admin-btn">Enviar mensaje</button>{cerrar}
             </div>
         </form>"""
     else:
-        composer = f'<p class="admin-error">La ventana de 24 h de WhatsApp está cerrada: no se puede enviar texto libre hasta que {quien} vuelva a escribir.</p>'
-    cerrar = f"""
-        <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/resolver"
-              onsubmit="return confirm('¿Marcar como resuelta? El emprendedor vuelve a hablar con el asistente.')">
-            <div class="admin-form-actions">
-                <span class="admin-hint">¿Ya resolviste su consulta?</span>
-                <button type="submit" class="admin-btn-secondary">Marcar como resuelta</button>
-            </div>
-        </form>"""
+        composer = f"""
+        <p class="admin-error">La ventana de 24 h de WhatsApp está cerrada: no se puede enviar texto libre hasta que {quien} vuelva a escribir.</p>
+        <div class="admin-form-actions">{cerrar}
+        </div>"""
+    form_resolver = f"""
+        <form id="form-resolver" method="post" action="/admin/solicitudes/{html.escape(request_id)}/resolver"
+              onsubmit="return confirm('¿Marcar como resuelta? El emprendedor vuelve a hablar con el asistente.')"></form>"""
     hilo = _hilo_html(
         mensajes, request_id, puede_responder=restante > timedelta(0),
         seleccionado=responder["id"] if responder else None,
@@ -425,8 +430,8 @@ def _bloque_conversacion(
         <div id="nuevo-mensaje" class="admin-new-msg" role="status" aria-live="polite" hidden></div>
         <div class="admin-thread" id="hilo">{hilo}</div>
         {composer}
-    </div>
-    <div class="admin-card">{cerrar}</div>"""
+        {form_resolver}
+    </div>"""
 
 
 @router.get("/{request_id}/hilo")
@@ -527,8 +532,10 @@ async def detalle(
     negocio = _negocio_txt(usuario)
     negocio_html = f"<small>«{html.escape(negocio)}»</small>" if negocio else ""
     correo = (usuario.get("email") or "").strip()
+    # <wbr>: si no cabe en la columna, se corta tras la @, no a mitad de palabra.
+    correo_visible = html.escape(correo).replace("@", "@<wbr>")
     correo_html = (
-        f'<div><dt>Correo</dt><dd><a href="mailto:{html.escape(correo, quote=True)}">{html.escape(correo)}</a></dd></div>'
+        f'<div><dt>Correo</dt><dd><a href="mailto:{html.escape(correo, quote=True)}">{correo_visible}</a></dd></div>'
         if correo else ""
     )
     rut = (usuario.get("rut") or "").strip()
@@ -562,7 +569,7 @@ async def detalle(
     {_bloque_motivo(fila)}
     {cuerpo}
     {vigia}
-    <p><a href="/admin/solicitudes">← Volver a las solicitudes</a></p>"""
+    <p><a class="admin-back-link" href="/admin/solicitudes">← Volver a las solicitudes</a></p>"""
     return Response(content=_pagina_base("Solicitud de experto", contenido, account), media_type="text/html")
 
 

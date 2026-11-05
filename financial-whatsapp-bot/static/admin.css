@@ -235,20 +235,6 @@ select:focus-visible {
     margin: -8px 0 14px;
 }
 
-/* Contenedor destacado (tomar solicitud) — receta del simulador ROI */
-.admin-card.admin-card-feature {
-    border-radius: 24px;
-    border-color: color-mix(in srgb, var(--petrol) 30%, transparent);
-    background: color-mix(in srgb, var(--petrol) 16%, white);
-    padding: 32px;
-}
-
-@media (min-width: 640px) {
-    .admin-card.admin-card-feature {
-        padding: 40px;
-    }
-}
-
 /* Tarjeta angosta y centrada (login) — evita que se estire a todo el ancho del contenedor */
 .admin-card.admin-card-narrow {
     max-width: 440px;
@@ -912,6 +898,15 @@ select:focus-visible {
     margin-top: 14px;
 }
 
+/* Marcar como resuelta: siempre a la derecha, haya o no botón de enviar */
+.admin-resolve {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-left: auto;
+}
+
 .admin-btn {
     background: var(--emerald);
     color: var(--petrol);
@@ -970,11 +965,11 @@ select:focus-visible {
 }
 
 .admin-msg {
+    align-self: flex-start;
     max-width: 80%;
     padding: 10px 14px;
-    border-radius: 14px 14px 14px 4px;
-    background: #fff;
-    border: 1px solid color-mix(in srgb, var(--petrol) 12%, transparent);
+    border-radius: 16px 16px 16px 4px;
+    background: color-mix(in srgb, var(--petrol) 8%, transparent);
 }
 
 .admin-msg p {
@@ -982,16 +977,22 @@ select:focus-visible {
     white-space: pre-wrap;
 }
 
+/* Tinte suave a pedido explícito, no el esmeralda sólido del mockup (§8 CLAUDE.md) */
 .admin-msg-expert {
     align-self: flex-end;
-    border-radius: 14px 14px 4px 14px;
-    background: color-mix(in srgb, var(--emerald) 25%, white);
-    border-color: transparent;
+    border-radius: 16px 16px 4px 16px;
+    background: color-mix(in srgb, var(--emerald) 40%, white);
+    color: var(--petrol);
 }
 
 .admin-msg-meta {
     font-size: 14px;
     opacity: 0.7;
+}
+
+/* Toda la letra de estas burbujas va en petróleo, sin transparencia */
+.admin-msg-expert .admin-msg-meta {
+    opacity: 1;
 }
 
 .admin-compose {
@@ -1034,6 +1035,37 @@ select:focus-visible {
     background: #dcfce7;
     border-color: #4ade80;
     color: #166534;
+}
+
+/* Estado de una solicitud: sólidos y opuestos para distinguirlos de un vistazo */
+.admin-badge.pendiente {
+    background: var(--petrol);
+    color: #fff;
+}
+
+.admin-badge.en-atencion {
+    background: var(--emerald);
+    color: var(--petrol);
+}
+
+.admin-card h2 .admin-badge {
+    margin-left: 4px;
+    letter-spacing: normal;
+    vertical-align: middle;
+}
+
+/* Mismas columnas en las tres tablas (Pendientes, En atención, Resueltas).
+   En móvil la tabla pasa a display: block con scroll: ahí no aplica. */
+@media (min-width: 641px) {
+    .admin-table-solicitudes {
+        table-layout: fixed;
+    }
+
+    .admin-table-solicitudes th:nth-child(1) { width: 21%; }
+    .admin-table-solicitudes th:nth-child(3) { width: 16%; }
+    .admin-table-solicitudes th:nth-child(4) { width: 13%; }
+    .admin-table-solicitudes th:nth-child(5) { width: 14%; }
+    .admin-table-solicitudes th:nth-child(6) { width: 96px; }
 }
 
 /* ── Solicitudes de experto: filtros, tema y motivo ── */
@@ -1130,6 +1162,21 @@ select:focus-visible {
     margin-top: 6px;
     font-size: 14px;
     font-weight: 700;
+}
+
+.admin-reply-link,
+.admin-back-link,
+.admin-quote-preview a,
+.admin-new-msg a {
+    color: var(--petrol);
+    transition: color 300ms;
+}
+
+.admin-reply-link:hover,
+.admin-back-link:hover,
+.admin-quote-preview a:hover,
+.admin-new-msg a:hover {
+    color: var(--emerald);
 }
 
 .admin-msg-selected {
