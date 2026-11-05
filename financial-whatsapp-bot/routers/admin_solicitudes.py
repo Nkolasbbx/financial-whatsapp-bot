@@ -416,15 +416,14 @@ def _bloque_conversacion(
             </div>
         </form>"""
     else:
-        composer = f'<p class="admin-error">La ventana de 24 h de WhatsApp está cerrada: no se puede enviar texto libre hasta que {quien} vuelva a escribir.</p>'
-    cerrar = f"""
-        <form method="post" action="/admin/solicitudes/{html.escape(request_id)}/resolver"
+        composer = f"""
+        <p class="admin-error">La ventana de 24 h de WhatsApp está cerrada: no se puede enviar texto libre hasta que {quien} vuelva a escribir.</p>
+        <div class="admin-form-actions">{cerrar}
+        </div>"""
+    form_resolver = f"""
+        <form id="form-resolver" method="post" action="/admin/solicitudes/{html.escape(request_id)}/resolver"
               onsubmit="return confirm('¿Marcar como resuelta? El emprendedor vuelve a hablar con el asistente.')">
             {csrf_input(csrf_token)}
-            <div class="admin-form-actions">
-                <span class="admin-hint">¿Ya resolviste su consulta?</span>
-                <button type="submit" class="admin-btn-secondary">Marcar como resuelta</button>
-            </div>
         </form>"""
     hilo = _hilo_html(
         mensajes, request_id, puede_responder=restante > timedelta(0),
@@ -578,7 +577,7 @@ async def detalle(
     {_bloque_motivo(fila)}
     {cuerpo}
     {vigia}
-    <p><a href="/admin/solicitudes">← Volver a las solicitudes</a></p>"""
+    <p><a class="admin-back-link" href="/admin/solicitudes">← Volver a las solicitudes</a></p>"""
     return Response(content=_pagina_base("Solicitud de experto", contenido, account), media_type="text/html",
                     headers={"Cache-Control": "no-store"})
 

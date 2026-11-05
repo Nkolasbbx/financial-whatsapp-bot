@@ -410,6 +410,17 @@ class QuoteReplyTests(unittest.IsolatedAsyncioTestCase):
     def test_expert_message_shows_the_quoted_text(self):
         self.assertIn("cuanto cuesta la patente", panel._hilo_html(MSGS, "r1", puede_responder=True).split("son 120 mil")[0].split("admin-quote")[-1])
 
+    def test_resolve_button_is_wired_to_its_form_with_csrf(self):
+        # El botón va en otra fila que su formulario: sin el id o sin el token,
+        # no resuelve (o /resolver responde 403). Con ventana abierta y cerrada.
+        for restante in (timedelta(hours=5), timedelta(0)):
+            with self.subTest(restante=restante):
+                bloque = panel._bloque_conversacion("r1", MSGS, restante, "InnovaRecoleta", "token-de-prueba")
+                self.assertIn('form="form-resolver"', bloque)
+                formulario = bloque.split('<form id="form-resolver"')[1].split("</form>")[0]
+                self.assertIn('action="/admin/solicitudes/r1/resolver"', formulario)
+                self.assertIn('name="csrf_token" value="token-de-prueba"', formulario)
+
     def _patches(self):
         return [
             patch.object(panel, "_auth", new=AsyncMock(return_value={"comuna": "Recoleta", "nombre": "InnovaRecoleta"})),
