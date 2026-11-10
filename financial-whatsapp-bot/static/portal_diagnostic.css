@@ -4,25 +4,41 @@
 .diag h1 { font-size: clamp(27px, 5vw, 37px); line-height: 1.2; margin: 10px 0; }
 .diag p { line-height: 1.6; }
 .diag-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.diag-metric { background: #024655; color: white; border-radius: 16px; padding: 20px; overflow-wrap: anywhere; }
-.diag-metric small { display: block; color: #d8eee8; line-height: 1.5; }
-.diag-metric strong { display: block; font-size: 24px; margin-top: 10px; }
+.diag-metric { border: 1px solid transparent; color: var(--petrol); border-radius: 16px; padding: 20px; overflow-wrap: anywhere; }
+.diag-metric.positive { --metric-accent: #08745f; background: color-mix(in srgb, var(--emerald) 18%, white); border-color: color-mix(in srgb, var(--emerald) 65%, transparent); }
+.diag-metric.negative { --metric-accent: #991b1b; background: #fff5f5; border-color: color-mix(in srgb, #b91c1c 28%, transparent); }
+.diag-metric.pending { --metric-accent: #854d0e; background: #fef9c3; border-color: #fde047; }
+.diag-metric small { display: block; line-height: 1.5; }
+.diag-metric strong { display: block; color: var(--metric-accent); font-size: 24px; margin-top: 10px; }
+.diag-metric-state { display: block; color: var(--metric-accent); font-size: 14px; font-weight: 700; margin-top: 6px; }
 .diag-notice { background: #edf7f0; border: 1px solid #aed3ba; color: #174b39; border-radius: 14px; padding: 16px; margin: 20px 0; line-height: 1.6; }
+aside.diag-notice { background: #dbeafe; border: 1px solid #60a5fa; border-left: 6px solid #1d4ed8; color: #1e40af; font-weight: 500; }
 .diag-review { display: flex; align-items: flex-start; gap: 12px; background: white; padding: 18px; margin-top: 24px; border: 1px solid #809fa5; border-radius: 14px; font-size: 18px; line-height: 1.6; cursor: pointer; }
 .diag-review input { flex-shrink: 0; width: 24px; height: 24px; margin-top: 3px; accent-color: #139381; }
 #diag-assessment h2 { margin: 0 0 8px; font-size: 23px; }
+.diag-notice.capacity-alta { background: color-mix(in srgb, var(--emerald) 18%, white); border-color: color-mix(in srgb, var(--emerald) 65%, transparent); color: var(--petrol); }
+.diag-notice.capacity-media { background: #fef9c3; border-color: #fde047; color: var(--petrol); }
+.diag-notice.capacity-baja { background: #fff5f5; border-color: color-mix(in srgb, #b91c1c 28%, transparent); color: var(--petrol); }
+#diag-assessment.capacity-alta h2 { color: #08745f; }
+#diag-assessment.capacity-media h2 { color: #854d0e; }
+#diag-assessment.capacity-baja h2 { color: #991b1b; }
 #diag-assessment p { margin-bottom: 0; }
 .diag-explanation { margin-top: 16px; }
 .diag-explanation summary { cursor: pointer; min-height: 44px; font-weight: 700; padding: 10px 0; }
 .diag-explanation p { white-space: pre-line; overflow-wrap: anywhere; padding: 12px 0; }
-.diag-group h2 { margin: 28px 0 12px; font-size: 22px; }
+.diag-group h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 28px 0 12px; font-size: 22px; }
+.diag-group-state { border: 1px solid; border-radius: 9999px; padding: 3px 12px; font-size: 14px; font-weight: 700; }
+.diag-group-state.is-pending { background: #fef9c3; border-color: #fde047; color: #854d0e; }
+.diag-group-state.is-complete { background: color-mix(in srgb, var(--emerald) 18%, white); border-color: color-mix(in srgb, var(--emerald) 65%, transparent); color: #08745f; }
 .diag-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 12px; align-items: start; }
 .diag-cost { min-width: 0; background: white; border: 1px solid #c7d9da; border-radius: 16px; padding: 16px; }
+.diag-cost.is-pending { background: #fef9c3; border-color: #fde047; }
+.diag-cost.is-complete { background: color-mix(in srgb, var(--emerald) 18%, white); border-color: color-mix(in srgb, var(--emerald) 65%, transparent); }
 .diag-cost.changed { border: 2px solid #139381; padding: 15px; }
 .diag-cost summary { cursor: pointer; min-height: 60px; line-height: 1.5; padding: 4px; overflow-wrap: anywhere; }
 .diag-cost summary strong { font-size: 19px; }
-.diag-cost summary span { display: block; color: #4a656c; font-size: 16px; margin-top: 6px; }
-.diag-cost p { font-size: 16px; color: #4a656c; }
+.diag-cost summary span { display: block; color: var(--petrol); font-size: 17px; font-weight: 500; margin-top: 6px; }
+.diag-cost p { font-size: 17px; font-weight: 500; color: var(--petrol); }
 .diag-cost label { display: block; font-size: 16px; font-weight: 600; margin-top: 15px; }
 .diag-cost input:not([type=checkbox]), .diag-cost select { display: block; width: 100%; min-height: 48px; border: 1px solid #809fa5; border-radius: 9px; background: white; color: #024655; padding: 10px; font: inherit; font-size: 18px; margin-top: 7px; }
 .diag-cost input[type=checkbox] { width: 22px; height: 22px; vertical-align: middle; margin-right: 8px; }

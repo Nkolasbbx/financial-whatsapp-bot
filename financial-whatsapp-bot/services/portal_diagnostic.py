@@ -37,6 +37,7 @@ def view(context):
     result = d.get("result") or calculate_assessment(context).result
     economic = result.get("economic_assessment") or {}
     pending = economic.get("missing_fields", d.get("missing_fields") or [])
+    blocking_keys = {key.partition(":")[2] for key in pending if ":" in key}
     rows = []
     for item in guide.guide_items(context):
         decision = item.get("metadata", {}).get("decision", {})
@@ -46,19 +47,23 @@ def view(context):
                 if item["applicability"] == "to_confirm" or item.get("amount_clp_max") is None else
                 "estimate" if item.get("metadata", {}).get("origin") == "FinancIAl" else "manual")
         rows.append({"key": item["item_key"], "title": item["label"], "group": brief.group(decision),
-                     "mode": mode, "min": item.get("amount_clp_min"), "max": item.get("amount_clp_max"),
+                     "mode": mode, "required": item["item_key"] in blocking_keys,
+                     "min": item.get("amount_clp_min"), "max": item.get("amount_clp_max"),
                      "paid": item.get("amount_paid_clp") or 0, "frequency": item["frequency"],
                      "due_date": item.get("due_date"), "included": item.get("included_in_baseline", False),
                      "origin": item.get("metadata", {}).get("origin"),
                      "estimate": {"min": decision.get("amount_clp_min"), "max": decision.get("amount_clp_max"),
                                   "frequency": decision.get("frequency")} if decision.get("status") == "ready" else None,
                      "scope": (decision.get("variant") or {}).get("includes") or decision.get("reason") or "Revisa si corresponde a tu negocio."})
+    shown_keys = {row["key"] for row in rows}
+    other_pending = [key for key in pending if key != "estimate_coverage" and key.partition(":")[2] not in shown_keys]
     return {"available": True, "diagnostic_id": d["id"], "lock_version": d["lock_version"],
             "period": str(d.get("period_start", ""))[:7], "projection_start": d.get("projection_start"),
             "recalculation_pending": d["current_step"] == "portal_costs", "items": rows,
             "summary": {key: result.get(key) for key in ("current_operating_result", "initial_remaining_min", "initial_remaining_max",
                         "future_after_withdrawals_and_debt", "known_initial_cash_gap")},
             "missing_count": len(pending), "pending_requirements": pending_labels(pending, context),
+            "other_requirements": pending_labels(other_pending, context),
             "capacity": economic.get("capacity"), "capacity_explanation": capacity_explanation(result),
             "capacity_details": capacity_breakdown(result),
             "coverage_confirmed": answers.get("estimate_coverage_confirmed") is True,

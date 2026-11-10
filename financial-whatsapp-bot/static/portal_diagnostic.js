@@ -51,8 +51,9 @@
         label.append(input); parent.append(label);
         return input;
     }
+    const costState = item => item.required ? 'is-pending' : ['estimate', 'manual'].includes(item.mode) ? 'is-complete' : '';
     function card(item) {
-        const el = node('details', null, 'diag-cost');
+        const el = node('details', null, `diag-cost ${costState(item)}`);
         const summary = node('summary');
         summary.append(node('strong', item.title));
         const origin = item.mode === 'pending' ? 'Pendiente · falta un monto' : item.mode === 'excluded' ? 'No incluido en este escenario' :
@@ -78,9 +79,11 @@
             frequency.disabled = !active || estimate; frequency.required = active;
             if (estimate) frequency.value = item.estimate.frequency;
             const monthly = frequency.value === 'monthly';
-            for (const input of [paid, due]) { input.parentElement.hidden = monthly; input.disabled = !active || monthly; }
-            paid.required = active && !monthly;
             const high = estimate ? item.estimate.max : Number(amount.value);
+            const settled = (estimate || amount.value !== '') && Number(paid.value || 0) >= high;
+            paid.parentElement.hidden = monthly; paid.disabled = !active || monthly;
+            due.parentElement.hidden = monthly || settled; due.disabled = !active || monthly || settled;
+            paid.required = active && !monthly;
             due.required = active && !monthly && high > Number(paid.value || 0);
             included.parentElement.hidden = !monthly; included.disabled = !active || !monthly;
         }
@@ -97,6 +100,8 @@
         if (!data.available) { message(data.message); return; }
         coverage.checked = Boolean(data.coverage_confirmed); coverage.disabled = false;
         const assessment = $('diag-assessment');
+        assessment.hidden = !data.capacity && data.economic_status !== 'not_evaluable' && !data.other_requirements?.length;
+        assessment.className = data.capacity ? `diag-notice capacity-${data.capacity}` : 'diag-notice';
         assessment.replaceChildren(node('h2', data.capacity ? `Capacidad económica: ${data.capacity.toUpperCase()}` : data.economic_status === 'not_evaluable' ? 'Escenario sin actividad mensual suficiente' : 'Completa tu diagnóstico'));
         assessment.firstElementChild.id = 'diag-assessment-title';
         assessment.append(node('p', data.capacity_explanation));
@@ -106,21 +111,32 @@
             data.capacity_details.forEach(text => explanation.append(node('p', text.replaceAll('*', ''))));
             assessment.append(explanation);
         }
-        if (data.pending_requirements?.length) {
+        if (data.other_requirements?.length) {
             const list = node('ul');
-            data.pending_requirements.forEach(text => list.append(node('li', text)));
+            data.other_requirements.forEach(text => list.append(node('li', text)));
             assessment.append(list);
         }
         $('diag-summary').replaceChildren();
-        const values = [['Resultado del mes observado · ' + data.period, money(data.summary.current_operating_result)],
-                        [data.missing_count ? 'Pagos iniciales conocidos · revisa los pendientes' : 'Pagos iniciales del escenario revisado', range(data.summary.initial_remaining_min, data.summary.initial_remaining_max)],
-                        ['Saldo mensual conocido tras gastos, retiros y deudas', money(data.summary.future_after_withdrawals_and_debt)]];
-        values.forEach(([label, value]) => { const box = node('article', null, 'diag-metric'); box.append(node('small', label), node('strong', value)); $('diag-summary').append(box); });
+        const isRecurring = item => ['monthly', 'annual'].includes(item.frequency);
+        const pendingItems = data.items.filter(item => item.required);
+        const futurePending = pendingItems.filter(isRecurring).length, initialPending = pendingItems.length - futurePending;
+        const metricState = (value, pending, settledText) => pending ? ['pending', `${pending} ${pending === 1 ? 'costo pendiente' : 'costos pendientes'}`] :
+            value == null ? ['pending', 'Pendiente'] : value < 0 ? ['negative', 'Negativo'] : ['positive', settledText];
+        const {current_operating_result: observed, initial_remaining_min: initialMin, initial_remaining_max: initialMax, future_after_withdrawals_and_debt: future} = data.summary;
+        const initialLabel = initialPending ? 'Pagos iniciales conocidos · revisa los pendientes' : data.missing_count ? 'Pagos iniciales conocidos' : 'Pagos iniciales del escenario revisado';
+        const values = [['Resultado del mes observado · ' + data.period, money(observed), metricState(observed, 0, 'Positivo')],
+                        [initialLabel, range(initialMin, initialMax), metricState(initialMax, initialPending, 'Sin pendientes')],
+                        ['Saldo mensual conocido tras gastos, retiros y deudas', money(future), metricState(future, futurePending, 'Positivo')]];
+        values.forEach(([label, value, [state, stateText]]) => { const box = node('article', null, `diag-metric ${state}`); box.append(node('small', label), node('strong', value), node('span', stateText, 'diag-metric-state')); $('diag-summary').append(box); });
         $('diag-costs').replaceChildren();
         [['permits', 'Trámites y permisos'], ['setup', 'Arreglos y equipos'], ['monthly', 'Gastos posteriores']].forEach(([key, title]) => {
             const section = node('section', null, 'diag-group'), cards = node('div', null, 'diag-cards');
-            section.append(node('h2', title), cards);
-            data.items.filter(item => item.group === key).forEach(item => cards.append(card(item)));
+            const items = data.items.filter(item => item.group === key), heading = node('h2', title);
+            const missing = items.filter(item => item.required).length;
+            if (missing) heading.append(node('span', `${missing} ${missing === 1 ? 'pendiente' : 'pendientes'}`, 'diag-group-state is-pending'));
+            else if (items.some(item => costState(item) === 'is-complete')) heading.append(node('span', 'Completo', 'diag-group-state is-complete'));
+            section.append(heading, cards);
+            items.forEach(item => cards.append(card(item)));
             $('diag-costs').append(section);
         });
         const sources = $('diag-sources'); sources.replaceChildren(node('p', `Catálogo: ${data.catalog_version}. Proyección de tres meses. La capacidad económica es orientativa; verifica permisos y cobros con cada organismo.`));
@@ -148,7 +164,7 @@
             const c = controls.get(key), monthly = c.frequency.value === 'monthly';
             return {key, mode: c.mode.value, amount: c.mode.value === 'manual' ? Number(c.amount.value) : null,
                     paid: monthly ? 0 : Number(c.paid.value || 0), frequency: c.frequency.value || null,
-                    due_date: monthly ? null : c.due.value || null, included: monthly && c.included.checked, origin: c.origin.value};
+                    due_date: c.due.disabled ? null : c.due.value || null, included: monthly && c.included.checked, origin: c.origin.value};
         });
         busy = true; updateDirty(); form.querySelectorAll('input,select').forEach(input => input.disabled = true);
         const previous = data.summary.initial_remaining_max;
@@ -156,10 +172,13 @@
             const csrf = document.querySelector('meta[name="financial-csrf-token"]')?.content;
             render(await api({method: 'PUT', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf || ''},
                 body: JSON.stringify({diagnostic_id: data.diagnostic_id, lock_version: data.lock_version, request_id: crypto.randomUUID(), changes, coverage_confirmed: coverage.checked})}));
-            message(`${data.capacity ? 'Diagnóstico finalizado. Capacidad: ' + data.capacity.toUpperCase() + '.' : 'Cambios guardados. Revisa los pendientes indicados arriba.'} Pagos iniciales: antes ${money(previous)}, ahora ${money(data.summary.initial_remaining_max)}. Consulta «mi diagnóstico» en WhatsApp.`);
+            const nextStep = data.items.some(item => item.required) ? 'Completa los costos en amarillo.' :
+                data.other_requirements?.length || data.coverage_confirmed ? 'Revisa lo indicado arriba.' : 'Marca al final que terminaste de revisar los costos.';
+            message(`${data.capacity ? 'Diagnóstico finalizado. Capacidad: ' + data.capacity.toUpperCase() + '.' : 'Cambios guardados. ' + nextStep} Pagos iniciales: antes ${money(previous)}, ahora ${money(data.summary.initial_remaining_max)}. Consulta «mi diagnóstico» en WhatsApp.`);
             status.scrollIntoView({behavior: 'smooth', block: 'center'});
         } catch (error) {
             message(error.message, true); reload.hidden = false;
+            status.scrollIntoView({behavior: 'smooth', block: 'center'});
             // Do not blindly replay writes after a conflict or ambiguous server failure.
             conflicted = [409, 503, 401, 404].includes(error.status) || !error.status;
             if (error.status === 401) content.hidden = true;
