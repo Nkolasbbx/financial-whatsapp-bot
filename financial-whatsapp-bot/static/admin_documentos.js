@@ -16,8 +16,23 @@
     let meta = [];
     const ambitos = config.ambitos || null;
 
-    function emptyMeta() {
-        return { rubros: ["general"], desde: "", hasta: "", ambito: ambitos ? ambitos[0].value : "", fuente: "", url: "" };
+    function isPdf(file) {
+        return file.name.toLowerCase().endsWith(".pdf");
+    }
+
+    // Misma normalización que core/ingestion.py::nombre_fuente_desde_archivo:
+    // el servidor reconoce así una precarga que nadie editó.
+    function sourceNameFromFile(name) {
+        const clean = name.replace(/\.[^.]*$/, "").replace(/[-_]+/g, " ").trim().replace(/\s+/g, " ");
+        return (clean.charAt(0).toUpperCase() + clean.slice(1)).slice(0, 200);
+    }
+
+    // Un .md no se precarga: lo escrito aquí tendría prioridad sobre su título.
+    function emptyMeta(file) {
+        return {
+            rubros: ["general"], desde: "", hasta: "", ambito: ambitos ? ambitos[0].value : "",
+            fuente: isPdf(file) ? sourceNameFromFile(file.name) : "", url: "",
+        };
     }
 
     function fieldValue(name) {
@@ -87,7 +102,7 @@
     function render() {
         cards.replaceChildren();
         files.forEach((file, i) => {
-            const m = meta[i] || emptyMeta();
+            const m = meta[i] || emptyMeta(file);
             const remove = el("button", { type: "button", class: "admin-file-remove", text: "Quitar" });
             remove.addEventListener("click", () => {
                 readMeta();
@@ -116,7 +131,7 @@
                         el("fieldset", {}, [el("legend", { text: "Rubros aplicables" })].concat(rubros)),
                         dateField(`vigencia_desde_${i}`, "Vigente desde (opcional)", m.desde),
                         dateField(`vigencia_hasta_${i}`, "Vigente hasta (opcional — sin fecha no vence)", m.hasta),
-                        textField(`fuente_${i}`, "Nombre de la fuente (opcional)", m.fuente, "text", "Ej. Ordenanza de patentes 2026"),
+                        textField(`fuente_${i}`, "Nombre de la fuente (opcional)", m.fuente, "text", isPdf(file) ? "Ej. Ordenanza de patentes 2026" : "Si lo dejas vacío, se usa el título del documento"),
                         textField(`fuente_url_${i}`, "URL de la fuente (opcional)", m.url, "url", "https://…"),
                     ]
                 ))
@@ -136,7 +151,7 @@
         nuevos.forEach((f) => {
             if (!files.some((x) => x.name === f.name)) {
                 files.push(f);
-                meta.push(emptyMeta());
+                meta.push(emptyMeta(f));
             }
         });
         syncInput();

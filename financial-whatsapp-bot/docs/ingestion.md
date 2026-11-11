@@ -107,9 +107,9 @@ Admin → POST /admin/documentos/{job_id}/eliminar
 {
   "file_name": "ordenanza-patentes.pdf",
   "file_type": "pdf",
-  "source": "Panel admin — InnovaRecoleta",
+  "source": "Ordenanza patentes · Recoleta",
   "source_url": "",
-  "source_date": "2026-09-17",
+  "source_date": "",
   "comuna": "Recoleta",
   "rubros": ["general"],
   "vigencia_desde": null,

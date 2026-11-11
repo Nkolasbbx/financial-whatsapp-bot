@@ -11,6 +11,8 @@ from core.ingestion import (
     embed_batch_remoto,
     extract_markdown_frontmatter,
     extract_pdf_to_markdown,
+    fuente_automatica,
+    nombre_fuente_desde_archivo,
     process_document_to_rows,
 )
 from db.documents import get_stale_ingestion_jobs, update_ingestion_job, upsert_document
@@ -234,7 +236,7 @@ async def process_document_ingestion_task(
             frontmatter, text = extract_markdown_frontmatter(raw_bytes.decode("utf-8"))
             file_type = "markdown"
 
-        fuente = _fuente_del_documento(source, source_url, frontmatter, uploaded_by)
+        fuente = _fuente_del_documento(source, source_url, frontmatter, file_name, comuna)
         jurisdiction_warning = _aviso_jurisdiccion(frontmatter.get("jurisdiction"), comuna)
         review_details = {}
         if flagged_pages:
@@ -294,24 +296,28 @@ def _fuente_del_documento(
     source: str | None,
     source_url: str | None,
     frontmatter: dict,
-    uploaded_by: str,
+    file_name: str,
+    comuna: str,
 ) -> dict:
     """Fuente que se citará al usuario. Lo ingresado en el panel manda; si
-    viene vacío se usa el frontmatter del .md, y si tampoco hay, el valor
-    genérico de antes ("Panel admin — <cuenta>", sin URL, fecha de hoy)."""
-    from datetime import datetime, timezone
+    viene vacío se usa el frontmatter del .md, y si tampoco hay, un nombre
+    derivado del archivo y su ámbito.
+
+    source_date es solo una revisión declarada: sin ella queda vacía y la
+    cita muestra la fecha de carga (uploaded_at), sin presentarla como
+    revisión."""
+    nombre_panel = (source or "").strip()
+    # El formulario precarga este valor: si llega igual, nadie lo editó.
+    if nombre_panel == nombre_fuente_desde_archivo(file_name):
+        nombre_panel = ""
 
     urls = frontmatter.get("source_urls")
     url_frontmatter = urls[0] if isinstance(urls, list) and urls else ""
     reviewed_at = frontmatter.get("reviewed_at")
     return {
-        "source": (source or "").strip() or frontmatter.get("title") or f"Panel admin — {uploaded_by}",
+        "source": nombre_panel or frontmatter.get("title") or fuente_automatica(file_name, comuna),
         "source_url": (source_url or "").strip() or url_frontmatter,
-        "source_date": (
-            reviewed_at
-            if isinstance(reviewed_at, str) and reviewed_at
-            else datetime.now(timezone.utc).date().isoformat()
-        ),
+        "source_date": reviewed_at if isinstance(reviewed_at, str) and reviewed_at else "",
     }
 
 

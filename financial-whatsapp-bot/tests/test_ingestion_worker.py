@@ -131,6 +131,31 @@ class ProcessDocumentIngestionTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta["source"], "Circular SII")
         self.assertEqual(meta["source_url"], "https://www.sii.cl/circular")
 
+    def test_sin_datos_la_fuente_es_el_archivo_y_su_ambito(self):
+        fuente = worker._fuente_del_documento(None, None, {}, "ordenanza-patentes.pdf", "Recoleta")
+        self.assertEqual(
+            fuente, {"source": "Ordenanza patentes · Recoleta", "source_url": "", "source_date": ""}
+        )
+
+    def test_documento_nacional_sin_fuente_se_marca_nacional(self):
+        fuente = worker._fuente_del_documento("", "", {}, "guia_sii.pdf", "general")
+        self.assertEqual(fuente["source"], "Guia sii · Nacional")
+
+    def test_precarga_sin_editar_se_trata_como_automatica(self):
+        fuente = worker._fuente_del_documento("Ordenanza patentes", None, {}, "ordenanza-patentes.pdf", "Recoleta")
+        self.assertEqual(fuente["source"], "Ordenanza patentes · Recoleta")
+
+    def test_nombre_editado_se_respeta_sin_agregar_ambito(self):
+        fuente = worker._fuente_del_documento(
+            " Ordenanza de Patentes 2026 ", "https://recoleta.cl/o", {}, "ordenanza-patentes.pdf", "Recoleta"
+        )
+        self.assertEqual(fuente["source"], "Ordenanza de Patentes 2026")
+        self.assertEqual(fuente["source_url"], "https://recoleta.cl/o")
+
+    def test_titulo_del_frontmatter_gana_al_nombre_automatico(self):
+        fuente = worker._fuente_del_documento(None, None, {"title": "Inicio"}, "sii.md", "general")
+        self.assertEqual(fuente["source"], "Inicio")
+
     async def test_documento_nacional_cargado_como_comuna_queda_para_revision(self):
         _text, meta, final = await self._run_markdown(self._MD_CON_FRONTMATTER, comuna="Recoleta")
 

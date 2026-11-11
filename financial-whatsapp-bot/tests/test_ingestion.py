@@ -6,6 +6,27 @@ import httpx
 import core.ingestion as ingestion
 
 
+class FuenteAutomaticaTests(unittest.TestCase):
+    def test_nombre_legible_desde_el_archivo(self):
+        for archivo, esperado in (
+            ("ordenanza-patentes.pdf", "Ordenanza patentes"),
+            ("guia__inicio - actividades.PDF", "Guia inicio actividades"),
+            ("v1.2_decreto.pdf", "V1.2 decreto"),
+            ("sin_extension", "Sin extension"),
+            (".pdf", ".pdf"),
+        ):
+            self.assertEqual(ingestion.nombre_fuente_desde_archivo(archivo), esperado)
+
+    def test_agrega_el_ambito_legible(self):
+        for comuna, esperado in (
+            ("Recoleta", "Doc · Recoleta"),
+            ("el bosque", "Doc · El Bosque"),
+            ("general", "Doc · Nacional"),
+            (None, "Doc"),
+        ):
+            self.assertEqual(ingestion.fuente_automatica("doc.pdf", comuna), esperado)
+
+
 class ChunkingTests(unittest.TestCase):
     def test_build_parent_child_chunks_groups_by_header_and_nests_children(self):
         text = (
@@ -68,7 +89,7 @@ class ProcessDocumentToRowsTests(unittest.TestCase):
             "content_hash": "abc123",
             "uploaded_by": "InnovaRecoleta",
             "uploaded_at": "2026-09-16T00:00:00+00:00",
-            "source": "Panel admin — InnovaRecoleta",
+            "source": "Tramite · Recoleta",
             "review_flag": False,
         }
 
