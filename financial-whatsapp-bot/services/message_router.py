@@ -49,6 +49,8 @@ from core.roadmaps import (
 from core.onboarding import (
     PROFILE_BACK_ID,
     PROFILE_SKIP_ADDRESS_ID,
+    TERMS_ACCEPT_ID,
+    TERMS_REJECT_ID,
     needs_onboarding,
     process_onboarding,
 )
@@ -287,6 +289,8 @@ def route_message(
         return process_onboarding(user, message, update_onboarding_profile)
     if msg_lower in {PROFILE_BACK_ID, PROFILE_SKIP_ADDRESS_ID}:
         return get_menu_widget(user, prefix="✅ Tu perfil ya está completo. Ese botón corresponde a una pregunta anterior.\n\n")
+    if msg_lower in {TERMS_ACCEPT_ID, TERMS_REJECT_ID}:
+        return get_menu_widget(user, prefix="✅ Ya aceptaste las condiciones de uso. Ese botón corresponde a un mensaje anterior.\n\n")
 
     # El diagnóstico corre en el mismo threadpool del router, sin IA ni nuevas
     # tareas de Redis. Debe poder salir antes de los triggers del roadmap y de

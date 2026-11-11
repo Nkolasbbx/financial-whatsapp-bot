@@ -2,8 +2,18 @@ import copy
 import unittest
 from unittest.mock import Mock
 
-from core.onboarding import SII_EXPLANATION, needs_onboarding, process_onboarding
+from core.onboarding import (
+    SII_EXPLANATION,
+    TERMS_ACCEPT_ID,
+    TERMS_REJECT_ID,
+    TERMS_VERSION,
+    needs_onboarding,
+    process_onboarding,
+)
 from core.profile_validation import EmailUnavailableError
+
+
+TERMS_ACCEPTED_AT = "2026-11-10T00:00:00+00:00"
 
 
 def make_user(**overrides) -> dict:
@@ -17,6 +27,7 @@ def make_user(**overrides) -> dict:
         "rut": "12345678-5",
         "email": "maria@ejemplo.cl",
         "profile_completion_step": "done",
+        "terms_accepted_at": TERMS_ACCEPTED_AT,
     }
     user.update(overrides)
     return user
@@ -93,7 +104,7 @@ class OnboardingSiiExplanationTests(unittest.TestCase):
 
 class ProfileOnboardingTests(unittest.TestCase):
     def setUp(self):
-        self.user = {"phone": "+56900000000", "onboarding_step": "0"}
+        self.user = {"phone": "+56900000000", "onboarding_step": "0", "terms_accepted_at": TERMS_ACCEPTED_AT}
         self.saved = []
 
     def send(self, message):
@@ -180,7 +191,8 @@ class ProfileOnboardingTests(unittest.TestCase):
     def test_legacy_business_session_accepts_pending_answer_before_personal_questions(self):
         for step in (2, "2"):
             with self.subTest(step=step):
-                self.user = {"phone": "+56900000000", "onboarding_step": step, "rubro": "textil"}
+                self.user = {"phone": "+56900000000", "onboarding_step": step, "rubro": "textil",
+                             "terms_accepted_at": TERMS_ACCEPTED_AT}
                 self.send("comuna_recoleta")
                 self.assertEqual(self.user["comuna"], "Recoleta")
                 self.assertEqual(self.user["onboarding_step"], "3")
@@ -261,6 +273,79 @@ class ProfileOnboardingTests(unittest.TestCase):
         self.user = make_user()
         self.send("no tengo inicio de actividades")
         self.assertEqual(self.user["inicio_sii"], "no")
+
+
+class TermsAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        self.user = {"phone": "+56900000000", "onboarding_step": "0"}
+        self.saved = []
+
+    def send(self, message):
+        return process_onboarding(self.user, message, save_into(self.saved))
+
+    def assert_terms_prompt(self, result):
+        self.assertEqual(result["type"], "buttons")
+        self.assertIn("condiciones de uso", result["body"])
+        self.assertEqual([option_id for option_id, _ in result["options"]], [TERMS_ACCEPT_ID, TERMS_REJECT_ID])
+
+    def test_new_user_sees_terms_first_without_saving(self):
+        for message in ("hola", "", "menu_reiniciar", "volver", "María González"):
+            with self.subTest(message=message):
+                self.assert_terms_prompt(self.send(message))
+        self.assertEqual(self.saved, [])
+        self.assertNotIn("nombre_completo", self.user)
+
+    def test_rejection_blocks_onboarding_until_accepted(self):
+        for message in (TERMS_REJECT_ID, "No acepto", "no acepto."):
+            with self.subTest(message=message):
+                result = self.send(message)
+                self.assert_terms_prompt(result)
+                self.assertIn("necesitas aceptar", result["body"])
+        self.assertEqual(self.saved, [])
+        self.assertEqual(self.user["onboarding_step"], "0")
+        self.assertNotIn("terms_accepted_at", self.user)
+
+    def test_acceptance_is_saved_and_starts_profile_questions(self):
+        for message in (TERMS_ACCEPT_ID, "Acepto", "sí, acepto"):
+            with self.subTest(message=message):
+                self.user = {"phone": "+56900000000", "onboarding_step": "0"}
+                self.saved = []
+                result = self.send(message)
+                self.assertTrue(self.saved[0]["terms_accepted_at"])
+                self.assertEqual(self.saved[0]["terms_version"], TERMS_VERSION)
+                self.assertEqual(self.user["profile_completion_step"], "nombre_completo")
+                self.assertIn("Gracias por aceptar", result["body"])
+                self.assertIn("nombre completo", result["body"])
+
+    def test_after_reset_terms_are_requested_again(self):
+        self.user = make_user(onboarding_step=0, terms_accepted_at=None, terms_version=None,
+                              nombre_completo=None, rut=None, email=None, rubro=None, comuna=None,
+                              profile_completion_step=None)
+        self.assert_terms_prompt(self.send("menu_reiniciar"))
+        self.assertEqual(self.saved, [])
+
+    def test_user_in_progress_is_gated_and_resumes_where_they_were(self):
+        self.user = make_user(onboarding_step="2", comuna=None, terms_accepted_at=None)
+        self.assert_terms_prompt(self.send("comuna_recoleta"))
+        self.assertIsNone(self.user["comuna"])
+        result = self.send(TERMS_ACCEPT_ID)
+        self.assertEqual(self.user["onboarding_step"], "2")
+        self.assertIn("¿En qué comuna", result["body"])
+
+    def test_completed_users_are_not_asked_for_terms(self):
+        self.user = make_user(onboarding_step="done", inicio_sii="no", rut=None, terms_accepted_at=None)
+        result = self.send("hola")
+        self.assertIn("RUT", result["body"])
+        self.assertNotIn("terms_accepted_at", self.saved[0])
+
+    def test_old_terms_button_is_not_saved_as_a_name(self):
+        self.user = make_user(nombre_completo=None, profile_completion_step="nombre_completo")
+        for message in (TERMS_ACCEPT_ID, TERMS_REJECT_ID, "acepto", "no acepto"):
+            self.send(message)
+            self.assertIsNone(self.user["nombre_completo"])
+
+    def test_terms_message_fits_whatsapp_button_body_limit(self):
+        self.assertLessEqual(len(self.send(TERMS_REJECT_ID)["body"]), 1024)
 
 
 if __name__ == "__main__":

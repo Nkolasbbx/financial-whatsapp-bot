@@ -35,6 +35,12 @@ class OnboardingPersistenceTests(unittest.TestCase):
         self.query.eq.assert_called_once_with("phone", self.phone)
         self.query.upsert.assert_not_called()
 
+    def test_terms_acceptance_fields_can_be_saved_by_onboarding(self):
+        self.query.execute.return_value = SimpleNamespace(data=[{"phone": self.phone}])
+        update_onboarding_profile(self.phone, {"terms_accepted_at": "2026-11-10T00:00:00+00:00", "terms_version": "2026-11-10"})
+        payload = self.query.update.call_args.args[0]
+        self.assertEqual(set(payload), {"terms_accepted_at", "terms_version", "updated_at"})
+
     def test_write_errors_never_fall_back_to_memory_or_log_personal_values(self):
         users_db[self.phone] = {"phone": self.phone, "nombre_completo": "Anterior"}
         self.query.execute.side_effect = RuntimeError("secret@example.cl was rejected")

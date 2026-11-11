@@ -32,6 +32,7 @@ _ONBOARDING_FIELDS = {
     "nombre_completo", "rut", "email", "direccion_negocio", "profile_completion_step",
     "rubro", "rubro_raw", "comuna", "inicio_sii", "onboarding_step",
     "roadmap", "roadmap_completed_at", "created_at",
+    "terms_accepted_at", "terms_version",
 }
 
 
