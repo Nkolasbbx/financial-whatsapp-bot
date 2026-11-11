@@ -78,6 +78,44 @@ SII_EXPLANATION = (
     "armamos una ruta paso a paso. 🚀\n\n"
 )
 
+# Condiciones de uso y tratamiento de datos: se piden a usuarios nuevos y tras
+# reiniciar el perfil (reset_user_profile anula terms_accepted_at). Cambiar
+# TERMS_VERSION al modificar el texto para saber qué versión aceptó cada uno.
+TERMS_ACCEPT_ID = "terminos_acepto"
+TERMS_REJECT_ID = "terminos_rechazo"
+TERMS_VERSION = "2026-11-10"
+TERMS_OPTIONS = [(TERMS_ACCEPT_ID, "✅ Acepto"), (TERMS_REJECT_ID, "No acepto")]
+
+TERMS_BODY = (
+    "¡Hola! 👋 Soy *FinancIAl*, tu asistente para ordenar y formalizar tu emprendimiento.\n\n"
+    "📄 *Antes de comenzar, revisa nuestras condiciones de uso:*\n"
+    "• Te pediremos datos personales (nombre, RUT y correo) y de tu negocio "
+    "(rubro, comuna y situación en el SII). Tu celular se obtiene desde WhatsApp.\n"
+    "• Usamos tus datos y conversaciones para darte orientación personalizada y "
+    "mejorar tu experiencia y nuestro servicio. Tus mensajes se procesan con "
+    "herramientas de inteligencia artificial.\n"
+    "• No vendemos tus datos. Solo los ve el equipo de FinancIAl, por ejemplo, "
+    "cuando pides hablar con un experto.\n"
+    "• Las respuestas son orientativas y no reemplazan una asesoría profesional.\n"
+    "• Puedes borrar tu perfil cuando quieras escribiendo *reiniciar*.\n\n"
+    "¿Aceptas estas condiciones?"
+)
+
+TERMS_REJECTED_PREFIX = (
+    "Entendido. Para usar FinancIAl necesitas aceptar las condiciones; sin ellas "
+    "no podemos registrar ni usar tus datos. Cuando quieras continuar, toca *✅ Acepto*.\n\n"
+)
+TERMS_ACCEPTED_PREFIX = "✅ ¡Gracias por aceptar! Comencemos.\n\n"
+
+_TERMS_ACCEPT_PHRASES = {
+    "acepto", "si acepto", "sí acepto", "si, acepto", "sí, acepto",
+    "acepto las condiciones", "acepto los terminos", "acepto los términos", "aceptar",
+}
+_TERMS_REJECT_PHRASES = {
+    "no acepto", "no, no acepto", "rechazo", "no acepto las condiciones",
+    "no acepto los terminos", "no acepto los términos",
+}
+
 
 def is_ambiguous(text: str) -> bool:
     cleaned = (text or "").strip().lower()
@@ -306,7 +344,40 @@ def _process_profile_step(user: dict, message: str, field: str) -> dict:
     return _continue_onboarding(user)
 
 
+def needs_terms_acceptance(user: dict) -> bool:
+    # Solo usuarios nuevos o reiniciados: quienes completaron el onboarding
+    # antes de existir las condiciones no quedan bloqueados.
+    return str(user.get("onboarding_step")) != "done" and not user.get("terms_accepted_at")
+
+
+def detect_terms_choice(message: str) -> str | None:
+    text = " ".join((message or "").lower().strip(" .!¡").split())
+    if text == TERMS_REJECT_ID or text in _TERMS_REJECT_PHRASES:
+        return "rechaza"
+    if text == TERMS_ACCEPT_ID or text in _TERMS_ACCEPT_PHRASES:
+        return "acepta"
+    return None
+
+
+def _terms_prompt(prefix: str = "") -> dict:
+    return _buttons(prefix + TERMS_BODY, TERMS_OPTIONS)
+
+
+def _process_terms_step(user: dict, message: str) -> dict:
+    choice = detect_terms_choice(message)
+    if choice == "rechaza":
+        return _terms_prompt(TERMS_REJECTED_PREFIX)
+    if choice != "acepta":
+        return _terms_prompt()
+    user["terms_accepted_at"] = datetime.now(timezone.utc).isoformat()
+    user["terms_version"] = TERMS_VERSION
+    return _continue_onboarding(user, TERMS_ACCEPTED_PREFIX)
+
+
 def _advance_onboarding(user: dict, message: str) -> dict:
+    if needs_terms_acceptance(user):
+        return _process_terms_step(user, message)
+
     field = user.get("profile_completion_step")
     if field == "direccion_negocio":
         # Retomar sesiones de la versión anterior sin guardar la respuesta a
@@ -318,12 +389,8 @@ def _advance_onboarding(user: dict, message: str) -> dict:
 
     step = str(user.get("onboarding_step") or "0")
     if step not in {"1", "2", "3", "3_explicado"}:
-        prefix = (
-            "Vamos a completar los datos que faltan en tu perfil.\n\n"
-            if step == "done" else
-            "¡Hola! 👋 Soy *FinancIAl*. Te pediré tus datos personales y los de tu negocio "
-            "para personalizar la atención. Tu celular se obtiene desde WhatsApp.\n\n"
-        )
+        # El saludo para usuarios nuevos va en el mensaje de condiciones.
+        prefix = "Vamos a completar los datos que faltan en tu perfil.\n\n" if step == "done" else ""
         return _continue_onboarding(user, prefix)
 
     if not message:

@@ -10,7 +10,8 @@ from tests.profile_fixtures import COMPLETE_PROFILE
 
 class OnboardingRoutingTests(unittest.TestCase):
     def setUp(self):
-        self.user = {"id": "user-1", "phone": "+56900000000", "onboarding_step": "0"}
+        self.user = {"id": "user-1", "phone": "+56900000000", "onboarding_step": "0",
+                     "terms_accepted_at": "2026-11-10T00:00:00+00:00"}
         self.saved = []
         self.mocks = {}
         specs = {
@@ -40,15 +41,35 @@ class OnboardingRoutingTests(unittest.TestCase):
         return message_router.route_message(self.user["phone"], text)
 
     def test_end_to_end_onboarding_reloads_saved_progress_for_each_message(self):
-        for text in ("hola", "Ana Pérez", "12345678-5", "ana@ejemplo.cl", "rubro_textil", "comuna_el_bosque", "sii_no"):
+        self.user.pop("terms_accepted_at")
+        for text in ("hola", "terminos_rechazo", "terminos_acepto", "Ana Pérez", "12345678-5", "ana@ejemplo.cl", "rubro_textil", "comuna_el_bosque", "sii_no"):
             result = self.send(text)
             self.assertIsInstance(result, dict)
         self.assertEqual(self.user["onboarding_step"], "done")
+        self.assertTrue(self.user["terms_accepted_at"])
         self.assertEqual(self.user["rubro"], "textil")
         self.assertEqual(self.user["comuna"], "El Bosque")
         self.assertTrue(self.user["roadmap"])
         self.mocks["get_active_fund_session"].assert_not_called()
         self.assertEqual(self.send("menu_panel_web"), "__WEB_PANEL_LINK__")
+
+    def test_reset_asks_for_terms_again(self):
+        self.user.update(COMPLETE_PROFILE, onboarding_step="done")
+        reset_user = {"id": "user-1", "phone": self.user["phone"], "onboarding_step": 0,
+                      "terms_accepted_at": None, "terms_version": None}
+        with patch.object(message_router, "reset_user_profile", return_value=reset_user), \
+                patch.object(message_router, "_clear_calendar_session_safely"), \
+                patch.object(message_router, "_clear_financial_session_safely"):
+            result = self.send("menu_reiniciar")
+        self.assertIn("condiciones de uso", result["body"])
+        self.assertEqual(result["options"][0][0], "terminos_acepto")
+
+    def test_old_terms_button_from_completed_user_returns_menu(self):
+        self.user.update(COMPLETE_PROFILE, onboarding_step="done", roadmap=[])
+        result = self.send("terminos_acepto")
+        self.assertIsInstance(result, dict)  # no "__AI_QUERY__": no llega a la IA
+        self.assertIn("Ya aceptaste", result["body"])
+        self.assertFalse(self.saved)
 
     def test_pending_address_resumes_business_without_interpreting_old_answer(self):
         self.user.update(COMPLETE_PROFILE, onboarding_step="0", rubro=None, comuna=None,

@@ -16,11 +16,12 @@ _NON_ANSWERS = {
     "hola", "buenas", "buenos dias", "buenas tardes", "buenas noches",
     "ok", "okay", "gracias", "listo", "si", "no", "no se", "ayuda",
     "volver", "atras", "cancelar", "reiniciar", "menu", "omitir",
-    "no tengo", "prefiero no responder",
+    "no tengo", "prefiero no responder", "acepto", "no acepto",
 }
 _CONTROL_PREFIXES = (
     "menu_", "profile_", "rubro_", "comuna_", "sii_", "fund_", "finance_",
     "calendar_", "hito_", "experto_", "unsatisfied_",
+    "terminos_",
 )
 
 
