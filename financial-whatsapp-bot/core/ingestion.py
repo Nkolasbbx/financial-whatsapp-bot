@@ -32,7 +32,14 @@ import time
 import httpx
 import pymupdf4llm
 
-from config import INGESTION_EMBEDDING_BATCH_SIZE, INGESTION_ENABLE_CONTEXTUAL, RES_KEY, RES_MODEL, RES_URL
+from config import (
+    ADMIN_COMUNA_GENERAL,
+    INGESTION_EMBEDDING_BATCH_SIZE,
+    INGESTION_ENABLE_CONTEXTUAL,
+    RES_KEY,
+    RES_MODEL,
+    RES_URL,
+)
 from core.ia import llamar_llm, obtener_embeddings_remotos_batch
 
 logger = logging.getLogger("financial")
@@ -424,6 +431,29 @@ def generate_parent_context_map(doc_title: str, parent_text: str, children: list
         }
 
     return {}
+
+
+# =====================================================================
+# NOMBRE DE LA FUENTE CUANDO NADIE LO INDICÓ
+# =====================================================================
+def nombre_fuente_desde_archivo(file_name: str) -> str:
+    """Nombre legible a partir del archivo: 'ordenanza-patentes.pdf' ->
+    'Ordenanza patentes'. static/admin_documentos.js precarga el formulario
+    con esta misma normalización; deben mantenerse iguales."""
+    base = file_name.rsplit(".", 1)[0]
+    nombre = " ".join(re.sub(r"[-_]+", " ", base).split()) or file_name
+    return nombre[:1].upper() + nombre[1:]
+
+
+def fuente_automatica(file_name: str, comuna: str | None) -> str:
+    """Fuente citable sin datos internos: '<nombre> · <ámbito>'."""
+    nombre = nombre_fuente_desde_archivo(file_name)
+    comuna = (comuna or "").strip()
+    if not comuna:
+        return nombre
+    # .title(): las filas del script antiguo guardan la comuna en minúsculas.
+    ambito = "Nacional" if comuna.lower() == ADMIN_COMUNA_GENERAL else comuna.title()
+    return f"{nombre} · {ambito}"
 
 
 # =====================================================================

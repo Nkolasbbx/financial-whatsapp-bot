@@ -665,14 +665,21 @@ async def obtener_contexto_rag(
             source = meta.get("source", file_name)
             source_url = meta.get("source_url", "")
             source_date = meta.get("source_date", "")
+            fecha_carga = (meta.get("uploaded_at") or "")[:10]
             fuentes.append({
                 "source": source,
                 "source_url": source_url,
                 "source_date": source_date,
+                "fecha_carga": fecha_carga,
             })
+            fecha_contexto = (
+                f"Fecha de revisión: {source_date}"
+                if source_date
+                else f"Fecha de carga: {fecha_carga or 'no informada'}"
+            )
             contexto += (
                 f"\n[Documento Oficial: {file_name}] | [Ámbito: {comuna_doc}]\n"
-                f"[Fuente: {source}] | [URL: {source_url}] | [Fecha de revisión: {source_date}]\n"
+                f"[Fuente: {source}] | [URL: {source_url}] | [{fecha_contexto}]\n"
                 f"{content}\n"
             )
 
@@ -692,6 +699,19 @@ async def obtener_contexto_rag(
         contexto = "Error temporal al acceder a las normativas municipales."
 
     return {"contexto": aviso + contexto, "fuentes": fuentes}
+
+
+def _linea_cita(source: str, source_url: str, source_date: str, fecha_carga: str) -> str:
+    """Línea de una fuente al final de la respuesta, sin separadores vacíos.
+    La fecha de carga no se presenta como revisión del documento."""
+    partes = [source]
+    if source_url:
+        partes.append(source_url)
+    if source_date:
+        partes.append(f"fecha de revisión: {source_date}")
+    elif fecha_carga:
+        partes.append(f"cargado el {fecha_carga}")
+    return "- " + " | ".join(partes)
 
 
 COMUNAS_SOPORTADAS = ["recoleta", "el bosque"]
@@ -1804,15 +1824,13 @@ async def get_ai_response(
             fuente["source"],
             fuente["source_url"],
             fuente["source_date"],
+            fuente["fecha_carga"],
         )
         if clave not in fuentes_unicas:
             fuentes_unicas.append(clave)
 
     if fuentes_unicas:
-        citas = "\n".join(
-            f"- {source} | {source_url} | fecha de revisión: {source_date}"
-            for source, source_url, source_date in fuentes_unicas
-        )
+        citas = "\n".join(_linea_cita(*clave) for clave in fuentes_unicas)
         ai_text = f"{ai_text.rstrip()}\n\n*Fuentes y fecha de la información:*\n{citas}"
 
     await _save_ai_turn(user, phone, message, ai_text, asked_at, background_tasks)
